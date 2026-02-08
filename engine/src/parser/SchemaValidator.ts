@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { WorkflowSchema } from '@dev-ecosystem/core';
+import { OrbytWorkflowSchema } from '@dev-ecosystem/core';
 import type { WorkflowDefinition } from '@dev-ecosystem/core';
 
 /**
@@ -25,7 +25,7 @@ export class SchemaValidator {
   static validate(rawWorkflow: unknown): WorkflowDefinition {
     try {
       // Use Zod schema from ecosystem-core for validation
-      const validated = WorkflowSchema.parse(rawWorkflow);
+      const validated = OrbytWorkflowSchema.parse(rawWorkflow);
       return validated;
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -50,7 +50,7 @@ export class SchemaValidator {
    */
   static isValid(rawWorkflow: unknown): boolean {
     try {
-      WorkflowSchema.parse(rawWorkflow);
+      OrbytWorkflowSchema.parse(rawWorkflow);
       return true;
     } catch {
       return false;
@@ -68,7 +68,7 @@ export class SchemaValidator {
     data?: WorkflowDefinition;
     error?: z.ZodError;
   } {
-    const result = WorkflowSchema.safeParse(rawWorkflow);
+    const result = OrbytWorkflowSchema.safeParse(rawWorkflow);
     
     if (result.success) {
       return {

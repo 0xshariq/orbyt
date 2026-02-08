@@ -17,18 +17,19 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/0xshariq/mediaproc.git"
+    "url": "git+https://github.com/0xshariq/orbyt.git"
   },
   "bugs": {
-    "url": "https://github.com/0xshariq/mediaproc/issues"
+    "url": "https://github.com/0xshariq/orbyt/issues"
   },
-  "homepage": "https://github.com/0xshariq/mediaproc#readme",
+  "homepage": "https://github.com/0xshariq/orbyt#readme",
   "engines": {
     "node": ">=22.0.0"
   },
   "dependencies": {
+    "@dev-ecosystem/core": "^0.1.0",
     "node-cron": "^4.2.1",
-    "yaml": "^2.8.2",
+      
     "zod": "^4.3.6"
   },
   "devDependencies": {

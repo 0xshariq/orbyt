@@ -7,7 +7,7 @@
  * @module parser
  */
 
-import type { StepDefinition } from '@dev-ecosystem/core';
+import type { WorkflowStepDefinition } from '@dev-ecosystem/core';
 
 /**
  * Parsed internal step representation
@@ -61,7 +61,7 @@ export class StepParser {
    * @param stepDef - Validated step definition from schema
    * @returns Parsed step object ready for execution
    */
-  static parse(stepDef: StepDefinition): ParsedStep {
+  static parse(stepDef: WorkflowStepDefinition): ParsedStep {
     // Validate required fields
     if (!stepDef.id) {
       throw new Error('Step missing required field: id');
@@ -133,7 +133,7 @@ export class StepParser {
    * @param stepDefs - Array of step definitions
    * @returns Array of parsed steps
    */
-  static parseAll(stepDefs: StepDefinition[]): ParsedStep[] {
+  static parseAll(stepDefs: WorkflowStepDefinition[]): ParsedStep[] {
     return stepDefs.map(step => this.parse(step));
   }
 

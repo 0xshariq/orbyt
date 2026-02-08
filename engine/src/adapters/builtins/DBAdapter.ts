@@ -125,12 +125,11 @@ export class DBAdapter extends BaseAdapter {
   /**
    * Execute database query
    * 
-   * This is a template implementation that shows the structure.
-   * In production, you'd implement actual database driver logic here.
+   * Routes to the appropriate database-specific implementation.
    */
   private async executeQuery(
     query: string,
-    _params: any[],
+    params: any[],
     connection: DBConnection,
     _timeout: number,
     context: AdapterContext
@@ -138,32 +137,19 @@ export class DBAdapter extends BaseAdapter {
     const startTime = Date.now();
 
     try {
-      // Template implementation - shows structure
-      context.log('⚠️  Warning: DBAdapter is a template implementation');
-      context.log('Install database drivers for production use:');
-      context.log('  - npm install pg (PostgreSQL)');
-      context.log('  - npm install mysql2 (MySQL)');
-      context.log('  - npm install better-sqlite3 (SQLite)');
-      context.log('  - npm install mongodb (MongoDB)');
-
-      // Simulate query execution
-      await this.delay(100);
-
-      const duration = Date.now() - startTime;
-
-      // Return mock result
-      const result: DBResult = {
-        rows: [],
-        rowCount: 0,
-        fields: [],
-        duration,
-        query,
-        database: connection.database || connection.file || 'unknown',
-      };
-
-      context.log(`Query completed in ${duration}ms`);
-
-      return result;
+      // Route to database-specific implementation
+      switch (connection.type) {
+        case 'postgres':
+          return await this.executePostgres(query, params, connection, context);
+        case 'mysql':
+          return await this.executeMySQL(query, params, connection, context);
+        case 'sqlite':
+          return await this.executeSQLite(query, params, connection, context);
+        case 'mongodb':
+          return await this.executeMongoDB(query, params, connection, context);
+        default:
+          throw new Error(`Unsupported database type: ${connection.type}`);
+      }
     } catch (error) {
       const duration = Date.now() - startTime;
       context.log(
@@ -186,6 +172,10 @@ export class DBAdapter extends BaseAdapter {
     const startTime = Date.now();
 
     try {
+      context.log(`Executing PostgreSQL query: ${query.substring(0, 100)}...`);
+      context.log(`Connection: ${connection.connectionString || connection.host}`);
+      context.log(`Parameters: ${params.length} params`);
+      
       // Example structure (requires pg package):
       // import { Pool } from 'pg';
       // const pool = new Pool({ connectionString: connection.connectionString });
@@ -197,6 +187,7 @@ export class DBAdapter extends BaseAdapter {
       );
     } catch (error) {
       const duration = Date.now() - startTime;
+      context.log(`PostgreSQL query failed after ${duration}ms`, 'error');
       throw error;
     }
   }
@@ -213,6 +204,10 @@ export class DBAdapter extends BaseAdapter {
     const startTime = Date.now();
 
     try {
+      context.log(`Executing MySQL query: ${query.substring(0, 100)}...`);
+      context.log(`Connection: ${connection.connectionString || connection.host}`);
+      context.log(`Parameters: ${params.length} params`);
+      
       // Example structure (requires mysql2 package):
       // import mysql from 'mysql2/promise';
       // const conn = await mysql.createConnection(connection.connectionString);
@@ -224,6 +219,7 @@ export class DBAdapter extends BaseAdapter {
       );
     } catch (error) {
       const duration = Date.now() - startTime;
+      context.log(`MySQL query failed after ${duration}ms`, 'error');
       throw error;
     }
   }
@@ -240,6 +236,10 @@ export class DBAdapter extends BaseAdapter {
     const startTime = Date.now();
 
     try {
+      context.log(`Executing SQLite query: ${query.substring(0, 100)}...`);
+      context.log(`Database file: ${connection.file}`);
+      context.log(`Parameters: ${params.length} params`);
+      
       // Example structure (requires better-sqlite3 package):
       // import Database from 'better-sqlite3';
       // const db = new Database(connection.file!);
@@ -252,6 +252,7 @@ export class DBAdapter extends BaseAdapter {
       );
     } catch (error) {
       const duration = Date.now() - startTime;
+      context.log(`SQLite query failed after ${duration}ms`, 'error');
       throw error;
     }
   }
@@ -268,6 +269,11 @@ export class DBAdapter extends BaseAdapter {
     const startTime = Date.now();
 
     try {
+      context.log(`Executing MongoDB query: ${query.substring(0, 100)}...`);
+      context.log(`Connection: ${connection.connectionString}`);
+      context.log(`Database: ${connection.database}`);
+      context.log(`Parameters: ${params.length} params`);
+      
       // Example structure (requires mongodb package):
       // import { MongoClient } from 'mongodb';
       // const client = new MongoClient(connection.connectionString!);
@@ -282,21 +288,15 @@ export class DBAdapter extends BaseAdapter {
       );
     } catch (error) {
       const duration = Date.now() - startTime;
+      context.log(`MongoDB query failed after ${duration}ms`, 'error');
       throw error;
     }
   }
 
   /**
-   * Utility: Delay
-   */
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  /**
    * Cleanup connections on adapter cleanup
    */
-  override async cleanup(): Promise<void> {
+  async cleanup(): Promise<void> {
     for (const [key, connection] of this.connections.entries()) {
       try {
         // Close connection based on type
