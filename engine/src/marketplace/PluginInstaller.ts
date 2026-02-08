@@ -9,7 +9,7 @@
  */
 
 import type { PluginManifest } from './PluginManifest.js';
-import { PluginVerifier } from './PluginVerifier.js';
+// import { PluginVerifier } from './PluginVerifier.js';
 
 /**
  * Installation options
@@ -49,7 +49,7 @@ export interface InstalledPlugin {
  */
 export class PluginInstaller {
   private installedPlugins = new Map<string, InstalledPlugin>();
-  private verifier = new PluginVerifier();
+  // private _verifier = new PluginVerifier(); // Future: will be used for verification
 
   /**
    * Install a plugin

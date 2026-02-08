@@ -40,7 +40,7 @@ export class PluginVerifier {
    * @param pluginPath - Path to plugin files
    * @returns Verification result
    */
-  async verify(manifest: PluginManifest, pluginPath: string): Promise<VerificationResult> {
+  async verify(manifest: PluginManifest, _pluginPath: string): Promise<VerificationResult> {
     const errors: string[] = [];
     const warnings: string[] = [];
 
@@ -88,7 +88,7 @@ export class PluginVerifier {
    * @param signature - Plugin signature
    * @returns True if signature is valid
    */
-  async verifySignature(pluginPath: string, signature: string): Promise<boolean> {
+  async verifySignature(pluginPath: string, _signature: string): Promise<boolean> {
     // TODO: Implement cryptographic signature verification
     console.log(`[PluginVerifier] Verifying signature for: ${pluginPath}`);
     return true;

@@ -108,7 +108,7 @@ export class EngineTestHarness {
    */
   async executeWorkflow(
     workflow: ParsedWorkflow,
-    context: Record<string, any> = {}
+    _context: Record<string, any> = {}
   ): Promise<TestExecutionResult> {
     const startTime = Date.now();
     

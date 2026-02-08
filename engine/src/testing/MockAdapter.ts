@@ -37,6 +37,8 @@ export interface MockAdapterConfig {
  */
 export class MockAdapter implements Adapter {
   readonly name: string;
+  readonly version = '0.1.0';
+  readonly supportedActions: string[] = ['*'];
   private config: MockAdapterConfig;
   private callCount = 0;
   private calls: Array<{ action: string; input: any; timestamp: Date }> = [];
@@ -44,6 +46,13 @@ export class MockAdapter implements Adapter {
   constructor(config: MockAdapterConfig) {
     this.name = config.name;
     this.config = config;
+  }
+
+  /**
+   * Check if action is supported (mock always supports all actions)
+   */
+  supports(_action: string): boolean {
+    return true;
   }
 
   /**
