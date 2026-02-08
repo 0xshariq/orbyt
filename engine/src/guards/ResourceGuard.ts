@@ -104,10 +104,41 @@ export class ResourceGuard {
   private checkTimeout(step: ParsedStep): void {
     const { maxStepTimeout } = this.policy;
 
-    if (maxStepTimeout && step.timeout && step.timeout > maxStepTimeout) {
-      throw new Error(
-        `Step '${step.id}': timeout ${step.timeout}ms exceeds policy limit ${maxStepTimeout}ms`
-      );
+    if (maxStepTimeout && step.timeout) {
+      const timeoutMs = this.parseTimeoutString(step.timeout);
+      if (timeoutMs > maxStepTimeout) {
+        throw new Error(
+          `Step '${step.id}': timeout ${timeoutMs}ms exceeds policy limit ${maxStepTimeout}ms`
+        );
+      }
+    }
+  }
+
+  /**
+   * Parse timeout string to milliseconds
+   */
+  private parseTimeoutString(timeout: string): number {
+    const match = timeout.match(/^([0-9]+)(ms|s|m|h|d)$/);
+    if (!match) {
+      return 30000; // Default 30s
+    }
+
+    const value = parseInt(match[1], 10);
+    const unit = match[2];
+
+    switch (unit) {
+      case 'ms':
+        return value;
+      case 's':
+        return value * 1000;
+      case 'm':
+        return value * 60 * 1000;
+      case 'h':
+        return value * 60 * 60 * 1000;
+      case 'd':
+        return value * 24 * 60 * 60 * 1000;
+      default:
+        return 30000;
     }
   }
 

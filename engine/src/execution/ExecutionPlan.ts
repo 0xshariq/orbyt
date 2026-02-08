@@ -105,10 +105,40 @@ export class ExecutionPlanner {
    */
   private static calculatePhaseTimeout(steps: ParsedStep[]): number | undefined {
     const timeouts = steps
-      .map(s => s.timeout)
+      .map(s => s.timeout ? this.parseTimeoutString(s.timeout) : undefined)
       .filter((t): t is number => t !== undefined);
     
     return timeouts.length > 0 ? Math.max(...timeouts) : undefined;
+  }
+
+  /**
+   * Parse timeout string to milliseconds
+   * @param timeout - Timeout string like "30s", "5m", "1h"
+   * @returns Timeout in milliseconds
+   */
+  private static parseTimeoutString(timeout: string): number {
+    const match = timeout.match(/^([0-9]+)(ms|s|m|h|d)$/);
+    if (!match) {
+      return 30000; // Default 30s if invalid format
+    }
+
+    const value = parseInt(match[1], 10);
+    const unit = match[2];
+
+    switch (unit) {
+      case 'ms':
+        return value;
+      case 's':
+        return value * 1000;
+      case 'm':
+        return value * 60 * 1000;
+      case 'h':
+        return value * 60 * 60 * 1000;
+      case 'd':
+        return value * 24 * 60 * 60 * 1000;
+      default:
+        return 30000;
+    }
   }
 
   /**

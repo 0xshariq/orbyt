@@ -110,7 +110,7 @@ export class WorkflowExecutor {
 
     // Execute with timeout if specified
     try {
-      const timeout = options.timeout || workflow.timeout;
+      const timeout = options.timeout || (workflow.defaults?.timeout ? this.parseTimeoutString(workflow.defaults.timeout) : undefined);
       
       if (timeout) {
         await this.executeWithTimeout(
@@ -191,7 +191,7 @@ export class WorkflowExecutor {
     stepResults: Map<string, StepResult>,
     options: ExecutionOptions
   ): Promise<void> {
-    const continueOnError = options.continueOnError ?? workflow.onFailure === 'continue';
+    const continueOnError = options.continueOnError ?? workflow.policies?.failure === 'continue';
 
     // Execute each phase
     for (const phase of plan.phases) {
@@ -272,14 +272,14 @@ export class WorkflowExecutor {
   ): ResolutionContext {
     return {
       env: {
-        ...workflow.env,
+        ...(workflow.context || {}),
         ...options.env,
         ...options.inputs,
       },
       steps: new Map(),
       workflow: {
-        id: workflow.name,
-        name: workflow.name,
+        id: workflow.name || 'unnamed-workflow',
+        name: workflow.name || 'unnamed-workflow',
         version: workflow.version,
       },
       run: {
@@ -306,7 +306,7 @@ export class WorkflowExecutor {
     const results = Array.from(stepResults.values());
     
     return {
-      workflowName: workflow.name,
+      workflowName: workflow.name || 'unnamed-workflow',
       status,
       stepResults,
       duration: completedAt.getTime() - startedAt.getTime(),
@@ -321,6 +321,34 @@ export class WorkflowExecutor {
         phases: plan.phases.length,
       },
     };
+  }
+
+  /**
+   * Parse timeout string to milliseconds
+   * @param timeout - Timeout string like "30s", "5m", "1h"
+   * @returns Timeout in milliseconds
+   */
+  private parseTimeoutString(timeout: string): number {
+    const match = timeout.match(/^([0-9]+)(ms|s|m|h)$/);
+    if (!match) {
+      throw new Error(`Invalid timeout format: ${timeout}. Expected format: <number><unit> (e.g., 30s, 5m, 1h)`);
+    }
+
+    const value = parseInt(match[1], 10);
+    const unit = match[2];
+
+    switch (unit) {
+      case 'ms':
+        return value;
+      case 's':
+        return value * 1000;
+      case 'm':
+        return value * 60 * 1000;
+      case 'h':
+        return value * 60 * 60 * 1000;
+      default:
+        throw new Error(`Unsupported timeout unit: ${unit}`);
+    }
   }
 
   /**

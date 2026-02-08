@@ -90,7 +90,7 @@ export class StepExecutor {
     let lastError: Error | undefined;
 
     // Check conditional execution
-    if (step.if && !this.evaluateCondition(step.if, context)) {
+    if (step.when && !this.evaluateCondition(step.when, context)) {
       return {
         stepId: step.id,
         status: 'skipped',
@@ -106,9 +106,9 @@ export class StepExecutor {
     const resolvedInput = this.resolver.resolve(step.input, context);
 
     // Retry loop
-    const maxAttempts = step.retry?.maxAttempts || 1;
-    let backoffMs = step.retry?.backoffMs || 1000;
-    const backoffMultiplier = step.retry?.backoffMultiplier || 2;
+    const maxAttempts = step.retry?.max || 1;
+    let backoffMs = step.retry?.delay || 1000;
+    const backoffStrategy = step.retry?.backoff || 'linear';
 
     for (attempts = 1; attempts <= maxAttempts; attempts++) {
       try {
@@ -150,7 +150,10 @@ export class StepExecutor {
         // Retry if more attempts available
         if (attempts < maxAttempts) {
           await this.sleep(backoffMs);
-          backoffMs *= backoffMultiplier;
+          // Apply backoff strategy
+          if (backoffStrategy === 'exponential') {
+            backoffMs *= 2;
+          }
         }
       }
     }
@@ -190,10 +193,39 @@ export class StepExecutor {
 
     // Apply timeout if configured
     if (step.timeout) {
-      return this.withTimeout(executionPromise, step.timeout, step.id);
+      const timeoutMs = this.parseTimeoutString(step.timeout);
+      return this.withTimeout(executionPromise, timeoutMs, step.id);
     }
 
     return executionPromise;
+  }
+
+  /**
+   * Parse timeout string to milliseconds
+   * @param timeout - Timeout string like "30s", "5m", "1h"
+   * @returns Timeout in milliseconds
+   */
+  private parseTimeoutString(timeout: string): number {
+    const match = timeout.match(/^([0-9]+)(ms|s|m|h)$/);
+    if (!match) {
+      throw new Error(`Invalid timeout format: ${timeout}. Expected format: <number><unit> (e.g., 30s, 5m, 1h)`);
+    }
+
+    const value = parseInt(match[1], 10);
+    const unit = match[2];
+
+    switch (unit) {
+      case 'ms':
+        return value;
+      case 's':
+        return value * 1000;
+      case 'm':
+        return value * 60 * 1000;
+      case 'h':
+        return value * 60 * 60 * 1000;
+      default:
+        throw new Error(`Unsupported timeout unit: ${unit}`);
+    }
   }
 
   /**
@@ -207,11 +239,13 @@ export class StepExecutor {
     return Promise.race([
       promise,
       new Promise<T>((_, reject) => {
-        setTimeout(() => {
+        const timer = setTimeout(() => {
           reject(new Error(
             `Step '${stepId}' exceeded timeout of ${timeoutMs}ms`
           ));
         }, timeoutMs);
+        // Cleanup timer if promise resolves first
+        promise.finally(() => clearTimeout(timer));
       }),
     ]);
   }

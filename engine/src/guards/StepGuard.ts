@@ -83,23 +83,17 @@ export class StepGuard {
    */
   private static validateRetryPolicy(step: ParsedStep): void {
     if (step.retry) {
-      const { maxAttempts, backoffMs, backoffMultiplier } = step.retry;
+      const { max, delay } = step.retry;
 
-      if (maxAttempts < 1 || maxAttempts > 10) {
+      if (max < 0 || max > 10) {
         throw new Error(
-          `Step '${step.id}': retry maxAttempts must be between 1 and 10`
+          `Step '${step.id}': retry.max must be between 0 and 10`
         );
       }
 
-      if (backoffMs < 0) {
+      if (delay !== undefined && delay < 0) {
         throw new Error(
-          `Step '${step.id}': retry backoffMs must be positive`
-        );
-      }
-
-      if (backoffMultiplier < 1) {
-        throw new Error(
-          `Step '${step.id}': retry backoffMultiplier must be >= 1`
+          `Step '${step.id}': retry.delay must be positive (got ${delay}ms)`
         );
       }
     }
@@ -217,10 +211,10 @@ export class StepGuard {
    * Check if step has any conditional execution
    * 
    * @param step - Step to check
-   * @returns True if step has 'if' condition
+   * @returns True if step has 'when' condition
    */
   static isConditional(step: ParsedStep): boolean {
-    return !!step.if;
+    return !!step.when;
   }
 
   /**
@@ -230,6 +224,6 @@ export class StepGuard {
    * @returns True if step has retry policy configured
    */
   static isRetryable(step: ParsedStep): boolean {
-    return !!step.retry && step.retry.maxAttempts > 1;
+    return !!step.retry && step.retry.max > 0;
   }
 }

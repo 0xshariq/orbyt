@@ -10,15 +10,17 @@
 import YAML from 'yaml';
 import { SchemaValidator } from './SchemaValidator.js';
 import { StepParser, type ParsedStep } from './StepParser.js';
+import type { WorkflowDefinitionZod } from '@dev-ecosystem/core';
 
 /**
  * Parsed workflow ready for execution
  */
 export interface ParsedWorkflow {
   /** Workflow metadata */
-  name: string;
+  name?: string;
   description?: string;
-  version?: string;
+  version: string;
+  kind: string;
   
   /** Workflow steps */
   steps: ParsedStep[];
@@ -27,12 +29,12 @@ export interface ParsedWorkflow {
   inputs?: Record<string, any>;
   
   /** Global environment variables */
-  env?: Record<string, string>;
+  context?: Record<string, any>;
   
   /** Secret references */
   secrets?: {
-    vault: string;
-    keys: Record<string, string>;
+    vault?: string;
+    refs?: Record<string, string>;
   };
   
   /** Trigger configuration */
@@ -41,11 +43,32 @@ export interface ParsedWorkflow {
     [key: string]: any;
   }>;
   
-  /** Timeout for entire workflow */
-  timeout?: number;
+  /** Defaults */
+  defaults?: {
+    retry?: {
+      max: number;
+      backoff?: 'linear' | 'exponential';
+      delay?: number;
+    };
+    timeout?: string;
+    adapter?: string;
+  };
   
-  /** Failure strategy */
-  onFailure?: 'stop' | 'continue';
+  /** Policies */
+  policies?: {
+    failure?: 'stop' | 'continue' | 'isolate';
+    concurrency?: number;
+    sandbox?: 'none' | 'basic' | 'strict';
+  };
+  
+  /** Permissions */
+  permissions?: any;
+  
+  /** Resources */
+  resources?: any;
+  
+  /** Outputs */
+  outputs?: Record<string, string>;
 }
 
 /**
@@ -60,26 +83,30 @@ export class WorkflowParser {
    */
   static parse(rawWorkflow: unknown): ParsedWorkflow {
     // Step 1: Validate against schema
-    const validated = SchemaValidator.validate(rawWorkflow);
+    const validated: WorkflowDefinitionZod = SchemaValidator.validate(rawWorkflow);
     
-    // Step 2: Parse steps
-    const steps = StepParser.parseAll(validated.steps);
+    // Step 2: Parse steps from nested workflow.steps
+    const steps = StepParser.parseAll(validated.workflow.steps);
     
     // Step 3: Validate step IDs are unique
     StepParser.validateUniqueIds(steps);
     
     // Step 4: Build parsed workflow
     const parsed: ParsedWorkflow = {
-      name: validated.name,
-      description: validated.description,
+      name: validated.metadata?.name,
+      description: validated.metadata?.description,
       version: validated.version,
+      kind: validated.kind,
       steps,
       inputs: validated.inputs,
-      env: validated.env,
+      context: validated.context,
       secrets: validated.secrets,
       triggers: validated.triggers,
-      timeout: validated.timeout,
-      onFailure: validated.onFailure as 'stop' | 'continue',
+      defaults: validated.defaults,
+      policies: validated.policies,
+      permissions: validated.permissions,
+      resources: validated.resources,
+      outputs: validated.outputs,
     };
     
     return parsed;
@@ -169,18 +196,20 @@ export class WorkflowParser {
    * @returns Basic workflow metadata
    */
   static getMetadata(rawWorkflow: unknown): {
-    name: string;
+    name?: string;
     description?: string;
-    version?: string;
+    version: string;
+    kind: string;
     stepCount: number;
   } {
-    const validated = SchemaValidator.validate(rawWorkflow);
+    const validated: WorkflowDefinitionZod = SchemaValidator.validate(rawWorkflow);
     
     return {
-      name: validated.name,
-      description: validated.description,
+      name: validated.metadata?.name,
+      description: validated.metadata?.description,
       version: validated.version,
-      stepCount: validated.steps.length,
+      kind: validated.kind,
+      stepCount: validated.workflow.steps.length,
     };
   }
 }

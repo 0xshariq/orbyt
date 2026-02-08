@@ -8,8 +8,7 @@
  */
 
 import { z } from 'zod';
-import { OrbytWorkflowSchema } from '@dev-ecosystem/core';
-import type { WorkflowDefinition } from '@dev-ecosystem/core';
+import { OrbytWorkflowSchema, type WorkflowDefinitionZod } from '@dev-ecosystem/core';
 
 /**
  * Validates workflow structure against schema
@@ -22,7 +21,7 @@ export class SchemaValidator {
    * @returns Validated and typed workflow definition
    * @throws {z.ZodError} If validation fails with detailed error messages
    */
-  static validate(rawWorkflow: unknown): WorkflowDefinition {
+  static validate(rawWorkflow: unknown): WorkflowDefinitionZod {
     try {
       // Use Zod schema from ecosystem-core for validation
       const validated = OrbytWorkflowSchema.parse(rawWorkflow);
@@ -65,7 +64,7 @@ export class SchemaValidator {
    */
   static safeParse(rawWorkflow: unknown): {
     success: boolean;
-    data?: WorkflowDefinition;
+    data?: WorkflowDefinitionZod;
     error?: z.ZodError;
   } {
     const result = OrbytWorkflowSchema.safeParse(rawWorkflow);

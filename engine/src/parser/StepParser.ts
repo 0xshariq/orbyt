@@ -7,7 +7,7 @@
  * @module parser
  */
 
-import type { WorkflowStepDefinition } from '@dev-ecosystem/core';
+import type { StepDefinition as ZodStepDefinition } from '@dev-ecosystem/core';
 
 /**
  * Parsed internal step representation
@@ -28,27 +28,30 @@ export interface ParsedStep {
   /** Step dependencies (other step IDs) */
   needs: string[];
   
-  /** Optional description */
-  description?: string;
+  /** Optional name */
+  name?: string;
   
   /** Conditional execution expression */
-  if?: string;
+  when?: string;
   
   /** Continue workflow on failure */
-  continueOnError?: boolean;
+  continueOnError: boolean;
   
   /** Retry policy */
   retry?: {
-    maxAttempts: number;
-    backoffMs: number;
-    backoffMultiplier: number;
+    max: number;
+    backoff?: 'linear' | 'exponential';
+    delay?: number;
   };
   
-  /** Timeout in milliseconds */
-  timeout?: number;
+  /** Timeout string (e.g., '30s', '5m') */
+  timeout?: string;
   
   /** Environment variables for this step */
   env?: Record<string, string>;
+  
+  /** Output mappings */
+  outputs?: Record<string, string>;
 }
 
 /**
@@ -61,7 +64,7 @@ export class StepParser {
    * @param stepDef - Validated step definition from schema
    * @returns Parsed step object ready for execution
    */
-  static parse(stepDef: WorkflowStepDefinition): ParsedStep {
+  static parse(stepDef: ZodStepDefinition): ParsedStep {
     // Validate required fields
     if (!stepDef.id) {
       throw new Error('Step missing required field: id');
@@ -81,19 +84,20 @@ export class StepParser {
       action: stepDef.uses,
       input: stepDef.with || {},
       needs: stepDef.needs || [],
-      description: stepDef.description,
-      if: stepDef.if,
-      continueOnError: stepDef.continueOnError || false,
+      name: stepDef.name,
+      when: stepDef.when,
+      continueOnError: stepDef.continueOnError,
       timeout: stepDef.timeout,
       env: stepDef.env,
+      outputs: stepDef.outputs,
     };
     
-    // Parse retry policy if present
+    // Copy retry policy if present
     if (stepDef.retry) {
       parsedStep.retry = {
-        maxAttempts: stepDef.retry.maxAttempts || 3,
-        backoffMs: stepDef.retry.backoffMs || 1000,
-        backoffMultiplier: stepDef.retry.backoffMultiplier || 2,
+        max: stepDef.retry.max,
+        backoff: stepDef.retry.backoff,
+        delay: stepDef.retry.delay,
       };
     }
     
@@ -133,7 +137,7 @@ export class StepParser {
    * @param stepDefs - Array of step definitions
    * @returns Array of parsed steps
    */
-  static parseAll(stepDefs: WorkflowStepDefinition[]): ParsedStep[] {
+  static parseAll(stepDefs: ZodStepDefinition[]): ParsedStep[] {
     return stepDefs.map(step => this.parse(step));
   }
 
