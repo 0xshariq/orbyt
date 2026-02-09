@@ -1,188 +1,171 @@
 /**
  * Execution Plan
  * 
- * Creates an execution plan from workflow steps.
- * Handles dependency resolution and parallel execution grouping.
+ * PURE COORDINATION - NO EXECUTION LOGIC.
+ * 
+ * This coordinates DependencyResolver, CycleDetector, and TopologicalSorter
+ * to create a valid execution plan. It answers:
+ * - What runs?
+ * - In what order?
+ * - What can run in parallel?
+ * - What are the constraints?
+ * 
+ * This is "designing the map, not driving the car."
+ * Execution happens elsewhere (StepExecutor, WorkflowExecutor).
  * 
  * @module execution
  */
 
-import type { ParsedStep } from '../parser/StepParser.js';
-import { WorkflowGuard } from '../guards/WorkflowGuard.js';
+import { ExecutionNode } from './ExecutionNode.js';
+import {
+  DependencyResolver,
+  CycleDetector,
+  TopologicalSorter,
+  type DependencyGraph,
+  type TopologicalSortResult,
+} from '../graph/DependencyGraph.js';
 
 /**
  * Execution phase (group of steps that can run in parallel)
  */
 export interface ExecutionPhase {
   /** Phase number (0-indexed) */
-  phase: number;
+  readonly phase: number;
   
-  /** Steps that can execute in parallel */
-  steps: ParsedStep[];
+  /** Nodes that can execute in parallel */
+  readonly nodes: readonly ExecutionNode[];
   
-  /** Combined phase timeout (max of all step timeouts) */
-  timeout?: number;
+  /** Combined phase timeout (max of all node timeouts) */
+  readonly timeout?: number;
 }
 
 /**
- * Complete execution plan for a workflow
+ * Complete execution plan for a workflow.
+ * This is a blueprint for execution - it contains NO execution state.
  */
 export interface ExecutionPlan {
   /** Ordered phases of execution */
-  phases: ExecutionPhase[];
+  readonly phases: readonly ExecutionPhase[];
+  
+  /** The validated dependency graph */
+  readonly graph: DependencyGraph;
   
   /** Total number of steps */
-  totalSteps: number;
+  readonly totalSteps: number;
   
   /** Maximum parallelism (largest phase size) */
-  maxParallelism: number;
+  readonly maxParallelism: number;
   
   /** Critical path length (minimum phases needed) */
-  criticalPathLength: number;
+  readonly criticalPathLength: number;
+
+  /** Topological sort result */
+  readonly sortResult: TopologicalSortResult;
 }
 
 /**
- * Execution plan builder
+ * Execution plan coordinator.
+ * This orchestrates graph utilities to create execution plans.
+ * 
+ * NO EXECUTION LOGIC HERE - only planning and coordination.
  */
 export class ExecutionPlanner {
   /**
-   * Create execution plan from workflow steps
+   * Create execution plan from execution nodes.
    * 
-   * Groups steps into phases where steps in the same phase
-   * have no dependencies on each other and can run in parallel.
+   * This is the main entry point. It:
+   * 1. Builds dependency graph (DependencyResolver)
+   * 2. Validates no cycles (CycleDetector)
+   * 3. Generates execution phases (TopologicalSorter)
+   * 4. Packages everything into ExecutionPlan
    * 
-   * @param steps - Workflow steps
-   * @returns Execution plan with phases
+   * @param nodes - Array of execution nodes
+   * @returns Complete execution plan
+   * @throws WorkflowValidationError if dependencies are invalid or cycles exist
    */
-  static plan(steps: ParsedStep[]): ExecutionPlan {
-    // Validate workflow first
-    WorkflowGuard.validate(steps);
+  static plan(nodes: ExecutionNode[]): ExecutionPlan {
+    // Step 1: Build dependency graph
+    const graph = DependencyResolver.resolve(nodes);
 
-    // Build dependency graph
-    const phases: ExecutionPhase[] = [];
-    const processed = new Set<string>();
+    // Step 2: Detect cycles (fail fast)
+    CycleDetector.detectAndThrow(graph);
 
-    let phaseNum = 0;
+    // Step 3: Topological sort to get execution phases
+    const sortResult = TopologicalSorter.sort(graph);
 
-    while (processed.size < steps.length) {
-      // Find steps ready to execute (all dependencies processed)
-      const readySteps = steps.filter(step => {
-        if (processed.has(step.id)) return false;
-        return step.needs.every(depId => processed.has(depId));
-      });
-
-      if (readySteps.length === 0) {
-        throw new Error(
-          'Cannot create execution plan - circular dependencies or missing steps'
-        );
-      }
-
-      // Create phase
-      const phase: ExecutionPhase = {
-        phase: phaseNum++,
-        steps: readySteps,
-        timeout: this.calculatePhaseTimeout(readySteps),
+    // Step 4: Build execution phases with nodes and timeouts
+    const phases: ExecutionPhase[] = sortResult.phases.map((stepIds, index) => {
+      const phaseNodes = stepIds.map((stepId) => graph.nodes.get(stepId)!);
+      
+      return {
+        phase: index,
+        nodes: Object.freeze(phaseNodes),
+        timeout: this.calculatePhaseTimeout(phaseNodes),
       };
+    });
 
-      phases.push(phase);
-
-      // Mark as processed
-      for (const step of readySteps) {
-        processed.add(step.id);
-      }
-    }
-
+    // Step 5: Package into execution plan
     return {
-      phases,
-      totalSteps: steps.length,
-      maxParallelism: Math.max(...phases.map(p => p.steps.length)),
+      phases: Object.freeze(phases),
+      graph,
+      totalSteps: nodes.length,
+      maxParallelism: Math.max(...phases.map((p) => p.nodes.length), 0),
       criticalPathLength: phases.length,
+      sortResult,
     };
   }
 
   /**
-   * Calculate timeout for a phase (max of all step timeouts)
+   * Calculate timeout for a phase (max of all node timeouts).
+   * If no timeouts specified, returns undefined.
    */
-  private static calculatePhaseTimeout(steps: ParsedStep[]): number | undefined {
-    const timeouts = steps
-      .map(s => s.timeout ? this.parseTimeoutString(s.timeout) : undefined)
+  private static calculatePhaseTimeout(nodes: readonly ExecutionNode[]): number | undefined {
+    const timeouts = nodes
+      .map((node) => node.metadata.timeout)
       .filter((t): t is number => t !== undefined);
     
     return timeouts.length > 0 ? Math.max(...timeouts) : undefined;
   }
 
   /**
-   * Parse timeout string to milliseconds
-   * @param timeout - Timeout string like "30s", "5m", "1h"
-   * @returns Timeout in milliseconds
-   */
-  private static parseTimeoutString(timeout: string): number {
-    const match = timeout.match(/^([0-9]+)(ms|s|m|h|d)$/);
-    if (!match) {
-      return 30000; // Default 30s if invalid format
-    }
-
-    const value = parseInt(match[1], 10);
-    const unit = match[2];
-
-    switch (unit) {
-      case 'ms':
-        return value;
-      case 's':
-        return value * 1000;
-      case 'm':
-        return value * 60 * 1000;
-      case 'h':
-        return value * 60 * 60 * 1000;
-      case 'd':
-        return value * 24 * 60 * 60 * 1000;
-      default:
-        return 30000;
-    }
-  }
-
-  /**
-   * Get execution order (flattened phases)
+   * Get execution order (flattened phases).
+   * Returns nodes in the order they should be executed.
    * 
    * @param plan - Execution plan
-   * @returns Flat array of steps in execution order
+   * @returns Flat array of nodes in execution order
    */
-  static getFlatOrder(plan: ExecutionPlan): ParsedStep[] {
-    return plan.phases.flatMap(phase => phase.steps);
+  static getFlatOrder(plan: ExecutionPlan): ExecutionNode[] {
+    return plan.phases.flatMap((phase) => [...phase.nodes]);
   }
 
   /**
-   * Get steps that can execute immediately (phase 0)
+   * Get nodes that can execute immediately (phase 0).
+   * These are entry points with no dependencies.
    * 
-   * @param steps - Workflow steps
-   * @returns Steps with no dependencies
+   * @param plan - Execution plan
+   * @returns Nodes with no dependencies
    */
-  static getInitialSteps(steps: ParsedStep[]): ParsedStep[] {
-    return steps.filter(step => step.needs.length === 0);
+  static getInitialNodes(plan: ExecutionPlan): ExecutionNode[] {
+    if (plan.phases.length === 0) {
+      return [];
+    }
+    return [...plan.phases[0].nodes];
   }
 
   /**
-   * Get next executable steps after completing current steps
+   * Get the phase number for a specific step.
    * 
-   * @param allSteps - All workflow steps
-   * @param completedStepIds - Set of completed step IDs
-   * @returns Steps now ready to execute
+   * @param plan - Execution plan
+   * @param stepId - Step ID to look up
+   * @returns Phase number (0-indexed) or undefined if not found
    */
-  static getNextSteps(
-    allSteps: ParsedStep[],
-    completedStepIds: Set<string>
-  ): ParsedStep[] {
-    return allSteps.filter(step => {
-      // Skip if already completed
-      if (completedStepIds.has(step.id)) return false;
-      
-      // Check if all dependencies are completed
-      return step.needs.every(depId => completedStepIds.has(depId));
-    });
+  static getPhaseForStep(plan: ExecutionPlan, stepId: string): number | undefined {
+    return plan.sortResult.stepPhases.get(stepId);
   }
 
   /**
-   * Visualize execution plan as text
+   * Visualize execution plan as text.
+   * Useful for debugging and understanding execution flow.
    * 
    * @param plan - Execution plan
    * @returns Text visualization
@@ -197,24 +180,98 @@ export class ExecutionPlanner {
 
     for (const phase of plan.phases) {
       output += `Phase ${phase.phase}: `;
-      output += `[${phase.steps.map(s => s.id).join(', ')}]`;
+      output += `[${[...phase.nodes].map((n) => n.stepId).join(', ')}]`;
       if (phase.timeout) {
         output += ` (timeout: ${phase.timeout}ms)`;
       }
       output += '\n';
+
+      // Show adapter references for each node
+      for (const node of phase.nodes) {
+        output += `  └─ ${node.stepId}: ${node.uses}`;
+        if (node.metadata.maxRetries > 0) {
+          output += ` (retries: ${node.metadata.maxRetries})`;
+        }
+        if (node.metadata.hasCondition) {
+          output += ` (conditional)`;
+        }
+        output += '\n';
+      }
     }
 
     return output;
   }
 
   /**
-   * Check if workflow can be parallelized
+   * Check if workflow can be parallelized.
+   * Returns true if any phase has more than one step.
    * 
-   * @param steps - Workflow steps
+   * @param plan - Execution plan
    * @returns True if any steps can run in parallel
    */
-  static canParallelize(steps: ParsedStep[]): boolean {
-    const plan = this.plan(steps);
-    return plan.phases.some(phase => phase.steps.length > 1);
+  static canParallelize(plan: ExecutionPlan): boolean {
+    return plan.phases.some((phase) => phase.nodes.length > 1);
+  }
+
+  /**
+   * Get dependency chain for a specific step.
+   * Returns all steps that must complete before this step can run.
+   * 
+   * @param plan - Execution plan
+   * @param stepId - Step ID to analyze
+   * @returns Array of step IDs in dependency order
+   */
+  static getDependencyChain(plan: ExecutionPlan, stepId: string): string[] {
+    const node = plan.graph.nodes.get(stepId);
+    if (!node) {
+      return [];
+    }
+
+    const chain: string[] = [];
+    const visited = new Set<string>();
+
+    const visit = (id: string) => {
+      if (visited.has(id)) {
+        return;
+      }
+      visited.add(id);
+
+      const currentNode = plan.graph.nodes.get(id);
+      if (!currentNode) {
+        return;
+      }
+
+      // Visit dependencies first
+      for (const dep of currentNode.dependencies) {
+        visit(dep);
+      }
+
+      chain.push(id);
+    };
+
+    visit(stepId);
+    return chain;
+  }
+
+  /**
+   * Calculate estimated execution time based on phase timeouts.
+   * This is a rough estimate assuming perfect parallelization.
+   * 
+   * @param plan - Execution plan
+   * @returns Estimated execution time in milliseconds
+   */
+  static estimateExecutionTime(plan: ExecutionPlan): number {
+    let totalTime = 0;
+
+    for (const phase of plan.phases) {
+      if (phase.timeout) {
+        totalTime += phase.timeout;
+      } else {
+        // If no timeout specified, use a default estimate
+        totalTime += 30000; // 30 seconds default
+      }
+    }
+
+    return totalTime;
   }
 }

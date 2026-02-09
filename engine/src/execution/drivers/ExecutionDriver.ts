@@ -7,7 +7,7 @@
  * @module execution/drivers
  */
 
-import type { AdapterResult } from '../../adapters/AdapterResult.js';
+import type { AdapterResult } from '@dev-ecosystem/core';
 
 /**
  * Step execution context for drivers

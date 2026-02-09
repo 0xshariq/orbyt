@@ -7,7 +7,7 @@
  * @module adapters
  */
 
-import { type Adapter } from './Adapter.js';
+import type { Adapter } from '@dev-ecosystem/core';
 import { OrbytError } from '../errors/OrbytError.js';
 import { OrbytErrorCode, ErrorSeverity } from '../errors/ErrorCodes.js';
 

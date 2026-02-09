@@ -10,7 +10,7 @@
 
 import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
 import { MockAdapter } from './MockAdapter.js';
-import type { Adapter } from '../adapters/Adapter.js';
+import type { Adapter } from '@dev-ecosystem/core';
 
 /**
  * Test harness configuration

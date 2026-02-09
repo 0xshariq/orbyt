@@ -15,9 +15,7 @@
  * @module adapters/builtins
  */
 
-import { BaseAdapter, type AdapterContext } from '../Adapter.js';
-import type { AdapterResult } from '../AdapterResult.js';
-import { AdapterResultBuilder } from '../AdapterResult.js';
+import { BaseAdapter, type AdapterContext, type AdapterResult, AdapterResultBuilder } from '@dev-ecosystem/core';
 
 /**
  * HTTP request/response types

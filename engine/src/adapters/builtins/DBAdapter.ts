@@ -17,8 +17,7 @@
  * @module adapters/builtins
  */
 
-import { BaseAdapter, type AdapterContext } from '../Adapter.js';
-import type { AdapterResult } from '../AdapterResult.js';
+import { BaseAdapter, type AdapterContext, type AdapterResult } from '@dev-ecosystem/core';
 
 /**
  * Database query result

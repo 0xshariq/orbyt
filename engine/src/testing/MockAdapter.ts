@@ -8,7 +8,7 @@
  * @status stub - will be enhanced when testing framework is needed
  */
 
-import type { Adapter } from '../adapters/Adapter.js';
+import type { Adapter } from '@dev-ecosystem/core';
 
 /**
  * Mock adapter configuration

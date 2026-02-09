@@ -2,10 +2,30 @@
  * Queue Adapter
  * 
  * Provides message queue operations (publish, consume).
+ * 
+ * ⚠️ IMPORTANT - QUEUE SEMANTICS:
+ * 
+ * This adapter uses IN-MEMORY, NON-DURABLE message queues by default:
+ * - Messages are stored in process memory only
+ * - NO persistence across restarts
+ * - BEST-EFFORT delivery (no guarantees)
+ * - Data is LOST on process crash or restart
+ * - Suitable ONLY for development and testing
+ * 
+ * For production use:
+ * - Replace MemoryProducer/Consumer with Redis/RabbitMQ/Kafka implementations
+ * - Configure proper durability, ack semantics, and retry policies
+ * - Enable at-least-once or exactly-once delivery guarantees
+ * 
+ * Current delivery semantics:
+ * - No message persistence
+ * - No delivery confirmation
+ * - No automatic retry
+ * - Messages processed in FIFO order within same queue
+ * - No guarantee of ordering across multiple consumers
  */
 
-import { Adapter, AdapterContext, AdapterCapabilities, AdapterMetadata } from '../Adapter.js';
-import { AdapterResult, AdapterResultBuilder } from '../AdapterResult.js';
+import { Adapter, AdapterContext, AdapterCapabilities, AdapterMetadata, AdapterResult, AdapterResultBuilder } from '@dev-ecosystem/core';
 import { WorkflowValidationError, OrbytErrorCodes } from '@dev-ecosystem/core';
 import { Producer, MemoryProducer, MessageOptions } from './Producer.js';
 import { Consumer, MemoryConsumer, MessageHandler } from './Consumer.js';
@@ -106,7 +126,7 @@ export class QueueAdapter implements Adapter {
           break;
 
         case 'queue.consume':
-          result = await this.consumeMessages(input);
+          result = await this.consumeMessages(input, context);
           break;
 
         case 'queue.stop':
@@ -177,7 +197,7 @@ export class QueueAdapter implements Adapter {
     return { queue: queueName, results, count: results.length };
   }
 
-  private async consumeMessages(input: Record<string, any>): Promise<unknown> {
+  private async consumeMessages(input: Record<string, any>, context: AdapterContext): Promise<unknown> {
     const queueName = input.queue as string;
     const handlerCode = input.handler as string;
 
@@ -194,8 +214,11 @@ export class QueueAdapter implements Adapter {
     // In a real implementation, you would compile the handler code
     // or reference another workflow/step to handle messages
     const handler: MessageHandler = async (message) => {
-      console.log('Received message:', message);
-      console.log('Handler code:', handlerCode);
+      // Log message receipt (no silent behavior)
+      if (context.log) {
+        context.log(`[Queue:${queueName}] Received message: ${JSON.stringify(message).substring(0, 100)}...`, 'info');
+        context.log(`[Queue:${queueName}] Handler code: ${handlerCode}`, 'debug');
+      }
       // TODO: Execute handler code or workflow
       await message.ack();
     };

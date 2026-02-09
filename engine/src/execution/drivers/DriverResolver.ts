@@ -7,7 +7,7 @@
  */
 
 import type { ExecutionDriver, DriverStep, DriverContext } from './ExecutionDriver.js';
-import type { AdapterResult } from '../../adapters/AdapterResult.js';
+import type { AdapterResult } from '@dev-ecosystem/core';
 import { OrbytError } from '../../errors/OrbytError.js';
 import { OrbytErrorCode, ErrorSeverity } from '../../errors/ErrorCodes.js';
 

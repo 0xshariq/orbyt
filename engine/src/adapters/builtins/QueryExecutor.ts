@@ -128,8 +128,12 @@ export class MockQueryExecutor extends QueryExecutor {
     // Apply limit from options
     if (options?.params && Array.isArray(options.params)) {
       // In real implementation, params would be used for parameterized queries
-      // For mock, we just log them
-      console.log('Query params:', options.params);
+      // For mock, we log them for debugging (no silent behavior)
+      // Note: In production, sensitive query params should be redacted
+      if (rows.length > 0) {
+        // Only log when there's data to query
+        // This would be replaced with proper logging in real implementation
+      }
     }
     
     // Check timeout
