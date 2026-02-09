@@ -23,7 +23,7 @@ export interface DriverContext {
   workflowName: string;
   
   /** Logger function */
-  log: (message: string, level?: 'info' | 'warn' | 'error') => void;
+  log: (message: string, level?: 'info' | 'warn' | 'error' | 'debug') => void;
   
   /** Abort signal for cancellation */
   signal?: AbortSignal;

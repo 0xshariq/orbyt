@@ -11,10 +11,12 @@
  */
 
 import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
+import type { ParsedStep } from '../parser/StepParser.js';
 import type { ResolutionContext } from '../context/VariableResolver.js';
 import type { StepResult } from './StepExecutor.js';
 import { StepExecutor } from './StepExecutor.js';
 import { ExecutionPlanner, type ExecutionPlan } from './ExecutionPlan.js';
+import { createExecutionNode, type ExecutionNode } from './ExecutionNode.js';
 import { WorkflowGuard } from '../guards/WorkflowGuard.js';
 import { StepGuard } from '../guards/StepGuard.js';
 
@@ -102,8 +104,14 @@ export class WorkflowExecutor {
     // Validate workflow
     this.validateWorkflow(workflow);
 
+    // Convert ParsedStep[] to ExecutionNode[] for planning
+    const executionNodes = this.convertToExecutionNodes(workflow.steps);
+
+    // Create step lookup map for execution
+    const stepMap = new Map(workflow.steps.map(s => [s.id, s]));
+
     // Create execution plan
-    const plan = ExecutionPlanner.plan(workflow.steps);
+    const plan = ExecutionPlanner.plan(executionNodes);
 
     // Build initial context
     const context = this.buildContext(workflow, options);
@@ -119,6 +127,7 @@ export class WorkflowExecutor {
           context,
           stepResults,
           options,
+          stepMap,
           timeout
         );
       } else {
@@ -127,7 +136,8 @@ export class WorkflowExecutor {
           plan,
           context,
           stepResults,
-          options
+          options,
+          stepMap
         );
       }
 
@@ -167,10 +177,11 @@ export class WorkflowExecutor {
     context: ResolutionContext,
     stepResults: Map<string, StepResult>,
     options: ExecutionOptions,
+    stepMap: Map<string, ParsedStep>,
     timeoutMs: number
   ): Promise<void> {
     return Promise.race([
-      this.executeWorkflowPlan(workflow, plan, context, stepResults, options),
+      this.executeWorkflowPlan(workflow, plan, context, stepResults, options, stepMap),
       new Promise<void>((_, reject) => {
         setTimeout(() => {
           reject(new Error(
@@ -189,23 +200,30 @@ export class WorkflowExecutor {
     plan: ExecutionPlan,
     context: ResolutionContext,
     stepResults: Map<string, StepResult>,
-    options: ExecutionOptions
+    options: ExecutionOptions,
+    stepMap: Map<string, ParsedStep>
   ): Promise<void> {
     const continueOnError = options.continueOnError ?? workflow.policies?.failure === 'continue';
 
     // Execute each phase
     for (const phase of plan.phases) {
-      // Execute all steps in phase concurrently
-      const phasePromises = phase.steps.map(step =>
-        this.stepExecutor.execute(step, context)
-      );
+      // Execute all nodes in phase concurrently
+      // Map ExecutionNode back to ParsedStep for execution
+      const phasePromises = phase.nodes.map(node => {
+        const step = stepMap.get(node.stepId);
+        if (!step) {
+          throw new Error(`Step not found: ${node.stepId}`);
+        }
+        return this.stepExecutor.execute(step, context);
+      });
 
       const results = await Promise.allSettled(phasePromises);
 
       // Process results
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
-        const step = phase.steps[i];
+        const node = phase.nodes[i];
+        const step = stepMap.get(node.stepId)!;
 
         if (result.status === 'fulfilled') {
           const stepResult = result.value;
@@ -261,6 +279,28 @@ export class WorkflowExecutor {
     for (const step of workflow.steps) {
       StepGuard.validate(step, availableSteps);
     }
+  }
+
+  /**
+   * Convert ParsedStep[] to ExecutionNode[]
+   * This bridges the parser output with the execution planning system
+   */
+  private convertToExecutionNodes(steps: ParsedStep[]): ExecutionNode[] {
+    return steps.map(step => {
+      const timeout = step.timeout ? this.parseTimeoutString(step.timeout) : undefined;
+      const maxRetries = step.retry?.max ?? 0;
+
+      return createExecutionNode()
+        .setStepId(step.id)
+        .setUses(step.action)
+        .setInput(step.input)
+        .setDependencies(step.needs)
+        .setCondition(step.when)
+        .setMaxRetries(maxRetries)
+        .setTimeout(timeout)
+        .setAdapter(null) // Adapter will be resolved later by StepExecutor
+        .build();
+    });
   }
 
   /**

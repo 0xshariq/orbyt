@@ -6,9 +6,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { Adapter, AdapterContext, AdapterCapabilities, AdapterMetadata } from '../Adapter.js';
-import { AdapterResult, AdapterResultBuilder } from '../AdapterResult.js';
-import { WorkflowValidationError, OrbytErrorCodes } from '@dev-ecosystem/core';
+import { WorkflowValidationError, OrbytErrorCodes, Adapter,type AdapterContext, AdapterCapabilities, AdapterMetadata, AdapterResultBuilder, type AdapterResult } from '@dev-ecosystem/core';
 import { PathSecurityPolicy, PathSecurityConfig } from './PathSecurityPolicy.js';
 import { FileResolver } from './FileResolver.js';
 

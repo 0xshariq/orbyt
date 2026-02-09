@@ -12,9 +12,7 @@
  */
 
 import { spawn } from 'child_process';
-import { BaseAdapter, type AdapterContext } from '../Adapter.js';
-import type { AdapterResult } from '../AdapterResult.js';
-import { AdapterResultBuilder } from '../AdapterResult.js';
+import { BaseAdapter, type AdapterContext, AdapterResultBuilder, type AdapterResult } from '@dev-ecosystem/core';
 
 /**
  * CLI execution result

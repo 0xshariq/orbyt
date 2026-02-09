@@ -112,10 +112,9 @@ export class ExecutionNodeBuilder {
   private uses?: string;
   private input: Record<string, unknown> = {};
   private condition?: string;
-  private metadata: Partial<ExecutionNodeMetadata> = {
-    maxRetries: 0,
-    hasCondition: false,
-  };
+  private maxRetries: number = 0;
+  private timeout?: number;
+  private phase?: number;
 
   setStepId(id: string): this {
     this.stepId = id;
@@ -144,22 +143,21 @@ export class ExecutionNodeBuilder {
 
   setCondition(condition: string | undefined): this {
     this.condition = condition;
-    this.metadata.hasCondition = !!condition;
     return this;
   }
 
   setMaxRetries(retries: number): this {
-    this.metadata.maxRetries = Math.max(0, retries);
+    this.maxRetries = Math.max(0, retries);
     return this;
   }
 
   setTimeout(timeout: number | undefined): this {
-    this.metadata.timeout = timeout;
+    this.timeout = timeout;
     return this;
   }
 
   setPhase(phase: number): this {
-    this.metadata.phase = phase;
+    this.phase = phase;
     return this;
   }
 
@@ -179,10 +177,10 @@ export class ExecutionNodeBuilder {
       input: { ...this.input },
       condition: this.condition,
       metadata: {
-        maxRetries: this.metadata.maxRetries!,
-        timeout: this.metadata.timeout,
-        hasCondition: this.metadata.hasCondition!,
-        phase: this.metadata.phase,
+        maxRetries: this.maxRetries,
+        timeout: this.timeout,
+        hasCondition: !!this.condition,
+        phase: this.phase,
       },
     };
   }
