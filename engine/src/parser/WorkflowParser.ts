@@ -82,14 +82,14 @@ export class WorkflowParser {
    * @returns Parsed workflow ready for execution
    */
   static parse(rawWorkflow: unknown): ParsedWorkflow {
-    // Step 1: Validate against schema
+    // Step 1: Validate against schema (with enhanced diagnostics)
     const validated: WorkflowDefinitionZod = SchemaValidator.validate(rawWorkflow);
     
     // Step 2: Parse steps from nested workflow.steps
     const steps = StepParser.parseAll(validated.workflow.steps);
     
-    // Step 3: Validate step IDs are unique
-    StepParser.validateUniqueIds(steps);
+    // Step 3: Run comprehensive step validations
+    StepParser.validateAll(steps);
     
     // Step 4: Build parsed workflow
     const parsed: ParsedWorkflow = {

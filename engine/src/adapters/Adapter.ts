@@ -7,6 +7,66 @@
  * @module adapters
  */
 
+import type { AdapterResult } from './AdapterResult.js';
+
+/**
+ * Adapter capabilities for future-proof execution planning
+ */
+export interface AdapterCapabilities {
+  /** Actions this adapter can perform */
+  actions: string[];
+  
+  /** Whether adapter supports concurrent execution */
+  concurrent?: boolean;
+  
+  /** Whether adapter results are cacheable */
+  cacheable?: boolean;
+  
+  /** Whether adapter operations are idempotent */
+  idempotent?: boolean;
+  
+  /** Resource requirements */
+  resources?: {
+    /** Requires network access */
+    network?: boolean;
+    /** Requires filesystem access */
+    filesystem?: boolean;
+    /** Requires database access */
+    database?: boolean;
+    /** Custom resource requirements */
+    custom?: string[];
+  };
+  
+  /** Cost classification */
+  cost?: 'free' | 'low' | 'medium' | 'high';
+}
+
+/**
+ * Adapter metadata for introspection and documentation
+ */
+export interface AdapterMetadata {
+  /** Adapter name */
+  name: string;
+  
+  /** Adapter version (semver) */
+  version: string;
+  
+  /** Human-readable description */
+  description?: string;
+  
+  /** Adapter author/maintainer */
+  author?: string;
+  
+  /** Adapter homepage or documentation URL */
+  homepage?: string;
+  
+  /** Adapter license */
+  license?: string;
+  
+  /** Tags for categorization */
+  tags?: string[];
+}
+
 /**
  * Base adapter interface for workflow actions
  */
@@ -22,6 +82,12 @@ export interface Adapter {
   
   /** Supported action patterns (e.g., 'http.*', 'shell.exec') */
   readonly supportedActions: string[];
+  
+  /** Adapter capabilities (future-proof) */
+  readonly capabilities?: AdapterCapabilities;
+  
+  /** Adapter metadata (optional, for introspection) */
+  readonly metadata?: AdapterMetadata;
 
   /**
    * Check if adapter supports an action
@@ -32,18 +98,27 @@ export interface Adapter {
   supports(action: string): boolean;
 
   /**
+   * Validate input parameters before execution
+   * 
+   * @param action - Action to validate for
+   * @param input - Input parameters to validate
+   * @returns Validation errors (empty array if valid)
+   */
+  validate?(action: string, input: Record<string, any>): string[];
+
+  /**
    * Execute an action
    * 
    * @param action - Full action name (e.g., 'http.request.get')
    * @param input - Resolved input parameters
    * @param context - Execution context
-   * @returns Action output
+   * @returns Standardized adapter result
    */
   execute(
     action: string,
     input: Record<string, any>,
     context: AdapterContext
-  ): Promise<any>;
+  ): Promise<AdapterResult>;
 
   /**
    * Optional: Initialize adapter (called once on registration)
@@ -66,7 +141,7 @@ export interface AdapterContext {
   /** Current step ID */
   stepId: string;
   
-  /** Execution ID */
+  /** Execution ID (unique per run) */
   executionId: string;
   
   /** Logger function */
@@ -77,6 +152,27 @@ export interface AdapterContext {
   
   /** Temporary directory for step execution */
   tempDir?: string;
+  
+  /** Abort signal for cancellation */
+  signal?: AbortSignal;
+  
+  /** Step timeout in milliseconds */
+  timeout?: number;
+  
+  /** Working directory */
+  cwd?: string;
+  
+  /** Environment variables */
+  env?: Record<string, string>;
+  
+  /** Access to previous step outputs */
+  stepOutputs?: Record<string, any>;
+  
+  /** Workflow inputs */
+  inputs?: Record<string, any>;
+  
+  /** Workflow context */
+  workflowContext?: Record<string, any>;
 }
 
 /**
@@ -111,7 +207,7 @@ export abstract class BaseAdapter implements Adapter {
     action: string,
     input: Record<string, any>,
     context: AdapterContext
-  ): Promise<any>;
+  ): Promise<AdapterResult>;
 
   /**
    * Match action against pattern

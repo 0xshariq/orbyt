@@ -13,6 +13,8 @@
 
 import { spawn } from 'child_process';
 import { BaseAdapter, type AdapterContext } from '../Adapter.js';
+import type { AdapterResult } from '../AdapterResult.js';
+import { AdapterResultBuilder } from '../AdapterResult.js';
 
 /**
  * CLI execution result
@@ -35,12 +37,22 @@ export class CLIAdapter extends BaseAdapter {
   readonly version = '1.0.0';
   readonly description = 'CLI command execution adapter';
   readonly supportedActions = ['cli.*'];
+  readonly capabilities = {
+    actions: ['cli.run', 'cli.exec'],
+    concurrent: true,
+    cacheable: false,
+    idempotent: false,
+    resources: {
+      filesystem: true,
+    },
+    cost: 'low' as const,
+  };
 
   async execute(
-    _action: string,
+    action: string,
     input: Record<string, any>,
     context: AdapterContext
-  ): Promise<CLIResult> {
+  ): Promise<AdapterResult> {
     this.validateInput(input, ['command']);
 
     const command = input.command;
@@ -51,25 +63,69 @@ export class CLIAdapter extends BaseAdapter {
     const stdin = input.stdin;
     const throwOnError = this.getInput(input, 'throwOnError', true);
 
-    context.log(`Executing: ${command} ${args.join(' ')}`);
+    context.log(`Executing ${action}: ${command} ${args.join(' ')}`);
 
-    const result = await this.executeCLI(
-      command,
-      args,
-      { cwd, env, timeout, stdin },
-      context
-    );
+    const startTime = Date.now();
 
-    // Check if we should throw on error
-    if (throwOnError && !result.success) {
-      throw new Error(
-        `CLI command failed with exit code ${result.exitCode}\n` +
-        `Command: ${result.command} ${result.args.join(' ')}\n` +
-        `Stderr: ${result.stderr}`
+    try {
+      const result = await this.executeCLI(
+        command,
+        args,
+        { cwd, env, timeout, stdin },
+        context
       );
-    }
 
-    return result;
+      const duration = Date.now() - startTime;
+
+      // Build result using new format
+      const builder = new AdapterResultBuilder()
+        .duration(duration)
+        .log(`Executed: ${command} ${args.join(' ')}`);
+
+      if (result.success) {
+        builder
+          .success({
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            command: result.command,
+            args: result.args,
+          })
+          .effect('process:executed');
+      } else {
+        builder.failure({
+          message: `CLI command failed with exit code ${result.exitCode}`,
+          code: result.exitCode.toString(),
+          details: {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            command: result.command,
+            args: result.args,
+          },
+        });
+
+        if (throwOnError) {
+          const builtResult = builder.build();
+          throw new Error(builtResult.error!.message);
+        }
+      }
+
+      if (result.stderr) {
+        builder.log(result.stderr);
+      }
+
+      return builder.build();
+    } catch (error: any) {
+      const duration = Date.now() - startTime;
+      return new AdapterResultBuilder()
+        .duration(duration)
+        .failure({
+          message: error.message,
+          stack: error.stack,
+        })
+        .log(`CLI execution error: ${error.message}`)
+        .build();
+    }
   }
 
   /**

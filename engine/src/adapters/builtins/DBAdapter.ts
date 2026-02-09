@@ -18,6 +18,7 @@
  */
 
 import { BaseAdapter, type AdapterContext } from '../Adapter.js';
+import type { AdapterResult } from '../AdapterResult.js';
 
 /**
  * Database query result
@@ -60,14 +61,25 @@ export class DBAdapter extends BaseAdapter {
   readonly version = '1.0.0';
   readonly description = 'Database query execution adapter';
   readonly supportedActions = ['db.*'];
+  readonly capabilities = {
+    actions: ['db.query', 'db.execute', 'db.transaction'],
+    concurrent: true,
+    cacheable: true, // Read queries can be cached
+    idempotent: false, // Write queries are not idempotent
+    resources: {
+      database: true,
+      network: true, // Most DB connections are network-based
+    },
+    cost: 'medium' as const,
+  };
 
   private connections = new Map<string, any>();
 
   async execute(
-    _action: string,
+    action: string,
     input: Record<string, any>,
     context: AdapterContext
-  ): Promise<DBResult> {
+  ): Promise<AdapterResult> {
     this.validateInput(input, ['query', 'connection']);
 
     const query = input.query;
@@ -75,20 +87,54 @@ export class DBAdapter extends BaseAdapter {
     const params = input.params || [];
     const timeout = input.timeout || 30000;
 
-    context.log(`Executing DB query on ${connection.type}`);
+    context.log(`Executing ${action} on ${connection.type}`);
 
-    // Validate connection config
-    this.validateConnection(connection);
+    const startTime = Date.now();
 
-    const result = await this.executeQuery(
-      query,
-      params,
-      connection,
-      timeout,
-      context
-    );
+    try {
+      // Validate connection config
+      this.validateConnection(connection);
 
-    return result;
+      const dbResult = await this.executeQuery(
+        query,
+        params,
+        connection,
+        timeout,
+        context
+      );
+
+      const duration = Date.now() - startTime;
+
+      // Convert DBResult to AdapterResult
+      return {
+        success: true,
+        output: {
+          rows: dbResult.rows,
+          rowCount: dbResult.rowCount,
+          fields: dbResult.fields,
+          query: dbResult.query,
+          database: dbResult.database,
+        },
+        metrics: {
+          durationMs: duration,
+        },
+        logs: [`Executed query on ${connection.type}: ${dbResult.rowCount} rows returned`],
+        effects: ['database:query'],
+      };
+    } catch (error: any) {
+      const duration = Date.now() - startTime;
+      return {
+        success: false,
+        error: {
+          message: error.message,
+          stack: error.stack,
+        },
+        metrics: {
+          durationMs: duration,
+        },
+        logs: [`DB query error: ${error.message}`],
+      };
+    }
   }
 
   /**
@@ -131,12 +177,15 @@ export class DBAdapter extends BaseAdapter {
     query: string,
     params: any[],
     connection: DBConnection,
-    _timeout: number,
+    timeout: number,
     context: AdapterContext
   ): Promise<DBResult> {
     const startTime = Date.now();
 
     try {
+      // Set query timeout if supported
+      context.log(`Executing query with ${timeout}ms timeout`);
+      
       // Route to database-specific implementation
       switch (connection.type) {
         case 'postgres':

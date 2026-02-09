@@ -16,6 +16,8 @@
  */
 
 import { BaseAdapter, type AdapterContext } from '../Adapter.js';
+import type { AdapterResult } from '../AdapterResult.js';
+import { AdapterResultBuilder } from '../AdapterResult.js';
 
 /**
  * HTTP request/response types
@@ -37,12 +39,22 @@ export class HTTPAdapter extends BaseAdapter {
   readonly version = '1.0.0';
   readonly description = 'HTTP request adapter';
   readonly supportedActions = ['http.request.*'];
+  readonly capabilities = {
+    actions: ['http.request.get', 'http.request.post', 'http.request.put', 'http.request.patch', 'http.request.delete', 'http.request.head', 'http.request.options'],
+    concurrent: true,
+    cacheable: true, // GET requests especially
+    idempotent: false, // Depends on HTTP method
+    resources: {
+      network: true,
+    },
+    cost: 'low' as const,
+  };
 
   async execute(
     action: string,
     input: Record<string, any>,
     context: AdapterContext
-  ): Promise<HTTPResponse> {
+  ): Promise<AdapterResult> {
     // Validate required inputs
     this.validateInput(input, ['url']);
 
@@ -68,7 +80,8 @@ export class HTTPAdapter extends BaseAdapter {
         headers[key] = value;
       });
 
-      const result: HTTPResponse = {
+      // Build HTTPResponse (use the interface)
+      const httpResponse: HTTPResponse = {
         status: response.status,
         statusText: response.statusText,
         headers,
@@ -82,22 +95,46 @@ export class HTTPAdapter extends BaseAdapter {
         `HTTP ${method} ${input.url} -> ${response.status} (${duration}ms)`
       );
 
-      // Check if we should throw on error status
-      const throwOnError = this.getInput(input, 'throwOnError', true);
-      if (throwOnError && !response.ok) {
-        throw new Error(
-          `HTTP request failed: ${response.status} ${response.statusText}`
-        );
+      // Convert to AdapterResult
+      const builder = new AdapterResultBuilder()
+        .duration(duration)
+        .log(`HTTP ${method} ${input.url}`);
+
+      if (response.ok) {
+        builder
+          .success(httpResponse)
+          .effect('network:request');
+      } else {
+        builder.failure({
+          message: `HTTP request failed: ${response.status} ${response.statusText}`,
+          code: response.status.toString(),
+          details: httpResponse,
+        });
+
+        // Check if we should throw on error status
+        const throwOnError = this.getInput(input, 'throwOnError', true);
+        if (throwOnError) {
+          const builtResult = builder.build();
+          throw new Error(builtResult.error!.message);
+        }
       }
 
-      return result;
-    } catch (error) {
+      return builder.build();
+    } catch (error: any) {
       const duration = Date.now() - startTime;
       context.log(
         `HTTP ${method} ${input.url} failed after ${duration}ms: ${error}`,
         'error'
       );
-      throw error;
+      
+      return new AdapterResultBuilder()
+        .duration(duration)
+        .failure({
+          message: error.message,
+          stack: error.stack,
+        })
+        .log(`HTTP request error: ${error.message}`)
+        .build();
     }
   }
 
