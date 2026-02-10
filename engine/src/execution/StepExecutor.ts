@@ -17,6 +17,11 @@ import { ContextStore } from '../context/ContextStore.js';
 import { RetryPolicy } from '../automation/RetryPolicy.js';
 import { BackoffStrategy } from '../automation/BackoffStrategy.js';
 import { TimeoutManager } from '../automation/TimeoutManager.js';
+import { DriverResolver } from './drivers/DriverResolver.js';
+import { AdapterDriver } from './drivers/AdapterDriver.js';
+import type { DriverStep, DriverContext } from './drivers/ExecutionDriver.js';
+import { AdapterRegistry } from '../adapters/AdapterRegistry.js';
+import type { Adapter } from '@dev-ecosystem/core';
 
 /**
  * Step execution result
@@ -67,21 +72,58 @@ export interface StepAdapter {
 
 /**
  * Step executor with retry and timeout logic
+ * 
+ * Uses driver system for pluggable execution strategies.
+ * Maintains backward compatibility with legacy StepAdapter interface.
  */
 export class StepExecutor {
+  // Legacy adapter support (backward compatibility)
   private adapters = new Map<string, StepAdapter>();
+  
+  // Modern driver system
+  private driverResolver = new DriverResolver();
+  private adapterRegistry = new AdapterRegistry();
+  private adapterDriver?: AdapterDriver;
+  
   private resolver = new VariableResolver();
   private contextStore?: ContextStore;
   private retryPolicy?: RetryPolicy;
   private timeoutManager?: TimeoutManager;
 
   /**
-   * Register an adapter
+   * Register an adapter (legacy interface - backward compatibility)
    * 
    * @param adapter - Adapter to register
+   * @deprecated Use registerModernAdapter() for new code
    */
   registerAdapter(adapter: StepAdapter): void {
     this.adapters.set(adapter.name, adapter);
+  }
+  
+  /**
+   * Register a modern adapter with driver system
+   * 
+   * @param adapter - Adapter implementing @dev-ecosystem/core Adapter interface
+   */
+  registerModernAdapter(adapter: Adapter): void {
+    this.adapterRegistry.register(adapter);
+    
+    // Initialize AdapterDriver if not already done
+    if (!this.adapterDriver) {
+      this.adapterDriver = new AdapterDriver(this.adapterRegistry);
+      this.driverResolver.register(this.adapterDriver);
+    }
+  }
+  
+  /**
+   * Register multiple modern adapters
+   * 
+   * @param adapters - Array of adapters
+   */
+  registerModernAdapters(adapters: Adapter[]): void {
+    for (const adapter of adapters) {
+      this.registerModernAdapter(adapter);
+    }
   }
 
   /**
@@ -109,6 +151,24 @@ export class StepExecutor {
    */
   setTimeoutManager(timeoutManager: TimeoutManager): void {
     this.timeoutManager = timeoutManager;
+  }
+  
+  /**
+   * Get driver resolver (for advanced use cases)
+   * 
+   * @returns Driver resolver instance
+   */
+  getDriverResolver(): DriverResolver {
+    return this.driverResolver;
+  }
+  
+  /**
+   * Get adapter registry (for advanced use cases)
+   * 
+   * @returns Adapter registry instance
+   */
+  getAdapterRegistry(): AdapterRegistry {
+    return this.adapterRegistry;
   }
 
   /**
@@ -282,6 +342,71 @@ export class StepExecutor {
     input: Record<string, any>,
     context: any
   ): Promise<any> {
+    // Try driver system first (modern approach)
+    if (this.adapterDriver) {
+      const driverStep = this.convertToDriverStep(step, input);
+      const driverContext = this.convertToDriverContext(step, context);
+      
+      try {
+        const result = await this.executeWithDriver(driverStep, driverContext, step);
+        return result.output;
+      } catch (error) {
+        // If driver fails, fall back to legacy adapter if available
+        if (this.adapters.has(step.adapter)) {
+          return this.executeWithLegacyAdapter(step, input, context);
+        }
+        throw error;
+      }
+    }
+    
+    // Fall back to legacy adapter system
+    return this.executeWithLegacyAdapter(step, input, context);
+  }
+  
+  /**
+   * Execute using driver system
+   */
+  private async executeWithDriver(
+    driverStep: DriverStep,
+    driverContext: DriverContext,
+    step: ParsedStep
+  ): Promise<any> {
+    const driver = this.driverResolver.resolve(driverStep);
+    
+    // Apply timeout if configured
+    if (step.timeout || this.timeoutManager) {
+      const timeoutMs = step.timeout
+        ? this.parseTimeoutString(step.timeout)
+        : 30000;
+      
+      if (this.timeoutManager) {
+        return TimeoutManager.execute(
+          () => driver.execute(driverStep, driverContext),
+          {
+            timeoutMs,
+            operation: `Step: ${step.id}`,
+          }
+        );
+      }
+      
+      return this.withTimeout(
+        driver.execute(driverStep, driverContext),
+        timeoutMs,
+        step.id
+      );
+    }
+    
+    return driver.execute(driverStep, driverContext);
+  }
+  
+  /**
+   * Execute using legacy adapter (backward compatibility)
+   */
+  private async executeWithLegacyAdapter(
+    step: ParsedStep,
+    input: Record<string, any>,
+    context: any
+  ): Promise<any> {
     const adapter = this.adapters.get(step.adapter);
 
     if (!adapter) {
@@ -295,7 +420,7 @@ export class StepExecutor {
 
     // Apply timeout if configured
     if (step.timeout || this.timeoutManager) {
-      const timeoutMs = step.timeout
+      const timeoutMs = step.timeout 
         ? this.parseTimeoutString(step.timeout)
         : 30000; // Default 30 seconds
 
@@ -309,14 +434,52 @@ export class StepExecutor {
           }
         );
       }
-
+      
       // Fallback to local timeout implementation
       return this.withTimeout(executionPromise, timeoutMs, step.id);
     }
 
     return executionPromise;
   }
-
+  
+  /**
+   * Convert ParsedStep to DriverStep
+   */
+  private convertToDriverStep(step: ParsedStep, input: Record<string, any>): DriverStep {
+    return {
+      id: step.id,
+      name: step.name,
+      uses: step.action,
+      with: input,
+      when: step.when,
+      retry: step.retry,
+      timeout: step.timeout,
+      continueOnError: step.continueOnError,
+    };
+  }
+  
+  /**
+   * Convert execution context to DriverContext
+   */
+  private convertToDriverContext(step: ParsedStep, context: any): DriverContext {
+    const resolutionContext = this.contextStore?.getResolutionContext() || context;
+    
+    return {
+      stepId: step.id,
+      executionId: resolutionContext.run?.id || 'unknown',
+      workflowName: resolutionContext.workflow?.name || 'unknown',
+      log: (message: string, level?: 'info' | 'warn' | 'error' | 'debug') => {
+        console.log(`[${level || 'info'}] ${message}`);
+      },
+      timeout: step.timeout ? this.parseTimeoutString(step.timeout) : undefined,
+      env: resolutionContext.env || {},
+      secrets: resolutionContext.secrets || {},
+      stepOutputs: resolutionContext.steps ? Object.fromEntries(resolutionContext.steps) : {},
+      inputs: resolutionContext.inputs || {},
+      workflowContext: resolutionContext.context || {},
+    };
+  }
+  
   /**
    * Parse timeout string to milliseconds
    * @param timeout - Timeout string like "30s", "5m", "1h"

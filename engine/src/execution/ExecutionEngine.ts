@@ -362,10 +362,27 @@ export class ExecutionEngine {
   /**
    * Register a step adapter
    * 
-   * @param adapter - Adapter instance
+   * @param adapter - Adapter instance (supports both legacy and modern interfaces)
    */
   registerAdapter(adapter: any): void {
-    this.stepExecutor.registerAdapter(adapter);
+    // Check if it's a modern adapter (has supports method from @dev-ecosystem/core)
+    if (typeof adapter.supports === 'function') {
+      this.stepExecutor.registerModernAdapter(adapter);
+    } else {
+      // Legacy adapter interface
+      this.stepExecutor.registerAdapter(adapter);
+    }
+  }
+  
+  /**
+   * Register multiple adapters
+   * 
+   * @param adapters - Array of adapter instances
+   */
+  registerAdapters(adapters: any[]): void {
+    for (const adapter of adapters) {
+      this.registerAdapter(adapter);
+    }
   }
   
   /**
