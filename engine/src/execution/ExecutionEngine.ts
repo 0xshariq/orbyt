@@ -13,7 +13,7 @@
  * @module execution
  */
 
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
 import { WorkflowParser } from '../parser/WorkflowParser.js';
 import { WorkflowExecutor, type WorkflowResult, type ExecutionOptions } from './WorkflowExecutor.js';
@@ -24,6 +24,10 @@ import { InMemoryQueue } from '../queue/InMemoryQueue.js';
 import { JobPriority, createJob } from '../queue/JobQueue.js';
 import { RetryPolicy } from '../automation/RetryPolicy.js';
 import { TimeoutManager } from '../automation/TimeoutManager.js';
+import { EventBus } from '../events/EventBus.js';
+import { HookManager } from '../hooks/HookManager.js';
+import { EngineEventType, createEvent } from '../events/EngineEvents.js';
+import type { LifecycleHook } from '../hooks/LifecycleHooks.js';
 
 /**
  * Execution trigger type
@@ -120,6 +124,10 @@ export class ExecutionEngine {
   private stepExecutor: StepExecutor;
   private workflowExecutor: WorkflowExecutor;
   
+  // Event system
+  private eventBus: EventBus;
+  private hookManager: HookManager;
+  
   // Execution tracking
   private executions = new Map<string, WorkflowExecutionStatus>();
   private runningExecutions = new Set<string>();
@@ -138,10 +146,20 @@ export class ExecutionEngine {
       timeoutManager: config.timeoutManager,
     };
     
+    // Initialize event system
+    this.eventBus = new EventBus();
+    this.hookManager = new HookManager();
+    
     // Initialize components
     this.queue = this.config.queue;
     this.stepExecutor = new StepExecutor();
     this.workflowExecutor = new WorkflowExecutor(this.stepExecutor);
+    
+    // Pass event bus and hook manager to executors
+    this.stepExecutor.setEventBus(this.eventBus);
+    this.stepExecutor.setHookManager(this.hookManager);
+    this.workflowExecutor.setEventBus(this.eventBus);
+    this.workflowExecutor.setHookManager(this.hookManager);
     
     // Configure StepExecutor with automation policies
     if (this.config.retryPolicy) {
@@ -173,6 +191,11 @@ export class ExecutionEngine {
     }
     
     this.isRunning = true;
+    
+    // Emit engine started event
+    await this.eventBus.emit(createEvent(EngineEventType.ENGINE_STARTED, {
+      timestamp: Date.now(),
+    }));
     
     // Start scheduler if enabled
     if (this.scheduler) {
@@ -209,6 +232,12 @@ export class ExecutionEngine {
     if (this.runningExecutions.size > 0) {
       console.warn(`${this.runningExecutions.size} executions still running after timeout`);
     }
+    
+    // Emit engine stopped event
+    await this.eventBus.emit(createEvent(EngineEventType.ENGINE_STOPPED, {
+      timestamp: Date.now(),
+      runningExecutions: this.runningExecutions.size,
+    }));
   }
   
   /**
@@ -401,6 +430,42 @@ export class ExecutionEngine {
    */
   getQueue(): JobQueue {
     return this.queue;
+  }
+  
+  /**
+   * Get event bus instance
+   * 
+   * @returns EventBus
+   */
+  getEventBus(): EventBus {
+    return this.eventBus;
+  }
+  
+  /**
+   * Get hook manager instance
+   * 
+   * @returns HookManager
+   */
+  getHookManager(): HookManager {
+    return this.hookManager;
+  }
+  
+  /**
+   * Register a lifecycle hook
+   * 
+   * @param hook - Lifecycle hook implementation
+   */
+  registerHook(hook: LifecycleHook): void {
+    this.hookManager.register(hook);
+  }
+  
+  /**
+   * Register multiple lifecycle hooks
+   * 
+   * @param hooks - Array of lifecycle hook implementations
+   */
+  registerHooks(hooks: LifecycleHook[]): void {
+    this.hookManager.registerMany(hooks);
   }
   
   /**

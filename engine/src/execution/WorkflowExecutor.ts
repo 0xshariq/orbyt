@@ -20,6 +20,10 @@ import { createExecutionNode, type ExecutionNode } from './ExecutionNode.js';
 import { WorkflowGuard } from '../guards/WorkflowGuard.js';
 import { StepGuard } from '../guards/StepGuard.js';
 import { ContextStore } from '../context/ContextStore.js';
+import type { EventBus } from '../events/EventBus.js';
+import type { HookManager } from '../hooks/HookManager.js';
+import { EngineEventType, createEvent } from '../events/EngineEvents.js';
+import type { WorkflowHookContext } from '../hooks/LifecycleHooks.js';
 
 /**
  * Workflow execution result
@@ -89,10 +93,26 @@ export class WorkflowExecutor {
   private stepExecutor: StepExecutor;
   private executionId: string;
   private contextStore?: ContextStore;
+  private eventBus?: EventBus;
+  private hookManager?: HookManager;
 
   constructor(stepExecutor: StepExecutor) {
     this.stepExecutor = stepExecutor;
     this.executionId = this.generateExecutionId();
+  }
+  
+  /**
+   * Set event bus for emitting workflow lifecycle events
+   */
+  setEventBus(eventBus: EventBus): void {
+    this.eventBus = eventBus;
+  }
+  
+  /**
+   * Set hook manager for calling lifecycle hooks
+   */
+  setHookManager(hookManager: HookManager): void {
+    this.hookManager = hookManager;
   }
 
   /**
@@ -108,12 +128,48 @@ export class WorkflowExecutor {
   ): Promise<WorkflowResult> {
     const startedAt = new Date();
     const stepResults = new Map<string, StepResult>();
+    const workflowName = workflow.metadata?.name || workflow.name || 'unnamed';
 
     // Validate workflow
     this.validateWorkflow(workflow);
 
     // Create ContextStore for this execution
     this.contextStore = this.createContextStore(workflow, options);
+    
+    // Create hook context
+    const hookContext: WorkflowHookContext = {
+      workflowId: workflow.name || this.executionId,
+      workflowName,
+      runId: this.executionId,
+      triggeredBy: options.triggeredBy,
+      inputs: options.inputs,
+      env: options.env,
+      metadata: workflow.metadata,
+      startTime: startedAt.getTime(),
+    };
+    
+    // Emit workflow.started event
+    if (this.eventBus) {
+      await this.eventBus.emit(createEvent(
+        EngineEventType.WORKFLOW_STARTED,
+        {
+          workflowId: workflow.name || this.executionId,
+          workflowName,
+          runId: this.executionId,
+          triggeredBy: options.triggeredBy,
+          inputs: options.inputs,
+        },
+        {
+          workflowId: workflow.name || this.executionId,
+          runId: this.executionId,
+        }
+      ));
+    }
+    
+    // Call beforeWorkflow hook
+    if (this.hookManager) {
+      await this.hookManager.runBeforeWorkflow(hookContext);
+    }
     
     // Configure StepExecutor with ContextStore
     this.stepExecutor.setContextStore(this.contextStore);
@@ -156,7 +212,7 @@ export class WorkflowExecutor {
       }
 
       const completedAt = new Date();
-      return this.buildResult(
+      const result = this.buildResult(
         workflow,
         stepResults,
         'success',
@@ -164,11 +220,61 @@ export class WorkflowExecutor {
         completedAt,
         plan
       );
+      
+      // Emit workflow.completed event
+      if (this.eventBus) {
+        await this.eventBus.emit(createEvent(
+          EngineEventType.WORKFLOW_COMPLETED,
+          {
+            workflowId: workflow.name || this.executionId,
+            workflowName,
+            runId: this.executionId,
+            durationMs: result.duration,
+            stepCount: result.metadata.totalSteps,
+          },
+          {
+            workflowId: workflow.name || this.executionId,
+            runId: this.executionId,
+          }
+        ));
+      }
+      
+      // Call afterWorkflow hook
+      if (this.hookManager) {
+        await this.hookManager.runAfterWorkflow(hookContext);
+      }
+      
+      return result;
     } catch (error) {
       const completedAt = new Date();
       const status = error instanceof Error && error.message.includes('timeout') 
         ? 'timeout' 
         : 'failure';
+      
+      const workflowError = error instanceof Error ? error : new Error(String(error));
+      
+      // Emit workflow.failed event
+      if (this.eventBus) {
+        await this.eventBus.emit(createEvent(
+          EngineEventType.WORKFLOW_FAILED,
+          {
+            workflowId: workflow.name || this.executionId,
+            workflowName,
+            runId: this.executionId,
+            error: workflowError.message,
+            durationMs: completedAt.getTime() - startedAt.getTime(),
+          },
+          {
+            workflowId: workflow.name || this.executionId,
+            runId: this.executionId,
+          }
+        ));
+      }
+      
+      // Call onError hook
+      if (this.hookManager) {
+        await this.hookManager.runOnError(hookContext, workflowError);
+      }
       
       return this.buildResult(
         workflow,
@@ -177,7 +283,7 @@ export class WorkflowExecutor {
         startedAt,
         completedAt,
         plan,
-        error instanceof Error ? error : new Error(String(error))
+        workflowError
       );
     }
   }

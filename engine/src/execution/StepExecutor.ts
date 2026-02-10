@@ -22,6 +22,10 @@ import { AdapterDriver } from './drivers/AdapterDriver.js';
 import type { DriverStep, DriverContext } from './drivers/ExecutionDriver.js';
 import { AdapterRegistry } from '../adapters/AdapterRegistry.js';
 import type { Adapter } from '@dev-ecosystem/core';
+import type { EventBus } from '../events/EventBus.js';
+import type { HookManager } from '../hooks/HookManager.js';
+import { EngineEventType, createEvent } from '../events/EngineEvents.js';
+import type { StepHookContext } from '../hooks/LifecycleHooks.js';
 
 /**
  * Step execution result
@@ -89,6 +93,10 @@ export class StepExecutor {
   private contextStore?: ContextStore;
   private retryPolicy?: RetryPolicy;
   private timeoutManager?: TimeoutManager;
+  
+  // Event system
+  private eventBus?: EventBus;
+  private hookManager?: HookManager;
 
   /**
    * Register an adapter (legacy interface - backward compatibility)
@@ -154,6 +162,20 @@ export class StepExecutor {
   }
   
   /**
+   * Set event bus for emitting step lifecycle events
+   */
+  setEventBus(eventBus: EventBus): void {
+    this.eventBus = eventBus;
+  }
+  
+  /**
+   * Set hook manager for calling lifecycle hooks
+   */
+  setHookManager(hookManager: HookManager): void {
+    this.hookManager = hookManager;
+  }
+  
+  /**
    * Get driver resolver (for advanced use cases)
    * 
    * @returns Driver resolver instance
@@ -197,6 +219,25 @@ export class StepExecutor {
 
     // Check conditional execution
     if (step.when && !this.evaluateCondition(step.when, context)) {
+      // Emit step.skipped event
+      if (this.eventBus) {
+        await this.eventBus.emit(createEvent(
+          EngineEventType.STEP_SKIPPED,
+          {
+            workflowId: context.workflow?.id,
+            runId: context.run?.id,
+            stepId: step.id,
+            stepName: step.name || step.id,
+            adapterType: step.adapter,
+          },
+          {
+            workflowId: context.workflow?.id,
+            runId: context.run?.id,
+            stepId: step.id,
+          }
+        ));
+      }
+      
       return {
         stepId: step.id,
         status: 'skipped',
@@ -206,6 +247,43 @@ export class StepExecutor {
         startedAt,
         completedAt: new Date(),
       };
+    }
+
+    // Create hook context
+    const hookContext: StepHookContext = {
+      workflowId: context.workflow?.id || 'unknown',
+      workflowName: context.workflow?.name || 'unknown',
+      runId: context.run?.id || 'unknown',
+      stepId: step.id,
+      stepName: step.name || step.id,
+      adapterType: step.adapter,
+      attempt: 1,
+      inputs: step.input,
+      startTime: startedAt.getTime(),
+    };
+    
+    // Emit step.started event
+    if (this.eventBus) {
+      await this.eventBus.emit(createEvent(
+        EngineEventType.STEP_STARTED,
+        {
+          workflowId: context.workflow?.id,
+          runId: context.run?.id,
+          stepId: step.id,
+          stepName: step.name || step.id,
+          adapterType: step.adapter,
+        },
+        {
+          workflowId: context.workflow?.id,
+          runId: context.run?.id,
+          stepId: step.id,
+        }
+      ));
+    }
+    
+    // Call beforeStep hook
+    if (this.hookManager) {
+      await this.hookManager.runBeforeStep(hookContext);
     }
 
     // Resolve variables in input
@@ -237,6 +315,9 @@ export class StepExecutor {
     // Retry loop
     for (attempts = 1; attempts <= maxAttempts; attempts++) {
       try {
+        // Update hook context attempt number
+        hookContext.attempt = attempts;
+        
         // Update attempt count in ContextStore
         if (this.contextStore && attempts > 1) {
           this.contextStore.incrementAttempt();
@@ -260,12 +341,45 @@ export class StepExecutor {
         }
 
         const completedAt = new Date();
+        const duration = completedAt.getTime() - startedAt.getTime();
+        
+        // Update hook context
+        hookContext.outputs = output;
+        hookContext.endTime = completedAt.getTime();
+        hookContext.durationMs = duration;
+        
+        // Emit step.completed event
+        if (this.eventBus) {
+          await this.eventBus.emit(createEvent(
+            EngineEventType.STEP_COMPLETED,
+            {
+              workflowId: context.workflow?.id,
+              runId: context.run?.id,
+              stepId: step.id,
+              stepName: step.name || step.id,
+              adapterType: step.adapter,
+              durationMs: duration,
+              output,
+            },
+            {
+              workflowId: context.workflow?.id,
+              runId: context.run?.id,
+              stepId: step.id,
+            }
+          ));
+        }
+        
+        // Call afterStep hook
+        if (this.hookManager) {
+          await this.hookManager.runAfterStep(hookContext);
+        }
+        
         return {
           stepId: step.id,
           status: 'success',
           output,
           attempts,
-          duration: completedAt.getTime() - startedAt.getTime(),
+          duration,
           startedAt,
           completedAt,
         };
@@ -285,6 +399,33 @@ export class StepExecutor {
 
         // Check if timeout error
         if (lastError.message.includes('timeout')) {
+          // Emit step.timeout event
+          if (this.eventBus) {
+            await this.eventBus.emit(createEvent(
+              EngineEventType.STEP_TIMEOUT,
+              {
+                workflowId: context.workflow?.id,
+                runId: context.run?.id,
+                stepId: step.id,
+                stepName: step.name || step.id,
+                adapterType: step.adapter,
+                error: lastError.message,
+                attempt: attempts,
+                willRetry: false,
+              },
+              {
+                workflowId: context.workflow?.id,
+                runId: context.run?.id,
+                stepId: step.id,
+              }
+            ));
+          }
+          
+          // Call onError hook
+          if (this.hookManager) {
+            await this.hookManager.runOnError(hookContext, lastError);
+          }
+          
           const completedAt = new Date();
           return {
             stepId: step.id,
@@ -310,10 +451,35 @@ export class StepExecutor {
 
         // Retry if more attempts available
         if (attempts < maxAttempts) {
-          // Use backoff strategy if available
+          // Emit step.retrying event
           const backoffMs = backoffStrategy
             ? backoffStrategy.calculateDelay(attempts)
             : (step.retry?.delay || 1000) * (step.retry?.backoff === 'exponential' ? Math.pow(2, attempts - 1) : 1);
+          
+          if (this.eventBus) {
+            await this.eventBus.emit(createEvent(
+              EngineEventType.STEP_RETRYING,
+              {
+                workflowId: context.workflow?.id,
+                runId: context.run?.id,
+                stepId: step.id,
+                stepName: step.name || step.id,
+                attempt: attempts,
+                maxAttempts,
+                delayMs: backoffMs,
+              },
+              {
+                workflowId: context.workflow?.id,
+                runId: context.run?.id,
+                stepId: step.id,
+              }
+            ));
+          }
+          
+          // Call onRetry hook
+          if (this.hookManager) {
+            await this.hookManager.runOnRetry(hookContext);
+          }
 
           await this.sleep(backoffMs);
         }
@@ -322,13 +488,42 @@ export class StepExecutor {
 
     // All attempts failed
     const completedAt = new Date();
+    const duration = completedAt.getTime() - startedAt.getTime();
+    
+    // Emit step.failed event
+    if (this.eventBus && lastError) {
+      await this.eventBus.emit(createEvent(
+        EngineEventType.STEP_FAILED,
+        {
+          workflowId: context.workflow?.id,
+          runId: context.run?.id,
+          stepId: step.id,
+          stepName: step.name || step.id,
+          adapterType: step.adapter,
+          error: lastError.message,
+          attempt: attempts,
+          willRetry: false,
+        },
+        {
+          workflowId: context.workflow?.id,
+          runId: context.run?.id,
+          stepId: step.id,
+        }
+      ));
+    }
+    
+    // Call onError hook
+    if (this.hookManager && lastError) {
+      await this.hookManager.runOnError(hookContext, lastError);
+    }
+    
     return {
       stepId: step.id,
       status: 'failure',
       output: null,
       error: lastError,
       attempts,
-      duration: completedAt.getTime() - startedAt.getTime(),
+      duration,
       startedAt,
       completedAt,
     };
