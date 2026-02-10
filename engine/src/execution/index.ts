@@ -6,9 +6,15 @@
  * - ExecutionPlan: Coordinates graph analysis to create execution plans
  * - StepExecutor: Executes individual steps with retry/timeout
  * - WorkflowExecutor: Orchestrates full workflow execution
+ * - ExecutionEngine: Main orchestrator integrating scheduling, queueing, and execution
+ * - Drivers: Pluggable execution strategies (optional enhancement)
  */
 
 export * from './ExecutionNode.js';
 export * from './ExecutionPlan.js';
 export * from './StepExecutor.js';
 export * from './WorkflowExecutor.js';
+export * from './ExecutionEngine.js';
+
+// Optional: Driver system for advanced execution strategies
+export * from './drivers/index.js';

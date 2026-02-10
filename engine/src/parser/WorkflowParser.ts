@@ -21,6 +21,19 @@ export interface ParsedWorkflow {
   description?: string;
   version: string;
   kind: string;
+  tags?: string[];
+  owner?: string;
+  
+  /** Metadata object (if provided separately) */
+  metadata?: {
+    name?: string;
+    description?: string;
+    tags?: string[];
+    owner?: string;
+    version?: string;
+    createdAt?: string;
+    updatedAt?: string;
+  };
   
   /** Workflow steps */
   steps: ParsedStep[];

@@ -19,6 +19,7 @@ import { ExecutionPlanner, type ExecutionPlan } from './ExecutionPlan.js';
 import { createExecutionNode, type ExecutionNode } from './ExecutionNode.js';
 import { WorkflowGuard } from '../guards/WorkflowGuard.js';
 import { StepGuard } from '../guards/StepGuard.js';
+import { ContextStore } from '../context/ContextStore.js';
 
 /**
  * Workflow execution result
@@ -68,11 +69,17 @@ export interface ExecutionOptions {
   /** Workflow inputs */
   inputs?: Record<string, any>;
   
+  /** Resolved secrets */
+  secrets?: Record<string, any>;
+  
   /** Additional context */
   context?: Record<string, any>;
   
   /** Continue on step failure */
   continueOnError?: boolean;
+  
+  /** Trigger source (who/what triggered this execution) */
+  triggeredBy?: string;
 }
 
 /**
@@ -81,6 +88,7 @@ export interface ExecutionOptions {
 export class WorkflowExecutor {
   private stepExecutor: StepExecutor;
   private executionId: string;
+  private contextStore?: ContextStore;
 
   constructor(stepExecutor: StepExecutor) {
     this.stepExecutor = stepExecutor;
@@ -104,6 +112,12 @@ export class WorkflowExecutor {
     // Validate workflow
     this.validateWorkflow(workflow);
 
+    // Create ContextStore for this execution
+    this.contextStore = this.createContextStore(workflow, options);
+    
+    // Configure StepExecutor with ContextStore
+    this.stepExecutor.setContextStore(this.contextStore);
+
     // Convert ParsedStep[] to ExecutionNode[] for planning
     const executionNodes = this.convertToExecutionNodes(workflow.steps);
 
@@ -113,8 +127,8 @@ export class WorkflowExecutor {
     // Create execution plan
     const plan = ExecutionPlanner.plan(executionNodes);
 
-    // Build initial context
-    const context = this.buildContext(workflow, options);
+    // Get context from ContextStore
+    const context = this.contextStore.getResolutionContext();
 
     // Execute with timeout if specified
     try {
@@ -209,12 +223,13 @@ export class WorkflowExecutor {
     for (const phase of plan.phases) {
       // Execute all nodes in phase concurrently
       // Map ExecutionNode back to ParsedStep for execution
+      // Note: StepExecutor will use ContextStore automatically (no need to pass context)
       const phasePromises = phase.nodes.map(node => {
         const step = stepMap.get(node.stepId);
         if (!step) {
           throw new Error(`Step not found: ${node.stepId}`);
         }
-        return this.stepExecutor.execute(step, context);
+        return this.stepExecutor.execute(step);
       });
 
       const results = await Promise.allSettled(phasePromises);
@@ -304,31 +319,41 @@ export class WorkflowExecutor {
   }
 
   /**
-   * Build execution context
+   * Create ContextStore for workflow execution
    */
-  private buildContext(
+  private createContextStore(
     workflow: ParsedWorkflow,
     options: ExecutionOptions
-  ): ResolutionContext {
-    return {
+  ): ContextStore {
+    // Use metadata object if available, otherwise use top-level fields
+    const name = workflow.metadata?.name || workflow.name || 'unnamed-workflow';
+    const description = workflow.metadata?.description || workflow.description;
+    const tags = workflow.metadata?.tags || workflow.tags;
+    const owner = workflow.metadata?.owner || workflow.owner;
+    const version = workflow.metadata?.version || workflow.version;
+    
+    return new ContextStore({
+      executionId: this.executionId,
+      workflowId: name,
+      workflowName: name,
+      version,
+      description,
+      tags,
+      owner,
+      inputs: options.inputs,
+      secrets: options.secrets,
       env: {
         ...(workflow.context || {}),
         ...options.env,
-        ...options.inputs,
       },
-      steps: new Map(),
-      workflow: {
-        id: workflow.name || 'unnamed-workflow',
-        name: workflow.name || 'unnamed-workflow',
-        version: workflow.version,
-      },
-      run: {
-        id: this.executionId,
-        timestamp: new Date(),
-        attempt: 1,
+      metadata: {
+        createdAt: workflow.metadata?.createdAt || new Date().toISOString(),
+        updatedAt: workflow.metadata?.updatedAt,
+        annotations: {},
       },
       context: options.context,
-    };
+      triggeredBy: options.triggeredBy,
+    });
   }
 
   /**
