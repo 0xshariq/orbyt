@@ -4,12 +4,19 @@
  * Executes individual workflow steps with retry logic, timeout handling,
  * and adapter invocation.
  * 
+ * Integrates with ContextStore for state management and uses automation
+ * policies (RetryPolicy, BackoffStrategy, TimeoutManager) for reliability.
+ * 
  * @module execution
  */
 
 import type { ParsedStep } from '../parser/StepParser.js';
 import type { ResolutionContext } from '../context/VariableResolver.js';
 import { VariableResolver } from '../context/VariableResolver.js';
+import { ContextStore } from '../context/ContextStore.js';
+import { RetryPolicy } from '../automation/RetryPolicy.js';
+import { BackoffStrategy } from '../automation/BackoffStrategy.js';
+import { TimeoutManager } from '../automation/TimeoutManager.js';
 
 /**
  * Step execution result
@@ -17,25 +24,25 @@ import { VariableResolver } from '../context/VariableResolver.js';
 export interface StepResult {
   /** Step ID */
   stepId: string;
-  
+
   /** Execution status */
   status: 'success' | 'failure' | 'skipped' | 'timeout';
-  
+
   /** Step output data */
   output: any;
-  
+
   /** Error if failed */
   error?: Error;
-  
+
   /** Execution duration (ms) */
   duration: number;
-  
+
   /** Number of retry attempts */
   attempts: number;
-  
+
   /** Start timestamp */
   startedAt: Date;
-  
+
   /** End timestamp */
   completedAt: Date;
 }
@@ -46,7 +53,7 @@ export interface StepResult {
 export interface StepAdapter {
   /** Adapter name */
   name: string;
-  
+
   /**
    * Execute step with the adapter
    * 
@@ -64,6 +71,9 @@ export interface StepAdapter {
 export class StepExecutor {
   private adapters = new Map<string, StepAdapter>();
   private resolver = new VariableResolver();
+  private contextStore?: ContextStore;
+  private retryPolicy?: RetryPolicy;
+  private timeoutManager?: TimeoutManager;
 
   /**
    * Register an adapter
@@ -75,19 +85,55 @@ export class StepExecutor {
   }
 
   /**
+   * Set context store for state management
+   * 
+   * @param contextStore - Context store instance
+   */
+  setContextStore(contextStore: ContextStore): void {
+    this.contextStore = contextStore;
+  }
+
+  /**
+   * Set retry policy for step execution
+   * 
+   * @param retryPolicy - Retry policy instance
+   */
+  setRetryPolicy(retryPolicy: RetryPolicy): void {
+    this.retryPolicy = retryPolicy;
+  }
+
+  /**
+   * Set timeout manager for step execution
+   * 
+   * @param timeoutManager - Timeout manager instance
+   */
+  setTimeoutManager(timeoutManager: TimeoutManager): void {
+    this.timeoutManager = timeoutManager;
+  }
+
+  /**
    * Execute a step
    * 
    * @param step - Step to execute
-   * @param context - Resolution context
+   * @param providedContext - Optional resolution context (if not using ContextStore)
    * @returns Step execution result
    */
   async execute(
     step: ParsedStep,
-    context: ResolutionContext
+    providedContext?: ResolutionContext
   ): Promise<StepResult> {
     const startedAt = new Date();
     let attempts = 0;
     let lastError: Error | undefined;
+
+    // Get resolution context from ContextStore or use provided
+    const context = this.contextStore
+      ? this.contextStore.getResolutionContext()
+      : providedContext;
+
+    if (!context) {
+      throw new Error('No resolution context available. Either set ContextStore or provide context.');
+    }
 
     // Check conditional execution
     if (step.when && !this.evaluateCondition(step.when, context)) {
@@ -105,19 +151,53 @@ export class StepExecutor {
     // Resolve variables in input
     const resolvedInput = this.resolver.resolve(step.input, context);
 
-    // Retry loop
-    const maxAttempts = step.retry?.max || 1;
-    let backoffMs = step.retry?.delay || 1000;
-    const backoffStrategy = step.retry?.backoff || 'linear';
+    // Determine retry configuration
+    let maxAttempts = step.retry?.max || 1;
+    let backoffStrategy: BackoffStrategy | undefined;
 
+    // Use automation policy if available
+    if (this.retryPolicy) {
+      // Use policy's max attempts if configured
+      maxAttempts = Math.max(maxAttempts, this.retryPolicy.getMaxAttempts() || 1);
+
+      // Get backoff strategy from policy
+      backoffStrategy = this.retryPolicy.getBackoffStrategy();
+    } else if (step.retry) {
+      // No policy but step has retry config - create strategy from step config
+      const strategyType = step.retry.backoff || 'linear';
+      backoffStrategy = new BackoffStrategy({
+        type: strategyType,
+        baseDelayMs: step.retry.delay || 1000,
+        maxDelayMs: 30000,
+        multiplier: 2,
+        jitter: 0.1,
+      });
+    }
+
+    // Retry loop
     for (attempts = 1; attempts <= maxAttempts; attempts++) {
       try {
+        // Update attempt count in ContextStore
+        if (this.contextStore && attempts > 1) {
+          this.contextStore.incrementAttempt();
+        }
+
         // Execute with timeout
-        const output = await this.executeWithTimeout(
+        let output = await this.executeWithTimeout(
           step,
           resolvedInput,
           context
         );
+
+        // Apply output mapping if defined
+        if (step.outputs) {
+          output = this.mapOutputs(output, step.outputs, context);
+        }
+
+        // Store output in ContextStore if available
+        if (this.contextStore) {
+          this.contextStore.setStepOutput(step.id, output);
+        }
 
         const completedAt = new Date();
         return {
@@ -131,6 +211,17 @@ export class StepExecutor {
         };
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Enhance error with step context
+        if (lastError.message && !lastError.message.includes(step.id)) {
+          lastError = new Error(
+            `Step '${step.id}' failed: ${lastError.message}`
+          );
+          // Preserve original stack trace
+          if (error instanceof Error && error.stack) {
+            lastError.stack = error.stack;
+          }
+        }
 
         // Check if timeout error
         if (lastError.message.includes('timeout')) {
@@ -147,13 +238,24 @@ export class StepExecutor {
           };
         }
 
+        // Check if should retry using policy
+        if (this.retryPolicy && attempts < maxAttempts) {
+          const shouldRetry = this.retryPolicy.shouldRetry(lastError, attempts);
+
+          if (!shouldRetry) {
+            // Policy says don't retry
+            break;
+          }
+        }
+
         // Retry if more attempts available
         if (attempts < maxAttempts) {
+          // Use backoff strategy if available
+          const backoffMs = backoffStrategy
+            ? backoffStrategy.calculateDelay(attempts)
+            : (step.retry?.delay || 1000) * (step.retry?.backoff === 'exponential' ? Math.pow(2, attempts - 1) : 1);
+
           await this.sleep(backoffMs);
-          // Apply backoff strategy
-          if (backoffStrategy === 'exponential') {
-            backoffMs *= 2;
-          }
         }
       }
     }
@@ -181,7 +283,7 @@ export class StepExecutor {
     context: any
   ): Promise<any> {
     const adapter = this.adapters.get(step.adapter);
-    
+
     if (!adapter) {
       throw new Error(
         `Adapter '${step.adapter}' not registered. ` +
@@ -192,8 +294,23 @@ export class StepExecutor {
     const executionPromise = adapter.execute(step.action, input, context);
 
     // Apply timeout if configured
-    if (step.timeout) {
-      const timeoutMs = this.parseTimeoutString(step.timeout);
+    if (step.timeout || this.timeoutManager) {
+      const timeoutMs = step.timeout
+        ? this.parseTimeoutString(step.timeout)
+        : 30000; // Default 30 seconds
+
+      // Use TimeoutManager static method if available
+      if (this.timeoutManager) {
+        return TimeoutManager.execute(
+          () => executionPromise,
+          {
+            timeoutMs,
+            operation: `Step: ${step.id}`,
+          }
+        );
+      }
+
+      // Fallback to local timeout implementation
       return this.withTimeout(executionPromise, timeoutMs, step.id);
     }
 
@@ -258,6 +375,42 @@ export class StepExecutor {
   }
 
   /**
+   * Map raw output to defined output structure
+   * 
+   * @param rawOutput - Raw output from adapter
+   * @param outputMappings - Output mapping definitions
+   * @param context - Resolution context for variable resolution in mappings
+   * @returns Mapped output object
+   */
+  private mapOutputs(
+    rawOutput: any,
+    outputMappings: Record<string, string>,
+    context: ResolutionContext
+  ): Record<string, any> {
+    const mapped: Record<string, any> = {};
+
+    for (const [key, path] of Object.entries(outputMappings)) {
+      // Resolve path (may contain variables)
+      const resolvedPath = this.resolver.resolve(path, context) as string;
+
+      // Navigate to value in rawOutput
+      const parts = resolvedPath.split('.');
+      let value: any = rawOutput;
+
+      for (const part of parts) {
+        if (value === null || value === undefined) {
+          break;
+        }
+        value = value[part];
+      }
+
+      mapped[key] = value;
+    }
+
+    return mapped;
+  }
+
+  /**
    * Evaluate conditional expression
    * 
    * Currently simple boolean evaluation.
@@ -273,16 +426,16 @@ export class StepExecutor {
   ): boolean {
     // Resolve variables in condition
     const resolved = this.resolver.resolve(condition, context);
-    
+
     // Simple boolean evaluation
     if (typeof resolved === 'boolean') {
       return resolved;
     }
-    
+
     if (typeof resolved === 'string') {
       return resolved.toLowerCase() !== 'false' && resolved !== '0' && resolved !== '';
     }
-    
+
     return !!resolved;
   }
 
