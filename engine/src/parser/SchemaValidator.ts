@@ -107,10 +107,16 @@ export class SchemaValidator {
       }
       
       // Recursively validate nested objects
+      // Skip validation for free-form fields (user-defined content)
+      const FREE_FORM_FIELDS = ['annotations', 'context', 'with', 'outputs', 'env', 'secrets', 'inputs'];
       const value = obj[field];
+      
       if (value && typeof value === 'object' && !Array.isArray(value)) {
-        const nestedPath = path === 'root' ? field : `${path}.${field}`;
-        this.validateUnknownFields(value, nestedPath);
+        // Don't validate contents of free-form fields (they can contain any keys)
+        if (!FREE_FORM_FIELDS.includes(field)) {
+          const nestedPath = path === 'root' ? field : `${path}.${field}`;
+          this.validateUnknownFields(value, nestedPath);
+        }
       }
       
       // Validate array items (steps, triggers, etc.)
