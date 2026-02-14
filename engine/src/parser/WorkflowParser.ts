@@ -10,7 +10,7 @@
 import YAML from 'yaml';
 import { SchemaValidator } from './SchemaValidator.js';
 import { StepParser, type ParsedStep } from './StepParser.js';
-import { validateWorkflowSecurity, formatSecurityViolations } from '../security/ReservedFields.js';
+import { validateWorkflowSecurity } from '../security/ReservedFields.js';
 import type { WorkflowDefinitionZod } from '@dev-ecosystem/core';
 
 /**
@@ -24,7 +24,7 @@ export interface ParsedWorkflow {
   kind: string;
   tags?: string[];
   owner?: string;
-  
+
   /** Metadata object (if provided separately) */
   metadata?: {
     name?: string;
@@ -35,7 +35,7 @@ export interface ParsedWorkflow {
     createdAt?: string;
     updatedAt?: string;
   };
-  
+
   /** Annotations for AI and UI hints */
   annotations?: {
     'ai.intent'?: string;
@@ -43,28 +43,28 @@ export interface ParsedWorkflow {
     'ui.icon'?: string;
     [key: string]: any;
   };
-  
+
   /** Workflow steps */
   steps: ParsedStep[];
-  
+
   /** Global workflow inputs */
   inputs?: Record<string, any>;
-  
+
   /** Global environment variables */
   context?: Record<string, any>;
-  
+
   /** Secret references */
   secrets?: {
     vault?: string;
     refs?: Record<string, string>;
   };
-  
+
   /** Trigger configuration */
   triggers?: Array<{
     type: string;
     [key: string]: any;
   }>;
-  
+
   /** Defaults */
   defaults?: {
     retry?: {
@@ -75,20 +75,20 @@ export interface ParsedWorkflow {
     timeout?: string;
     adapter?: string;
   };
-  
+
   /** Policies */
   policies?: {
     failure?: 'stop' | 'continue' | 'isolate';
     concurrency?: number;
     sandbox?: 'none' | 'basic' | 'strict';
   };
-  
+
   /** Permissions */
   permissions?: any;
-  
+
   /** Resources */
   resources?: any;
-  
+
   /** Outputs */
   outputs?: Record<string, string>;
 }
@@ -102,25 +102,23 @@ export class WorkflowParser {
    * 
    * @param rawWorkflow - Raw workflow object
    * @returns Parsed workflow ready for execution
+   * @throws {SecurityError} If reserved fields are detected
    */
   static parse(rawWorkflow: unknown): ParsedWorkflow {
     // Step 0: SECURITY CHECK - Validate NO reserved fields present
     // This runs BEFORE any other validation to prevent internal field manipulation
-    const securityValidation = validateWorkflowSecurity(rawWorkflow);
-    if (!securityValidation.valid) {
-      const errorMessage = formatSecurityViolations(securityValidation);
-      throw new Error(errorMessage);
-    }
-    
+    // Throws SecurityError with structured error codes if violations found
+    validateWorkflowSecurity(rawWorkflow);
+
     // Step 1: Validate against schema (with enhanced diagnostics)
     const validated: WorkflowDefinitionZod = SchemaValidator.validate(rawWorkflow);
-    
+
     // Step 2: Parse steps from nested workflow.steps
     const steps = StepParser.parseAll(validated.workflow.steps);
-    
+
     // Step 3: Run comprehensive step validations
     StepParser.validateAll(steps);
-    
+
     // Step 4: Build parsed workflow
     const parsed: ParsedWorkflow = {
       name: validated.metadata?.name,
@@ -138,7 +136,7 @@ export class WorkflowParser {
       resources: validated.resources,
       outputs: validated.outputs,
     };
-    
+
     return parsed;
   }
 
@@ -195,7 +193,7 @@ export class WorkflowParser {
         return this.fromJSON(content);
       }
     }
-    
+
     // Auto-detect: try YAML first (more common), then JSON
     try {
       return this.fromYAML(content);
@@ -233,7 +231,7 @@ export class WorkflowParser {
     stepCount: number;
   } {
     const validated: WorkflowDefinitionZod = SchemaValidator.validate(rawWorkflow);
-    
+
     return {
       name: validated.metadata?.name,
       description: validated.metadata?.description,

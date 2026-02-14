@@ -6,10 +6,17 @@
  * Defines and guards internal/reserved fields that users MUST NEVER control.
  * These fields are engine-controlled for billing, security, and audit purposes.
  * 
- * ANY attempt to set these fields in user YAML will be REJECTED at parse time.
+ * ANY attempt to set these fields in user YAML will be REJECTED at parse time
+ * with explicit structured errors.
  * 
  * @module security
  */
+
+import { 
+  SecurityError, 
+  SecurityErrorCode, 
+  type SecurityViolationDetails 
+} from '../errors/SecurityErrors.js';
 
 /**
  * Reserved top-level workflow fields
@@ -114,6 +121,74 @@ export function isReservedAnnotation(annotationKey: string): boolean {
 }
 
 /**
+ * Determine the appropriate error code for a reserved field
+ */
+function determineErrorCode(field: string): SecurityErrorCode {
+  // Billing-related fields
+  if (field.includes('billing') || field.includes('pricing') || field.includes('cost') || field.includes('subscription')) {
+    return SecurityErrorCode.BILLING_FIELD_OVERRIDE;
+  }
+  
+  // Identity fields
+  if (field.includes('executionId') || field.includes('runId') || field.includes('traceId')) {
+    return SecurityErrorCode.IDENTITY_FIELD_OVERRIDE;
+  }
+  
+  // Ownership fields
+  if (field.includes('userId') || field.includes('workspaceId') || field.includes('subscriptionId')) {
+    return SecurityErrorCode.OWNERSHIP_FIELD_OVERRIDE;
+  }
+  
+  // Usage counter fields
+  if (field.includes('usage') || field.includes('count') || field.includes('duration')) {
+    return SecurityErrorCode.USAGE_COUNTER_OVERRIDE;
+  }
+  
+  // Internal state fields (anything starting with _)
+  if (field.startsWith('_')) {
+    return SecurityErrorCode.INTERNAL_STATE_OVERRIDE;
+  }
+  
+  // Default to reserved field override
+  return SecurityErrorCode.RESERVED_FIELD_OVERRIDE;
+}
+
+/**
+ * Get human-readable reason for why a field is protected
+ */
+function getFieldReason(field: string): string {
+  if (field.startsWith('_billing') || field.includes('billing')) {
+    return 'Billing fields control pricing and cost calculation. User manipulation would compromise revenue integrity.';
+  }
+  
+  if (field.startsWith('_internal')) {
+    return 'Internal fields contain engine state. User manipulation would break execution and audit tracking.';
+  }
+  
+  if (field.startsWith('_identity')) {
+    return 'Identity fields link execution to audit trail. User manipulation would compromise compliance.';
+  }
+  
+  if (field.startsWith('_ownership')) {
+    return 'Ownership fields determine access rights. User manipulation would be a security violation.';
+  }
+  
+  if (field.startsWith('_usage')) {
+    return 'Usage counters track resource consumption. User manipulation would compromise billing and quotas.';
+  }
+  
+  if (field.includes('executionId') || field.includes('runId')) {
+    return 'Execution identifiers must be engine-generated for audit integrity and traceability.';
+  }
+  
+  if (field.startsWith('_')) {
+    return 'Fields starting with "_" are reserved for engine internals and cannot be user-controlled.';
+  }
+  
+  return 'This field is reserved for engine control to ensure system integrity.';
+}
+
+/**
  * Scan an object for reserved field names
  * Returns array of found reserved fields
  */
@@ -139,42 +214,26 @@ export function findReservedFields(
 }
 
 /**
- * Validation result for reserved fields
- */
-export interface ReservedFieldValidation {
-  valid: boolean;
-  violations: ReservedFieldViolation[];
-}
-
-/**
- * Reserved field violation details
- */
-export interface ReservedFieldViolation {
-  location: string;        // Where the violation occurred
-  field: string;           // The reserved field name
-  value?: any;             // The attempted value (for logging)
-  severity: 'error' | 'warning';
-  message: string;
-}
-
-/**
  * Validate workflow for reserved field violations
  * 
  * SECURITY CRITICAL: This runs BEFORE any workflow execution
  * Rejects workflows that attempt to control internal fields
+ * 
+ * @throws {SecurityError} If reserved fields are found
  */
-export function validateWorkflowSecurity(workflow: any): ReservedFieldValidation {
-  const violations: ReservedFieldViolation[] = [];
+export function validateWorkflowSecurity(workflow: any): void {
+  const violations: SecurityViolationDetails[] = [];
   
   // 1. Check top-level workflow fields
   const topLevelViolations = findReservedFields(workflow, RESERVED_WORKFLOW_FIELDS);
   for (const field of topLevelViolations) {
     violations.push({
-      location: 'workflow (root)',
+      code: determineErrorCode(field),
+      location: 'workflow (root level)',
       field,
-      value: workflow[field],
-      severity: 'error',
-      message: `Reserved field '${field}' is engine-controlled and cannot be set in workflow YAML. This field is automatically injected for billing, audit, and security purposes.`,
+      attemptedValue: workflow[field],
+      reason: getFieldReason(field),
+      suggestion: `Remove '${field}' from your workflow YAML. The engine will inject this field automatically during execution.`,
     });
   }
   
@@ -183,11 +242,12 @@ export function validateWorkflowSecurity(workflow: any): ReservedFieldValidation
     const contextViolations = findReservedFields(workflow.context, RESERVED_CONTEXT_FIELDS);
     for (const field of contextViolations) {
       violations.push({
+        code: determineErrorCode(field),
         location: 'workflow.context',
         field,
-        value: workflow.context[field],
-        severity: 'error',
-        message: `Reserved context field '${field}' is engine-controlled. Remove this field from your workflow context.`,
+        attemptedValue: workflow.context[field],
+        reason: getFieldReason(field),
+        suggestion: `Remove '${field}' from workflow.context. Use custom field names like 'myContext' or 'customData' instead.`,
       });
     }
   }
@@ -197,11 +257,12 @@ export function validateWorkflowSecurity(workflow: any): ReservedFieldValidation
     for (const key of Object.keys(workflow.annotations)) {
       if (isReservedAnnotation(key)) {
         violations.push({
+          code: SecurityErrorCode.RESERVED_ANNOTATION_NAMESPACE,
           location: 'workflow.annotations',
           field: key,
-          value: workflow.annotations[key],
-          severity: 'error',
-          message: `Reserved annotation namespace '${key}' is for engine use only. Use custom prefixes like 'custom.${key}' instead.`,
+          attemptedValue: workflow.annotations[key],
+          reason: `Annotation namespace '${key.split('.')[0]}.' is reserved for engine use.`,
+          suggestion: `Use a custom prefix like 'custom.${key}' or 'my.${key}' instead.`,
         });
       }
     }
@@ -213,60 +274,19 @@ export function validateWorkflowSecurity(workflow: any): ReservedFieldValidation
       const stepViolations = findReservedFields(step, RESERVED_STEP_FIELDS);
       for (const field of stepViolations) {
         violations.push({
+          code: determineErrorCode(field),
           location: `workflow.steps[${index}] (${step.id || 'unnamed'})`,
           field,
-          value: step[field],
-          severity: 'error',
-          message: `Reserved step field '${field}' is engine-controlled and cannot be set in step definitions.`,
+          attemptedValue: step[field],
+          reason: getFieldReason(field),
+          suggestion: `Remove '${field}' from step definition. The engine tracks execution state internally.`,
         });
       }
     });
   }
   
-  return {
-    valid: violations.length === 0,
-    violations,
-  };
-}
-
-/**
- * Format reserved field violations into a user-friendly error message
- */
-export function formatSecurityViolations(validation: ReservedFieldValidation): string {
-  if (validation.valid) {
-    return '';
+  // If violations found, throw SecurityError
+  if (violations.length > 0) {
+    throw new SecurityError(violations);
   }
-  
-  const errorViolations = validation.violations.filter(v => v.severity === 'error');
-  
-  if (errorViolations.length === 0) {
-    return '';
-  }
-  
-  const lines = [
-    '❌ SECURITY VIOLATION: Workflow contains reserved internal fields',
-    '',
-    'Your workflow attempts to set fields that are engine-controlled.',
-    'These fields are automatically injected for billing, audit, and security.',
-    '',
-    'Violations found:',
-    '',
-  ];
-  
-  for (const violation of errorViolations) {
-    lines.push(`  • ${violation.location}`);
-    lines.push(`    Field: '${violation.field}'`);
-    lines.push(`    ${violation.message}`);
-    lines.push('');
-  }
-  
-  lines.push('SOLUTION:');
-  lines.push('  Remove these fields from your workflow YAML.');
-  lines.push('  The engine will inject them automatically at runtime.');
-  lines.push('');
-  lines.push('EXAMPLE:');
-  lines.push('  ❌ BAD:  context: { _internal: {...} }');
-  lines.push('  ✅ GOOD: context: { myData: {...} }');
-  
-  return lines.join('\n');
 }

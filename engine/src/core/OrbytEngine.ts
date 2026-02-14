@@ -10,8 +10,8 @@
  * 
  * TRUSTED FIRST-PARTY CONSUMERS (Direct Access):
  * -----------------------------------------------
- * - @orbyt/cli (Official CLI)
- * - @orbyt/api (Official API Server)
+ * - @orbytautomation/cli (Official CLI)
+ * - @orbytautomation/api (Official API Server)
  * 
  * These components may import and use:
  *   - OrbytEngine class
@@ -66,7 +66,6 @@
  * @module core
  */
 
-import { readFile } from 'fs/promises';
 import YAML from 'yaml';
 import type { OrbytEngineConfig, LogLevel } from './EngineConfig.js';
 import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
@@ -87,7 +86,7 @@ import { CLIAdapter, ShellAdapter, HTTPAdapter, FSAdapter } from '../adapters/bu
 import { InternalContextBuilder, type OwnershipContext } from '../execution/InternalExecutionContext.js';
 import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
-import { WorkflowLoadOptions, WorkflowRunOptions } from '../types/core-types.js';
+import { WorkflowRunOptions } from '../types/core-types.js';
 
 /**
  * OrbytEngine - Main public API
@@ -362,34 +361,45 @@ export class OrbytEngine {
   /**
    * Run a workflow
    * 
-   * Main method for executing workflows. Accepts either a file path or
-   * a parsed workflow object.
+   * ARCHITECTURE NOTE:
+   * ==================
+   * This method is I/O-AGNOSTIC - it does NOT read files or touch filesystem.
+   * File loading is handled byWorkflowLoader (separate utility layer).
    * 
-   * @param workflow - Workflow file path, YAML string, or parsed workflow
+   * This keeps the engine:
+   * - Testable (no file dependencies)
+   * - Embeddable (works in browsers, workers, distributed systems)
+   * - API-safe (can accept workflows from any source)
+   * 
+   * Main method for executing workflows.
+   * 
+   * @param workflow - Parsed workflow object OR YAML string content
    * @param options - Execution options
    * @returns Workflow execution result
    * 
    * @example
    * ```ts
-   * // Run from file
-   * const result = await engine.run('./workflow.yaml');
+   * import { WorkflowLoader } from '@orbytautomation/engine';
    * 
-   * // Run with options
-   * const result = await engine.run('./workflow.yaml', {
-   *   variables: { input: 'data.json' },
-   *   timeout: 30000
-   * });
+   * // Load from file (use WorkflowLoader)
+   * const workflow = await WorkflowLoader.fromFile('./workflow.yaml');
+   * const result = await engine.run(workflow);
    * 
-   * // Run from string
+   * // Run from YAML string
    * const yaml = `
-   * name: my-workflow
-   * steps:
-   *   - id: step1
-   *     uses: shell.exec
-   *     with:
-   *       command: echo "Hello"
+   * version: "1.0"
+   * kind: workflow
+   * workflow:
+   *   steps:
+   *     - id: step1
+   *       uses: shell.exec
+   *       with:
+   *         command: echo "Hello"
    * `;
    * const result = await engine.run(yaml);
+   * 
+   * // Run from object (testing)
+   * const result = await engine.run(mockWorkflowObject);
    * ```
    */
   async run(
@@ -419,19 +429,32 @@ export class OrbytEngine {
       isBillable: internalContext._billing.isBillable,
     });
 
-    // Load/parse workflow if needed
+    // ============================================================================
+    // STEP 1: WORKFLOW PARSING (If string provided)
+    // ============================================================================
+    // Engine accepts:
+    // 1. ParsedWorkflow object (primary - already validated)
+    // 2. YAML string content (convenience - will parse and validate)
+    // 
+    // Engine does NOT accept:
+    // - File paths (use WorkflowLoader.fromFile() instead)
+    // 
+    // This keeps engine I/O-agnostic.
+
     let parsedWorkflow: ParsedWorkflow;
 
     if (typeof workflow === 'string') {
-      // Check if it's a file path or YAML string
-      if (workflow.endsWith('.yaml') || workflow.endsWith('.yml')) {
-        parsedWorkflow = await this.loadWorkflow(workflow);
-      } else {
-        parsedWorkflow = this.parseWorkflow(workflow);
-      }
+      // String provided - parse as YAML content
+      this.log('debug', 'Parsing workflow from YAML string');
+      parsedWorkflow = this.parseWorkflow(workflow);
     } else {
+      // Object provided - use directly (already parsed and validated)
+      this.log('debug', 'Using pre-parsed workflow object');
       parsedWorkflow = workflow;
     }
+
+    // At this point, parsedWorkflow is guaranteed to be:
+    // - Parsed from YAML (if string provided)  
 
     // Handle dry-run mode
     if (options.dryRun || this.config.mode === 'dry-run') {
@@ -611,53 +634,46 @@ export class OrbytEngine {
   }
 
   /**
-   * Load a workflow from file
-   * 
-   * @param filePath - Path to workflow file
-   * @param options - Load options
-   * @returns Parsed workflow
-   */
-  async loadWorkflow(
-    filePath: string,
-    options: WorkflowLoadOptions = {}
-  ): Promise<ParsedWorkflow> {
-    this.log('debug', `Loading workflow from: ${filePath}`);
-
-    // Read file content
-    const content = await readFile(filePath, 'utf-8');
-
-    // Parse workflow
-    const parsed = this.parseWorkflow(content);
-
-    // Apply variables from options if provided
-    if (options.variables && parsed.inputs) {
-      // Merge provided variables with workflow inputs
-      parsed.inputs = { ...parsed.inputs, ...options.variables };
-    }
-
-    return parsed;
-  }
-
-  /**
    * Parse a workflow from YAML string
+   * 
+   * WORKFLOW PARSING PIPELINE:
+   * ==========================
+   * 1. Validate YAML syntax (catch malformed YAML early)
+   * 2. Parse YAML to object
+   * 3. Security validation (reject reserved internal fields)
+   * 4. Schema validation (validate against Zod schema)
+   * 5. Step parsing and validation
+   * 6. Return parsed workflow ready for execution
    * 
    * @param yaml - YAML workflow definition
    * @returns Parsed workflow
    */
   parseWorkflow(yaml: string): ParsedWorkflow {
-    this.log('debug', 'Parsing workflow');
+    this.log('debug', 'Parsing workflow from YAML string');
 
-    // Validate YAML syntax first for better error messages
+    // Step 1: Validate YAML syntax first for better error messages
+    let parsedObject: any;
     try {
-      YAML.parse(yaml);
+      parsedObject = YAML.parse(yaml);
     } catch (error) {
-      throw new Error(
-        `Invalid YAML syntax: ${error instanceof Error ? error.message : String(error)}`
-      );
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log('error', `YAML syntax validation failed: ${errorMsg}`);
+      throw new Error(`Invalid YAML syntax: ${errorMsg}`);
     }
 
-    // Use WorkflowParser for full validation and parsing
-    return WorkflowParser.parse(yaml);
+    this.log('debug', 'YAML syntax validated successfully');
+
+    // Step 2: Use WorkflowParser for security, schema, and step validation
+    // This handles: security checks, Zod validation, step parsing
+    try {
+      const parsed = WorkflowParser.parse(parsedObject);
+      this.log('debug', `Workflow parsed successfully: ${parsed.name || 'unnamed'}`);
+      return parsed;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log('error', `Workflow validation failed: ${errorMsg}`);
+      throw error; // Re-throw with original error (contains security/validation details)
+    }
   }
 
   /**
@@ -684,11 +700,9 @@ export class OrbytEngine {
     let parsedWorkflow: ParsedWorkflow;
 
     if (typeof workflow === 'string') {
-      if (workflow.endsWith('.yaml') || workflow.endsWith('.yml')) {
-        parsedWorkflow = await this.loadWorkflow(workflow);
-      } else {
-        parsedWorkflow = this.parseWorkflow(workflow);
-      }
+      // String provided - parse as YAML content
+      // Note: For file paths, use WorkflowLoader.fromFile() before calling validate()
+      parsedWorkflow = this.parseWorkflow(workflow);
     } else {
       parsedWorkflow = workflow;
     }

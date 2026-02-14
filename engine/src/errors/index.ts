@@ -12,6 +12,7 @@ export * from './WorkflowError.js';
 export * from './TypoDetector.js';
 export * from './FieldRegistry.js';
 export * from './ErrorFormatter.js';
+export * from './SecurityErrors.js';
 
 // Legacy exports (kept for compatibility)
 // export * from './SchedulerError.js';

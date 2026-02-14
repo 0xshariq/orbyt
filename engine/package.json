@@ -1,6 +1,6 @@
 {
   "name": "@orbytautomation/engine",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Orbyt - Automation Engine Framework",
   "type": "module",
   "main": "./dist/index.js",
