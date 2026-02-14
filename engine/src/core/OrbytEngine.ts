@@ -24,6 +24,7 @@ import { AdapterRegistry } from '../adapters/AdapterRegistry.js';
 import type { Adapter } from '@dev-ecosystem/core';
 import type { LifecycleHook } from '../hooks/LifecycleHooks.js';
 import { EngineEventType, createEvent } from '../events/EngineEvents.js';
+import { CLIAdapter, ShellAdapter, HTTPAdapter, FSAdapter } from '../adapters/builtins/index.js';
 
 /**
  * Workflow run options
@@ -153,6 +154,9 @@ export class OrbytEngine {
     // Wire components together
     this.setupComponents();
     
+    // Register built-in adapters
+    this.registerBuiltinAdapters();
+    
     // Create engine context
     this.context = createEngineContext({
       config: this.config,
@@ -198,6 +202,20 @@ export class OrbytEngine {
     if (this.config.timeoutManager) {
       this.stepExecutor.setTimeoutManager(this.config.timeoutManager);
     }
+  }
+  
+  /**
+   * Register built-in adapters
+   * These are the core adapters shipped with Orbyt
+   */
+  private registerBuiltinAdapters(): void {
+    // Core adapters
+    this.registerAdapter(new CLIAdapter());
+    this.registerAdapter(new ShellAdapter());
+    this.registerAdapter(new HTTPAdapter());
+    this.registerAdapter(new FSAdapter());
+    
+    this.log('debug', 'Registered built-in adapters: cli, shell, http, fs');
   }
   
   /**

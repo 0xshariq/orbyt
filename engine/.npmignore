@@ -1,0 +1,9 @@
+node_modules/
+src/
+tsconfig.json
+*.tar.gz
+*.tgz
+*.log
+*.lock
+*.md
+docs/

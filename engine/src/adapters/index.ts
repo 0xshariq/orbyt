@@ -3,5 +3,6 @@ export type { Adapter, AdapterContext, AdapterResult, AdapterCapabilities, Adapt
 export { BaseAdapter, AdapterResultBuilder, createSuccessResult, createFailureResult } from '@dev-ecosystem/core';
 
 export * from './AdapterRegistry.js';
+export * from './builtins/index.js';
 // export * from './StepAdapter.js';
 // export * from './WorkflowAdapter.js';
