@@ -1,31 +1,39 @@
-# 🧠 Orbyt — Universal Workflow Automation Engine
+# 🧠 Orbyt — Automation Framework & Language
 
 ## 📌 Current Status
 
-**Engine v0.1.0 — Core Complete, CLI in Development**
+**v0.1.0 — Engine Core Complete, CLI in Development**
 
-The Orbyt execution engine is feature-complete and stable. The core execution system, adapter framework, state management, event system, and lifecycle hooks are fully implemented and tested.
+Orbyt is a complete automation framework with its own workflow definition language (YAML-based), execution engine, and CLI tooling. The core engine is feature-complete and stable with adapter framework, state management, event system, and lifecycle hooks fully implemented.
 
 **Next Phase**: CLI layer implementation to provide user-facing workflow execution interface.
 
 **Version**: `0.1.0` (Engine Core)  
-**Stability**: Engine Core is stable, CLI is in active development
+**Stability**: Engine Core is stable and published on npm, CLI is in active development
 
 ---
 
-## 🏷 Framework Name
+## 🏷 What is Orbyt?
 
-**Orbyt**
+**Orbyt is an automation framework and workflow definition language.**
 
-Meaning: Orchestrate + automate systems and workflows.
+It combines:
+- **📝 Workflow Language** — YAML-based workflow definitions with powerful syntax
+- **⚙️ Execution Engine** — Robust workflow orchestration runtime
+- **🔌 Adapter Framework** — Extensible adapter system for any integration
+- **🖥️ CLI Tooling** — Command-line interface for workflow execution
 
-It is a **generic automation engine**, not a MediaProc component — MediaProc will only be one of its integrations.
+### Framework Philosophy
+
+Orbyt is designed as a **universal automation framework** — not tied to any specific domain. It provides the infrastructure for defining and executing automations, while adapters provide domain-specific capabilities.
+
+**Integrations**: MediaProc, DevForge, Vaulta, and custom tools can all integrate with Orbyt as consumers — not components.
 
 ---
 
-## 🎯 What is Orbyt?
+## 🎯 Orbyt as a Language & Framework
 
-Orbyt is a **universal workflow automation engine** that executes YAML-based workflows with an adapter-driven architecture. It provides a robust execution core for orchestrating complex, multi-step workflows with dependencies, retries, timeouts, and lifecycle hooks.
+Orbyt provides a complete workflow definition language with:
 
 ### Core Capabilities
 
