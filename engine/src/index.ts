@@ -21,29 +21,7 @@ export { OrbytEngine } from './core/OrbytEngine.js';
 // TYPES - Essential types for working with the engine
 // ============================================================================
 
-export type { 
-  WorkflowRunOptions, 
-  WorkflowLoadOptions 
-} from './core/OrbytEngine.js';
-
-export type { 
-  OrbytEngineConfig,
-  LogLevel,
-  ExecutionMode
-} from './core/EngineConfig.js';
-
-export type {
-  WorkflowResult,
-  ExecutionOptions
-} from './execution/WorkflowExecutor.js';
-
-export type {
-  ParsedWorkflow
-} from './parser/WorkflowParser.js';
-
-export type {
-  EngineContext
-} from './core/EngineContext.js';
+export * from './core/index.js'
 
 // ============================================================================
 // ADVANCED - For power users and adapter developers
@@ -58,9 +36,9 @@ export * from './events/index.js';
 // Hooks
 export * from './hooks/index.js';
 
-// Execution internals (for advanced use cases)
-export type { StepResult } from './execution/StepExecutor.js';
-export type { ExecutionPlan } from './execution/ExecutionPlan.js';
+// Internal execution context (for bridge/API integrations)
+export type * from './execution/index.js';
+export * from './execution/index.js';
 
 // Parser (for validation and custom tooling)
 export * from './parser/index.js';
@@ -80,5 +58,17 @@ export * from './scheduling/index.js';
 
 // Errors (for error handling)
 export * from './errors/index.js';
+
+// Security (read-only - for understanding reserved fields)
+export type { 
+  ReservedFieldValidation, 
+  ReservedFieldViolation 
+} from './security/index.js';
+export { 
+  RESERVED_WORKFLOW_FIELDS,
+  RESERVED_CONTEXT_FIELDS,
+  RESERVED_STEP_FIELDS,
+  RESERVED_ANNOTATION_PREFIXES
+} from './security/index.js';
 
 // export * from './workflow/index.js';

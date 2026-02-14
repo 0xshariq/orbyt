@@ -52,6 +52,12 @@ export interface OrbytEngineConfig {
   maxConcurrentWorkflows?: number;
   
   /**
+   * Maximum number of steps that can execute concurrently within a workflow
+   * @default 10
+   */
+  maxConcurrentSteps?: number;
+  
+  /**
    * Default timeout for workflows (milliseconds)
    * @default 300000 (5 minutes)
    */
@@ -191,6 +197,7 @@ export interface OrbytEngineConfig {
 export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Omit<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata'>> & Pick<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata'> {
   return {
     maxConcurrentWorkflows: config.maxConcurrentWorkflows ?? 10,
+    maxConcurrentSteps: config.maxConcurrentSteps ?? 10,
     defaultTimeout: config.defaultTimeout ?? 300000, // 5 minutes
     mode: config.mode ?? 'local',
     enableScheduler: config.enableScheduler ?? true,
@@ -221,6 +228,10 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
 export function validateConfig(config: OrbytEngineConfig): void {
   if (config.maxConcurrentWorkflows !== undefined && config.maxConcurrentWorkflows < 1) {
     throw new Error('maxConcurrentWorkflows must be at least 1');
+  }
+  
+  if (config.maxConcurrentSteps !== undefined && config.maxConcurrentSteps < 1) {
+    throw new Error('maxConcurrentSteps must be at least 1');
   }
   
   if (config.defaultTimeout !== undefined && config.defaultTimeout < 1) {

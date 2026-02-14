@@ -15,6 +15,13 @@ export * from './ExecutionPlan.js';
 export * from './StepExecutor.js';
 export * from './WorkflowExecutor.js';
 export * from './ExecutionEngine.js';
+export * from './InternalExecutionContext.js';
+export * from './ExecutionLimits.js';
+
+// Intelligence Layers (Foundation)
+export * from './IntentAnalyzer.js';
+export * from './ExecutionStrategyResolver.js';
+export { ExecutionStrategyGuard } from './ExecutionStrategyResolver.js';
 
 // Optional: Driver system for advanced execution strategies
 export * from './drivers/index.js';

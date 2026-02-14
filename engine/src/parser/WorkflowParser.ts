@@ -10,6 +10,7 @@
 import YAML from 'yaml';
 import { SchemaValidator } from './SchemaValidator.js';
 import { StepParser, type ParsedStep } from './StepParser.js';
+import { validateWorkflowSecurity, formatSecurityViolations } from '../security/ReservedFields.js';
 import type { WorkflowDefinitionZod } from '@dev-ecosystem/core';
 
 /**
@@ -33,6 +34,14 @@ export interface ParsedWorkflow {
     version?: string;
     createdAt?: string;
     updatedAt?: string;
+  };
+  
+  /** Annotations for AI and UI hints */
+  annotations?: {
+    'ai.intent'?: string;
+    'ui.group'?: string;
+    'ui.icon'?: string;
+    [key: string]: any;
   };
   
   /** Workflow steps */
@@ -95,6 +104,14 @@ export class WorkflowParser {
    * @returns Parsed workflow ready for execution
    */
   static parse(rawWorkflow: unknown): ParsedWorkflow {
+    // Step 0: SECURITY CHECK - Validate NO reserved fields present
+    // This runs BEFORE any other validation to prevent internal field manipulation
+    const securityValidation = validateWorkflowSecurity(rawWorkflow);
+    if (!securityValidation.valid) {
+      const errorMessage = formatSecurityViolations(securityValidation);
+      throw new Error(errorMessage);
+    }
+    
     // Step 1: Validate against schema (with enhanced diagnostics)
     const validated: WorkflowDefinitionZod = SchemaValidator.validate(rawWorkflow);
     

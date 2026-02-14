@@ -8,3 +8,4 @@
 
 export * from './PermissionPolicy.js';
 export * from './SandboxManager.js';
+export * from './ReservedFields.js';
