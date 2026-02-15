@@ -30,7 +30,7 @@
     "orbyt": "./dist/cli.js"
   },
   "dependencies": {
-    "@orbytautomation/engine": "^0.2.3",
+    "@orbytautomation/engine": "^0.2.4",
     "@dev-ecosystem/core": "^0.4.1",
     "commander": "^14.0.3",
     "chalk": "^5.4.2"

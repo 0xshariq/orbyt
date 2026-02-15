@@ -13,7 +13,8 @@ export * from './TypoDetector.js';
 export * from './FieldRegistry.js';
 export * from './ErrorFormatter.js';
 export * from './SecurityErrors.js';
-
-// Legacy exports (kept for compatibility)
-// export * from './SchedulerError.js';
-// export * from './StepError.js';
+export * from './StepError.js';
+export * from './SchedulerError.js';
+export * from './ErrorDetector.js';
+export * from './ErrorDebugger.js';
+export * from './ErrorHandler.js';

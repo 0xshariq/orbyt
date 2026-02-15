@@ -50,6 +50,9 @@ import { existsSync } from 'fs';
 import { resolve } from 'path';
 import YAML from 'yaml';
 import { WorkflowParser, type ParsedWorkflow } from '../parser/WorkflowParser.js';
+import { ErrorDetector } from '../errors/ErrorDetector.js';
+import { ErrorDebugger } from '../errors/ErrorDebugger.js';
+import { OrbytError } from '../errors/OrbytError.js';
 
 /**
  * Workflow loading options
@@ -125,15 +128,15 @@ export class WorkflowLoader {
     let parsed: ParsedWorkflow;
     
     if (isYAML) {
-      parsed = this.fromYAML(content);
+      parsed = this.fromYAML(content, resolvedPath);
     } else if (isJSON) {
-      parsed = this.fromJSON(content);
+      parsed = this.fromJSON(content, resolvedPath);
     } else {
       // Try YAML first (more common for workflows), fallback to JSON
       try {
-        parsed = this.fromYAML(content);
+        parsed = this.fromYAML(content, resolvedPath);
       } catch {
-        parsed = this.fromJSON(content);
+        parsed = this.fromJSON(content, resolvedPath);
       }
     }
 
@@ -155,44 +158,141 @@ export class WorkflowLoader {
    * 4. Validate schema (Zod)
    * 5. Return parsed workflow
    * 
+   * AUTO ERROR DETECTION:
+   * - Automatically detects error types
+   * - Provides smart fix suggestions
+   * - Logs errors appropriately
+   * 
    * @param yamlContent - YAML string content
+   * @param filePath - Optional file path for better error messages
    * @returns Parsed workflow
-   * @throws Error if YAML is invalid or validation fails
+   * @throws OrbytError with proper error code and debug info
    */
-  static fromYAML(yamlContent: string): ParsedWorkflow {
-    // Step 1: Validate YAML syntax
-    let parsedObject: any;
+  static fromYAML(yamlContent: string, filePath?: string): ParsedWorkflow {
     try {
-      parsedObject = YAML.parse(yamlContent);
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      throw new Error(`Invalid YAML syntax: ${errorMsg}`);
-    }
+      // Step 1: Validate YAML syntax
+      let parsedObject: any;
+      try {
+        parsedObject = YAML.parse(yamlContent);
+      } catch (error) {
+        // Auto-detect parse error with proper error code
+        const parseError = ErrorDetector.detect({
+          type: 'parse_error',
+          location: filePath || 'YAML content',
+          rawMessage: error instanceof Error ? error.message : String(error),
+          data: {
+            content: yamlContent.substring(0, 200) // First 200 chars for context
+          }
+        });
+        
+        // Show debug information
+        console.error('\n' + ErrorDebugger.format(parseError) + '\n');
+        
+        throw parseError;
+      }
 
-    // Step 2: Validate and parse through WorkflowParser
-    // This handles: security validation, schema validation, step parsing
-    return WorkflowParser.parse(parsedObject);
+      // Step 2: Validate and parse through WorkflowParser
+      // This handles: security validation, schema validation, step parsing
+      try {
+        return WorkflowParser.parse(parsedObject);
+      } catch (error) {
+        // If it's already an OrbytError, enhance it with debug info
+        if (error instanceof OrbytError) {
+          console.error('\n' + ErrorDebugger.format(error) + '\n');
+          throw error;
+        }
+        
+        // Otherwise, detect and classify the error
+        const detectedError = ErrorDetector.detectFromException(
+          error instanceof Error ? error : new Error(String(error)),
+          filePath || 'workflow'
+        );
+        
+        console.error('\n' + ErrorDebugger.format(detectedError) + '\n');
+        
+        throw detectedError;
+      }
+    } catch (error) {
+      // Final catch: ensure we always throw an OrbytError
+      if (error instanceof OrbytError) {
+        throw error;
+      }
+      
+      // Convert any unexpected error to OrbytError
+      const finalError = ErrorDetector.detectFromException(
+        error instanceof Error ? error : new Error(String(error)),
+        filePath || 'workflow'
+      );
+      
+      console.error('\n' + ErrorDebugger.format(finalError) + '\n');
+      throw finalError;
+    }
   }
 
   /**
    * Parse workflow from JSON string
    * 
+   * AUTO ERROR DETECTION:
+   * - Automatically detects error types
+   * - Provides smart fix suggestions
+   * - Logs errors appropriately
+   * 
    * @param jsonContent - JSON string content
+   * @param filePath - Optional file path for better error messages
    * @returns Parsed workflow
-   * @throws Error if JSON is invalid or validation fails
+   * @throws OrbytError with proper error code and debug info
    */
-  static fromJSON(jsonContent: string): ParsedWorkflow {
-    // Step 1: Validate JSON syntax
-    let parsedObject: any;
+  static fromJSON(jsonContent: string, filePath?: string): ParsedWorkflow {
     try {
-      parsedObject = JSON.parse(jsonContent);
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      throw new Error(`Invalid JSON syntax: ${errorMsg}`);
-    }
+      // Step 1: Validate JSON syntax
+      let parsedObject: any;
+      try {
+        parsedObject = JSON.parse(jsonContent);
+      } catch (error) {
+        // Auto-detect parse error
+        const parseError = ErrorDetector.detect({
+          type: 'parse_error',
+          location: filePath || 'JSON content',
+          rawMessage: error instanceof Error ? error.message : String(error),
+          data: {
+            content: jsonContent.substring(0, 200)
+          }
+        });
+        
+        console.error('\n' + ErrorDebugger.format(parseError) + '\n');
+        throw parseError;
+      }
 
-    // Step 2: Validate and parse through WorkflowParser
-    return WorkflowParser.parse(parsedObject);
+      // Step 2: Validate and parse through WorkflowParser
+      try {
+        return WorkflowParser.parse(parsedObject);
+      } catch (error) {
+        if (error instanceof OrbytError) {
+          console.error('\n' + ErrorDebugger.format(error) + '\n');
+          throw error;
+        }
+        
+        const detectedError = ErrorDetector.detectFromException(
+          error instanceof Error ? error : new Error(String(error)),
+          filePath || 'workflow'
+        );
+        
+        console.error('\n' + ErrorDebugger.format(detectedError) + '\n');
+        throw detectedError;
+      }
+    } catch (error) {
+      if (error instanceof OrbytError) {
+        throw error;
+      }
+      
+      const finalError = ErrorDetector.detectFromException(
+        error instanceof Error ? error : new Error(String(error)),
+        filePath || 'workflow'
+      );
+      
+      console.error('\n' + ErrorDebugger.format(finalError) + '\n');
+      throw finalError;
+    }
   }
 
   /**
@@ -200,12 +300,32 @@ export class WorkflowLoader {
    * 
    * Useful when workflow is already parsed (e.g., from API request body)
    * 
+   * AUTO ERROR DETECTION:
+   * - Automatically validates and detects errors
+   * - Provides proper error codes and debug info
+   * 
    * @param workflowObject - Workflow object
    * @returns Parsed workflow
-   * @throws Error if validation fails
+   * @throws OrbytError with proper error code and debug info
    */
   static fromObject(workflowObject: unknown): ParsedWorkflow {
-    return WorkflowParser.parse(workflowObject);
+    try {
+      return WorkflowParser.parse(workflowObject);
+    } catch (error) {
+      // Auto-detect and enhance the error
+      if (error instanceof OrbytError) {
+        console.error('\n' + ErrorDebugger.format(error) + '\n');
+        throw error;
+      }
+      
+      const detectedError = ErrorDetector.detectFromException(
+        error instanceof Error ? error : new Error(String(error)),
+        'workflow'
+      );
+      
+      console.error('\n' + ErrorDebugger.format(detectedError) + '\n');
+      throw detectedError;
+    }
   }
 
   /**
@@ -261,9 +381,13 @@ export class WorkflowLoader {
    * - If string looks like file path AND file exists → load from file
    * - Otherwise → parse as YAML content
    * 
+   * AUTO ERROR DETECTION:
+   * - All errors are automatically detected with proper codes
+   * 
    * @param source - File path or YAML/JSON content
    * @param options - Load options
    * @returns Parsed workflow
+   * @throws OrbytError with proper error code and debug info
    */
   static async fromString(
     source: string,
@@ -275,6 +399,6 @@ export class WorkflowLoader {
     }
     
     // Otherwise parse as content
-    return this.fromYAML(source);
+    return this.fromYAML(source, 'inline YAML');
   }
 }

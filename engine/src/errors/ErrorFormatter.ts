@@ -2,7 +2,27 @@
  * Error Formatter
  * 
  * Formats Orbyt errors for CLI display with colors and helpful formatting.
- * Provides human-readable error output for developers.
+ * Provides human-readable error output for developers with:
+ * - Colored output for severity levels
+ * - Exit code information
+ * - Error category and retryability
+ * - Contextual debugging information
+ * 
+ * USAGE:
+ * =====
+ * ```typescript
+ * // Format single error
+ * const formatted = formatError(error);
+ * console.error(formatted);
+ * 
+ * // Format multiple errors
+ * const formatted = formatErrors(errors);
+ * console.error(formatted);
+ * 
+ * // Detailed format with all diagnostics
+ * const detailed = formatDetailedError(error);
+ * console.error(detailed);
+ * ```
  * 
  * @module errors
  */
@@ -30,9 +50,14 @@ const colors = {
  * 
  * @param error - Orbyt error to format
  * @param useColors - Whether to use ANSI colors (default: true)
+ * @param verbose - Show additional diagnostic info (default: false)
  * @returns Formatted error string
  */
-export function formatError(error: OrbytError, useColors: boolean = true): string {
+export function formatError(
+  error: OrbytError, 
+  useColors: boolean = true,
+  verbose: boolean = false
+): string {
   const c = useColors ? colors : {
     reset: '',
     bold: '',
@@ -70,6 +95,27 @@ export function formatError(error: OrbytError, useColors: boolean = true): strin
     lines.push('');
     lines.push(`${c.blue}\u2192 Hint:${c.reset} ${error.hint}`);
   }
+
+  // Verbose mode: show additional diagnostics
+  if (verbose) {
+    lines.push('');
+    lines.push(`${c.dim}Exit Code:${c.reset} ${error.exitCode} (${error.getExitCodeDescription()})`);
+    lines.push(`${c.dim}Category:${c.reset} ${error.category}`);
+    
+    const flags: string[] = [];
+    if (error.isUserError) flags.push('User-fixable');
+    if (error.isRetryable) flags.push('Retryable');
+    if (flags.length > 0) {
+      lines.push(`${c.dim}Flags:${c.reset} ${flags.join(', ')}`);
+    }
+    
+    // Show context if available
+    if (error.diagnostic.context && Object.keys(error.diagnostic.context).length > 0) {
+      lines.push('');
+      lines.push(`${c.dim}Context:${c.reset}`);
+      lines.push(c.gray + JSON.stringify(error.diagnostic.context, null, 2) + c.reset);
+    }
+  }
   
   return lines.join('\n');
 }
@@ -79,9 +125,14 @@ export function formatError(error: OrbytError, useColors: boolean = true): strin
  * 
  * @param errors - Array of Orbyt errors
  * @param useColors - Whether to use ANSI colors
+ * @param verbose - Show additional diagnostic info
  * @returns Formatted errors string
  */
-export function formatErrors(errors: OrbytError[], useColors: boolean = true): string {
+export function formatErrors(
+  errors: OrbytError[], 
+  useColors: boolean = true,
+  verbose: boolean = false
+): string {
   const c = useColors ? colors : {
     reset: '',
     bold: '',
@@ -106,10 +157,74 @@ export function formatErrors(errors: OrbytError[], useColors: boolean = true): s
       lines.push(c.dim + '\u2500'.repeat(50) + c.reset);
       lines.push('');
     }
-    lines.push(formatError(error, useColors));
+    lines.push(formatError(error, useColors, verbose));
   });
   
   return lines.join('\n');
+}
+
+/**
+ * Format error with full diagnostic information
+ * Useful for debugging and detailed error analysis
+ * 
+ * @param error - Orbyt error to format
+ * @param useColors - Whether to use ANSI colors
+ * @returns Detailed formatted error string
+ */
+export function formatDetailedError(error: OrbytError, useColors: boolean = true): string {
+  const c = useColors ? colors : {
+    reset: '',
+    bold: '',
+    dim: '',
+    red: '',
+    yellow: '',
+    blue: '',
+    cyan: '',
+    gray: '',
+  };
+  
+  // Use OrbytError's toDetailedString for comprehensive output
+  const detailed = error.toDetailedString();
+  
+  // Colorize the output
+  if (useColors) {
+    return detailed
+      .replace(/\[ERROR\]/g, `${c.red}[ERROR]${c.reset}`)
+      .replace(/\[WARNING\]/g, `${c.yellow}[WARNING]${c.reset}`)
+      .replace(/\[INFO\]/g, `${c.blue}[INFO]${c.reset}`)
+      .replace(/Exit Code:/g, `${c.bold}Exit Code:${c.reset}`)
+      .replace(/Description:/g, `${c.bold}Description:${c.reset}`)
+      .replace(/Hint:/g, `${c.blue}Hint:${c.reset}`)
+      .replace(/Path:/g, `${c.cyan}Path:${c.reset}`)
+      .replace(/Context:/g, `${c.dim}Context:${c.reset}`);
+  }
+  
+  return detailed;
+}
+
+/**
+ * Format error summary (one-line format)
+ * Useful for logging or compact display
+ * 
+ * @param error - Orbyt error to format
+ * @param useColors - Whether to use ANSI colors
+ * @returns One-line error summary
+ */
+export function formatErrorSummary(error: OrbytError, useColors: boolean = true): string {
+  const c = useColors ? colors : {
+    reset: '',
+    bold: '',
+    red: '',
+    yellow: '',
+    blue: '',
+    gray: '',
+  };
+  
+  const color = getSeverityColor(error.severity, c);
+  const icon = getSeverityIcon(error.severity);
+  const path = error.path ? ` at ${error.path}` : '';
+  
+  return `${color}${icon} ${error.code}${c.reset}${path}: ${c.bold}${error.message}${c.reset}`;
 }
 
 /**

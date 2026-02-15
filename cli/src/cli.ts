@@ -14,6 +14,7 @@
 
 import { Command } from 'commander';
 import { registerRunCommand } from './commands/run.js';
+import { registerValidateCommand } from './commands/validate.js';
 
 /**
  * Main CLI function
@@ -33,9 +34,9 @@ async function main(): Promise<void> {
 
   // Register commands
   registerRunCommand(program);
+  registerValidateCommand(program);
   
   // TODO: Add more commands later
-  // registerValidateCommand(program);
   // registerExplainCommand(program);
   // registerAdapterCommand(program);
   // registerEngineCommand(program);

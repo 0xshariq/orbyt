@@ -50,7 +50,7 @@ export class HumanFormatter implements Formatter {
     this.logger = createCliLogger({
       level: options.verbose ? LogLevel.DEBUG : LogLevel.INFO,
       colors: !options.noColor,
-      timestamps: false,
+      timestamp: true, // Enable human-readable timestamps
     });
   }
 

@@ -621,7 +621,7 @@ steps:
 
 ## Related Packages
 
-- **[@orbytautomation/cli](https://www.npmjs.com/package/@orbytautomation/cli)** — Command-line interface for Orbyt
+- **[@orbytautomation/cli](https://www.npmjs.com/package/@orbytautomation/cli)** — Command-line interface for Orbyt (Coming Soon...)
 - **[@dev-ecosystem/core](https://www.npmjs.com/package/@dev-ecosystem/core)** — Shared types and utilities
 
 ---

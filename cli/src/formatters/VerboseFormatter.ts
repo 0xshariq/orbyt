@@ -48,7 +48,7 @@ export class VerboseFormatter implements Formatter {
     this.logger = createCliLogger({
       level: LogLevel.DEBUG, // Always debug in verbose mode
       colors: !options.noColor,
-      timestamps: true, // Enable timestamps in verbose mode
+      timestamp: true, // Enable timestamps in verbose mode
     });
   }
 
