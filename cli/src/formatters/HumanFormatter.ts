@@ -14,6 +14,15 @@
  */
 
 import chalk from 'chalk';
+import {
+  StatusSymbols,
+  formatDuration,
+  formatStepLine,
+  sectionHeader,
+  divider,
+  formatSummary,
+  type SummaryRow,
+} from '@dev-ecosystem/core';
 import type { WorkflowResult } from '@orbytautomation/engine';
 import type { Formatter, FormatterOptions } from './Formatter.js';
 import type { CliEvent } from '../types/CliEvent.js';
@@ -79,49 +88,66 @@ export class HumanFormatter implements Formatter {
       return;
     }
 
-    console.log(); // Empty line
+    console.log();
+    console.log(chalk.cyan(divider(60, '═')));
 
     if (result.status === 'success') {
-      console.log(chalk.green.bold('✔ Workflow completed successfully'));
+      console.log(chalk.green.bold(`${StatusSymbols.success} Workflow completed successfully`));
     } else if (result.status === 'partial') {
-      console.log(chalk.yellow.bold('⚠ Workflow completed with failures'));
+      console.log(chalk.yellow.bold(`${StatusSymbols.warning} Workflow completed with failures`));
     } else if (result.status === 'timeout') {
-      console.log(chalk.red.bold('✖ Workflow timed out'));
+      console.log(chalk.red.bold(`${StatusSymbols.failure} Workflow timed out`));
     } else {
-      console.log(chalk.red.bold('✖ Workflow failed'));
+      console.log(chalk.red.bold(`${StatusSymbols.failure} Workflow failed`));
     }
 
-    // Show summary
-    const { metadata } = result;
+    console.log(chalk.cyan(divider(60, '═')));
     console.log();
+
+    // Show summary using formatSummary utility
+    const { metadata } = result;
     console.log(chalk.bold('Summary:'));
-    console.log(`  Total steps:      ${metadata.totalSteps}`);
-    console.log(chalk.green(`  Successful:       ${metadata.successfulSteps}`));
+    
+    const summaryRows: SummaryRow[] = [
+      { label: 'Total steps', value: metadata.totalSteps },
+      { label: 'Successful', value: metadata.successfulSteps, color: '\x1b[32m' }, // green
+    ];
+    
     if (metadata.failedSteps > 0) {
-      console.log(chalk.red(`  Failed:           ${metadata.failedSteps}`));
+      summaryRows.push({ label: 'Failed', value: metadata.failedSteps, color: '\x1b[31m' }); // red
     }
     if (metadata.skippedSteps > 0) {
-      console.log(chalk.gray(`  Skipped:          ${metadata.skippedSteps}`));
+      summaryRows.push({ label: 'Skipped', value: metadata.skippedSteps, color: '\x1b[2m' }); // dim
     }
-    console.log(`  Duration:         ${this.formatDuration(result.duration)}`);
+    summaryRows.push({ label: 'Duration', value: formatDuration(result.duration) });
+    
+    console.log(formatSummary(summaryRows, !this.options.noColor));
 
     if (this.options.verbose && result.stepResults.size > 0) {
       console.log();
       console.log(chalk.bold('Step Details:'));
+      
       for (const [stepId, stepResult] of result.stepResults) {
-        const status = stepResult.status === 'success'
-          ? chalk.green('✔')
-          : stepResult.status === 'failure'
-          ? chalk.red('✖')
-          : chalk.gray('⊘');
+        const statusText = stepResult.status === 'success' ? 'success'
+          : stepResult.status === 'failure' ? 'failure'
+          : 'skipped';
         
-        console.log(`  ${status} ${stepId} (${this.formatDuration(stepResult.duration)})`);
+        const line = formatStepLine(
+          stepId,
+          statusText as any,
+          undefined,
+          stepResult.duration,
+          !this.options.noColor
+        );
+        console.log(`  ${line}`);
         
         if (stepResult.error && this.options.verbose) {
-          console.log(chalk.red(`    Error: ${stepResult.error.message}`));
+          console.log(chalk.red(`      Error: ${stepResult.error.message}`));
         }
       }
     }
+    
+    console.log();
   }
 
   /**
@@ -166,8 +192,10 @@ export class HumanFormatter implements Formatter {
 
   private onWorkflowStarted(event: any): void {
     console.log();
-    console.log(chalk.blue.bold('▶'), chalk.bold(event.workflowName || 'Workflow'));
-    console.log(chalk.gray(`  ${event.totalSteps} steps to execute`));
+    console.log(chalk.cyan(divider(60, '━')));
+    console.log(sectionHeader(event.workflowName || 'Workflow', !this.options.noColor));
+    console.log(chalk.dim(`   ${event.totalSteps} step${event.totalSteps === 1 ? '' : 's'} to execute`));
+    console.log(chalk.cyan(divider(60, '━')));
     console.log();
   }
 
@@ -183,48 +211,60 @@ export class HumanFormatter implements Formatter {
   private onStepStarted(event: any): void {
     this.stepStartTimes.set(event.stepId, Date.now());
     
-    const adapter = chalk.dim(`${event.adapter}.${event.action}`);
-    console.log(chalk.blue('●'), event.stepName || event.stepId, adapter);
+    const stepName = event.stepName || event.stepId;
+    const adapter = `${event.adapter}.${event.action}`;
+    
+    // Use formatStepLine utility
+    const line = formatStepLine(
+      stepName,
+      'running',
+      adapter,
+      undefined,
+      !this.options.noColor
+    );
+    console.log(line);
   }
 
   private onStepCompleted(event: any): void {
-    const duration = this.formatDuration(event.duration);
-    console.log(chalk.green('  ✔'), chalk.gray(`completed in ${duration}`));
+    const duration = formatDuration(event.duration);
+    console.log(chalk.green(`  ${StatusSymbols.success}`), chalk.dim(`completed in ${duration}`));
     
     if (this.options.verbose && event.output) {
-      console.log(chalk.gray('  Output:'), JSON.stringify(event.output, null, 2));
+      const output = typeof event.output === 'string' 
+        ? event.output.trim()
+        : JSON.stringify(event.output, null, 2);
+      
+      if (output) {
+        console.log(chalk.dim('    Output:'));
+        output.split('\n').forEach(line => {
+          console.log(chalk.dim(`      ${line}`));
+        });
+      }
     }
   }
 
   private onStepFailed(event: any): void {
-    const duration = this.formatDuration(event.duration);
-    console.log(chalk.red('  ✖'), chalk.red(`failed in ${duration}`));
-    console.log(chalk.red('  Error:'), event.error.message);
+    const duration = formatDuration(event.duration);
+    console.log(chalk.red(`  ${StatusSymbols.failure}`), chalk.red(`failed in ${duration}`));
+    console.log(chalk.red('    Error:'), event.error.message);
+    
+    if (this.options.verbose && event.error.stack) {
+      console.log(chalk.dim('    Stack:'));
+      event.error.stack.split('\n').slice(1, 4).forEach((line: string) => {
+        console.log(chalk.dim(`      ${line.trim()}`));
+      });
+    }
   }
 
   private onStepRetrying(event: any): void {
-    const delay = this.formatDuration(event.nextDelay);
+    const delay = formatDuration(event.nextDelay);
     console.log(
-      chalk.yellow('  ↻'),
-      chalk.yellow(`retrying (${event.attempt}/${event.maxAttempts}) in ${delay}`)
+      chalk.yellow(`  ${StatusSymbols.arrow}`),
+      chalk.yellow(`retrying (${event.attempt}/${event.maxAttempts}) after ${delay}`)
     );
   }
 
   private onStepSkipped(event: any): void {
-    console.log(chalk.gray('  ⊘'), chalk.gray(`skipped: ${event.reason}`));
-  }
-
-  // ==================== Helpers ====================
-
-  private formatDuration(ms: number): string {
-    if (ms < 1000) {
-      return `${ms}ms`;
-    } else if (ms < 60000) {
-      return `${(ms / 1000).toFixed(2)}s`;
-    } else {
-      const minutes = Math.floor(ms / 60000);
-      const seconds = ((ms % 60000) / 1000).toFixed(0);
-      return `${minutes}m ${seconds}s`;
-    }
+    console.log(chalk.gray(`  ${StatusSymbols.skipped}`), chalk.gray(`skipped: ${event.reason}`));
   }
 }

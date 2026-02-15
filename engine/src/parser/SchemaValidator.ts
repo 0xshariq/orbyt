@@ -72,6 +72,15 @@ export class SchemaValidator {
       return;
     }
     
+    // Free-form field paths - these can contain any user-defined keys
+    const FREE_FORM_PATHS = ['annotations', 'context', 'secrets', 'inputs'];
+    const isFreeFormPath = FREE_FORM_PATHS.some(fp => path === fp || path.endsWith('.' + fp));
+    
+    // Skip validation for free-form paths (user can define any fields)
+    if (isFreeFormPath) {
+      return;
+    }
+    
     const validFields = getValidFields(path);
     const actualFields = Object.keys(obj);
     

@@ -6,6 +6,9 @@
 
 import type { Formatter, FormatterOptions } from './Formatter.js';
 import { HumanFormatter } from './HumanFormatter.js';
+import { VerboseFormatter } from './VerboseFormatter.js';
+import { JsonFormatter } from './JsonFormatter.js';
+import { NullFormatter } from './NullFormatter.js';
 
 /**
  * Formatter type
@@ -28,15 +31,13 @@ export function createFormatter(
       return new HumanFormatter(options);
     
     case 'verbose':
-      return new HumanFormatter({ ...options, verbose: true });
+      return new VerboseFormatter(options);
     
     case 'json':
-      // TODO: Implement JsonFormatter
-      throw new Error('JSON formatter not yet implemented');
+      return new JsonFormatter(options);
     
     case 'null':
-      // TODO: Implement NullFormatter (for tests/scripts)
-      throw new Error('Null formatter not yet implemented');
+      return new NullFormatter(options);
     
     default:
       throw new Error(`Unknown formatter type: ${type}`);

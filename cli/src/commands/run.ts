@@ -15,12 +15,12 @@ import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import type { Command } from 'commander';
-import { OrbytEngine, type WorkflowResult } from '@orbytautomation/engine';
+import { OrbytEngine, WorkflowLoader, type WorkflowResult } from '@orbytautomation/engine';
 import { createFormatter, type FormatterType } from '../formatters/createFormatter.js';
 import type { CliRunOptions } from '../types/CliRunOptions.js';
 import { parseKeyValuePairs } from '../types/CliRunOptions.js';
-import { 
-  CliEventType, 
+import {
+  CliEventType,
   type WorkflowStartedEvent,
   type WorkflowCompletedEvent,
   type WorkflowFailedEvent,
@@ -56,12 +56,12 @@ export function registerRunCommand(program: Command): void {
 async function runWorkflow(workflowPath: string, options: CliRunOptions): Promise<void> {
   // Determine format
   const format = (options.format || 'human') as FormatterType;
-  
+
   // Apply verbose to format if flag is set
   if (options.verbose && format === 'human') {
     options.format = 'verbose';
   }
-  
+
   // Create formatter
   const formatter = createFormatter(format, {
     verbose: options.verbose,
@@ -72,7 +72,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
   try {
     // Resolve and validate workflow path
     const resolvedPath = resolve(workflowPath);
-    
+
     if (!existsSync(resolvedPath)) {
       formatter.showError(new Error(`Workflow file not found: ${workflowPath}`));
       process.exit(1);
@@ -80,11 +80,11 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
 
     // Parse variables
     const variables: Record<string, string> = {};
-    
+
     if (options.vars && Array.isArray(options.vars)) {
       Object.assign(variables, parseKeyValuePairs(options.vars));
     }
-    
+
     // Load variables file if provided
     if (options.varsFile) {
       const varsFileContent = await readFile(options.varsFile, 'utf-8');
@@ -94,7 +94,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
 
     // Parse environment variables
     const env: Record<string, string> = {};
-    
+
     if (options.env && Array.isArray(options.env)) {
       Object.assign(env, parseKeyValuePairs(options.env));
     }
@@ -108,7 +108,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
 
     // Wire up event bus to formatter
     const eventBus = engine.getEventBus();
-    
+
     eventBus.on('workflow.started', (event: any) => {
       const cliEvent: WorkflowStartedEvent = {
         type: CliEventType.WORKFLOW_STARTED,
@@ -118,7 +118,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
       };
       formatter.onEvent(cliEvent);
     });
-    
+
     eventBus.on('workflow.completed', (event: any) => {
       const cliEvent: WorkflowCompletedEvent = {
         type: CliEventType.WORKFLOW_COMPLETED,
@@ -132,7 +132,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
       };
       formatter.onEvent(cliEvent);
     });
-    
+
     eventBus.on('workflow.failed', (event: any) => {
       const cliEvent: WorkflowFailedEvent = {
         type: CliEventType.WORKFLOW_FAILED,
@@ -143,7 +143,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
       };
       formatter.onEvent(cliEvent);
     });
-    
+
     eventBus.on('step.started', (event: any) => {
       const cliEvent: StepStartedEvent = {
         type: CliEventType.STEP_STARTED,
@@ -155,7 +155,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
       };
       formatter.onEvent(cliEvent);
     });
-    
+
     eventBus.on('step.completed', (event: any) => {
       const cliEvent: StepCompletedEvent = {
         type: CliEventType.STEP_COMPLETED,
@@ -167,7 +167,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
       };
       formatter.onEvent(cliEvent);
     });
-    
+
     eventBus.on('step.failed', (event: any) => {
       const cliEvent: StepFailedEvent = {
         type: CliEventType.STEP_FAILED,
@@ -180,8 +180,24 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
       formatter.onEvent(cliEvent);
     });
 
-    // Run workflow
-    const result: WorkflowResult = await engine.run(resolvedPath, {
+    // Load and validate workflow (I/O layer - CLI responsibility)
+    // This performs:
+    // 1. File reading
+    // 2. YAML/JSON parsing
+    // 3. Security validation (reserved fields)
+    // 4. Schema validation
+    formatter.showInfo?.('Loading workflow...');
+
+    const workflow = await WorkflowLoader.fromFile(resolvedPath, {
+      variables,
+      // Note: Additional loader options can be passed here
+    });
+
+    formatter.showInfo?.('Workflow loaded and validated');
+
+    // Run workflow (Execution layer - Engine responsibility)
+    // Engine is I/O-agnostic, accepts only validated workflow objects
+    const result: WorkflowResult = await engine.run(workflow, {
       variables,
       env,
       timeout: options.timeout ? options.timeout * 1000 : undefined,
@@ -206,7 +222,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
   } catch (error) {
     // Handle errors
     formatter.showError(error instanceof Error ? error : new Error(String(error)));
-    
+
     // Exit with error code
     if (error instanceof Error) {
       // Check if it's a validation error
@@ -214,7 +230,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
         process.exit(1); // Validation error
       }
     }
-    
+
     process.exit(4); // Internal error
   }
 }
