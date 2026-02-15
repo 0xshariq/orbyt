@@ -21,12 +21,14 @@ import {
   sectionHeader,
   divider,
   formatSummary,
+  LogLevel,
   type SummaryRow,
 } from '@dev-ecosystem/core';
 import type { WorkflowResult } from '@orbytautomation/engine';
 import type { Formatter, FormatterOptions } from './Formatter.js';
 import type { CliEvent } from '../types/CliEvent.js';
 import { CliEventType } from '../types/CliEvent.js';
+import { createCliLogger, type CliLogger } from '../utils/logger.js';
 
 /**
  * Human-readable formatter
@@ -34,6 +36,7 @@ import { CliEventType } from '../types/CliEvent.js';
 export class HumanFormatter implements Formatter {
   private options: FormatterOptions;
   private stepStartTimes = new Map<string, number>();
+  private logger: CliLogger;
 
   constructor(options: FormatterOptions = {}) {
     this.options = options;
@@ -42,6 +45,13 @@ export class HumanFormatter implements Formatter {
     if (options.noColor) {
       chalk.level = 0;
     }
+
+    // Create logger for structured logging
+    this.logger = createCliLogger({
+      level: options.verbose ? LogLevel.DEBUG : LogLevel.INFO,
+      colors: !options.noColor,
+      timestamps: false,
+    });
   }
 
   /**
@@ -154,6 +164,12 @@ export class HumanFormatter implements Formatter {
    * Show error
    */
   showError(error: Error): void {
+    // Track error
+    if (this.logger.isErrorEnabled()) {
+      this.logger.error('Workflow execution failed', error);
+    }
+    
+    // Display on terminal
     console.error();
     console.error(chalk.red.bold('✖ Error:'), error.message);
     
@@ -175,6 +191,9 @@ export class HumanFormatter implements Formatter {
    */
   showWarning(message: string): void {
     if (!this.options.silent) {
+      // Log for tracking
+      this.logger.warn(message);
+      // Display on terminal
       console.warn(chalk.yellow('⚠'), message);
     }
   }
@@ -184,6 +203,9 @@ export class HumanFormatter implements Formatter {
    */
   showInfo(message: string): void {
     if (!this.options.silent) {
+      // Log for tracking
+      this.logger.info(message);
+      // Display on terminal
       console.log(chalk.blue('ℹ'), message);
     }
   }
@@ -191,6 +213,15 @@ export class HumanFormatter implements Formatter {
   // ==================== Event Handlers ====================
 
   private onWorkflowStarted(event: any): void {
+    // Track workflow start
+    if (this.logger.isDebugEnabled()) {
+      this.logger.debug('Workflow execution started', { 
+        workflow: event.workflowName, 
+        totalSteps: event.totalSteps 
+      });
+    }
+    
+    // Display on terminal
     console.log();
     console.log(chalk.cyan(divider(60, '━')));
     console.log(sectionHeader(event.workflowName || 'Workflow', !this.options.noColor));
@@ -226,8 +257,20 @@ export class HumanFormatter implements Formatter {
   }
 
   private onStepCompleted(event: any): void {
-    const duration = formatDuration(event.duration);
-    console.log(chalk.green(`  ${StatusSymbols.success}`), chalk.dim(`completed in ${duration}`));
+    const startTime = this.stepStartTimes.get(event.stepId);
+    const duration = startTime ? Date.now() - startTime : event.duration;
+    
+    // Track completion
+    if (this.logger.isDebugEnabled()) {
+      this.logger.debug('Step completed', {
+        stepId: event.stepId,
+        stepName: event.stepName,
+        duration,
+      });
+    }
+    
+    // Display on terminal
+    console.log(chalk.green(`  ${StatusSymbols.success}`), chalk.dim(`completed in ${formatDuration(duration)}`));
     
     if (this.options.verbose && event.output) {
       const output = typeof event.output === 'string' 
@@ -236,11 +279,14 @@ export class HumanFormatter implements Formatter {
       
       if (output) {
         console.log(chalk.dim('    Output:'));
-        output.split('\n').forEach(line => {
+        output.split('\n').forEach((line: string) => {
           console.log(chalk.dim(`      ${line}`));
         });
       }
     }
+    
+    // Clean up tracking
+    this.stepStartTimes.delete(event.stepId);
   }
 
   private onStepFailed(event: any): void {

@@ -6,6 +6,10 @@
  * - Scripting (only care about exit code)
  * - Background jobs
  * - CI/CD pipelines where logs are captured elsewhere
+ * - Programmatic library usage
+ * 
+ * Note: This formatter intentionally does NOT use logger.
+ * It's a complete no-op for all output operations.
  */
 
 import type { WorkflowResult } from '@orbytautomation/engine';
@@ -14,10 +18,12 @@ import type { CliEvent } from '../types/CliEvent.js';
 
 /**
  * Null formatter that produces no output
+ * 
+ * All methods are intentional no-ops.
  */
 export class NullFormatter implements Formatter {
   constructor(_options: FormatterOptions = {}) {
-    // No-op constructor
+    // No-op constructor - options are ignored
   }
 
   /**

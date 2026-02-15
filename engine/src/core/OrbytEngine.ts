@@ -71,6 +71,7 @@ import type { OrbytEngineConfig, LogLevel } from './EngineConfig.js';
 import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
 import type { EngineContext } from './EngineContext.js';
 import { createEngineContext } from './EngineContext.js';
+import { createEngineLogger, type EngineLogger } from './EngineLogger.js';
 import { ExecutionEngine } from '../execution/ExecutionEngine.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
 import { WorkflowExecutor } from '../execution/WorkflowExecutor.js';
@@ -220,6 +221,7 @@ export class OrbytEngine {
   private hookManager: HookManager;
   private adapterRegistry: AdapterRegistry;
   private context: EngineContext;
+  private logger: EngineLogger | null;
   private isStarted: boolean = false;
   private readonly version: string = '0.1.2';
 
@@ -227,6 +229,12 @@ export class OrbytEngine {
     // Validate and apply defaults
     validateConfig(config);
     this.config = applyConfigDefaults(config);
+
+    // Initialize logger (before anything else for early logging)
+    this.logger = createEngineLogger(
+      this.config.logLevel,
+      this.config.verbose || false
+    );
 
     // Initialize event system
     this.eventBus = new EventBus();
@@ -527,8 +535,11 @@ export class OrbytEngine {
 
     this.log('info', `Running workflow: ${parsedWorkflow.name || 'unnamed'}`);
 
-    // Execute workflow
-    const result = await this.workflowExecutor.execute(parsedWorkflow, execOptions);
+    // Execute workflow with performance measurement
+    const result = await this.measureWorkflowExecution(
+      parsedWorkflow.name || 'unnamed',
+      () => this.workflowExecutor.execute(parsedWorkflow, execOptions)
+    );
 
     // Update usage counters after execution
     internalContext._usage.stepCount = result.metadata.totalSteps;
@@ -843,23 +854,57 @@ export class OrbytEngine {
 
   /**
    * Internal logging method
+   * 
+   * Uses the EngineLogger with severity-based filtering and structured output.
    */
   private log(level: LogLevel, message: string, meta?: any): void {
-    if (this.config.logLevel === 'silent') {
+    // If logger is null (silent mode), skip logging
+    if (!this.logger) {
       return;
     }
 
-    const levels: LogLevel[] = ['debug', 'info', 'warn', 'error', 'silent'];
-    const currentLevel = levels.indexOf(this.config.logLevel);
-    const messageLevel = levels.indexOf(level);
-
-    if (messageLevel >= currentLevel) {
-      const prefix = `[Orbyt:${level.toUpperCase()}]`;
-      if (meta) {
-        console.log(prefix, message, meta);
-      } else {
-        console.log(prefix, message);
-      }
+    // Use EngineLogger methods based on level
+    switch (level) {
+      case 'debug':
+        this.logger.debug(message, meta);
+        break;
+      case 'info':
+        this.logger.info(message, meta);
+        break;
+      case 'warn':
+        this.logger.warn(message, meta);
+        break;
+      case 'error':
+        this.logger.error(message, undefined, meta);
+        break;
+      default:
+        // 'silent' is handled by null logger
+        break;
     }
+  }
+
+  /**
+   * Measure workflow execution performance with automatic severity-based logging
+   * 
+   * @param workflowName - Name of the workflow
+   * @param fn - Execution function
+   * @returns Execution result
+   */
+  private async measureWorkflowExecution<T>(
+    workflowName: string,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    if (!this.logger) {
+      return fn();
+    }
+
+    // Set thresholds for logging levels (in milliseconds)
+    // - warn: workflow takes longer than 30 seconds
+    // - error: workflow takes longer than 5 minutes
+    return this.logger.measureExecution(
+      `Workflow "${workflowName}"`,
+      fn,
+      { warn: 30000, error: 300000 }
+    );
   }
 }
