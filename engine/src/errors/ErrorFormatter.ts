@@ -7,6 +7,7 @@
  * - Exit code information
  * - Error category and retryability
  * - Contextual debugging information
+ * - Integration with EngineLogger for proper log management
  * 
  * USAGE:
  * =====
@@ -22,6 +23,9 @@
  * // Detailed format with all diagnostics
  * const detailed = formatDetailedError(error);
  * console.error(detailed);
+ * 
+ * // Log error using EngineLogger
+ * logErrorToEngine(error, logger);
  * ```
  * 
  * @module errors
@@ -29,6 +33,8 @@
 
 import { OrbytError } from './OrbytError.js';
 import { ErrorSeverity } from './ErrorCodes.js';
+import type { EngineLogger } from '../core/EngineLogger.js';
+import { LogLevel } from '@dev-ecosystem/core';
 
 /**
  * ANSI color codes for terminal output
@@ -282,4 +288,144 @@ export function createBox(text: string, useColors: boolean = true): string {
   );
   
   return [top, ...boxedLines, bottom].join('\n');
+}
+
+/**
+ * Map ErrorSeverity to LogLevel
+ * Converts Orbyt's error severity to ecosystem-core's log level
+ * 
+ * @param severity - Error severity
+ * @returns Corresponding log level
+ */
+export function errorSeverityToLogLevel(severity: ErrorSeverity): LogLevel {
+  switch (severity) {
+    case ErrorSeverity.CRITICAL:
+    case ErrorSeverity.FATAL:
+      return LogLevel.FATAL;
+    case ErrorSeverity.ERROR:
+      return LogLevel.ERROR;
+    case ErrorSeverity.MEDIUM:
+    case ErrorSeverity.LOW:
+    case ErrorSeverity.WARNING:
+      return LogLevel.WARN;
+    case ErrorSeverity.INFO:
+      return LogLevel.INFO;
+    default:
+      return LogLevel.ERROR;
+  }
+}
+
+/**
+ * Log an error to EngineLogger with proper formatting
+ * 
+ * This is the primary way to log errors during workflow loading and execution.
+ * It maps Orbyt's ErrorSeverity to ecosystem-core's LogLevel and includes
+ * all relevant context.
+ * 
+ * @param error - Orbyt error to log
+ * @param logger - EngineLogger instance
+ * @param includeDebugInfo - Whether to include full diagnostic info (default: true)
+ */
+export function logErrorToEngine(
+  error: OrbytError,
+  logger: EngineLogger,
+  includeDebugInfo: boolean = true
+): void {
+  const logLevel = errorSeverityToLogLevel(error.severity);
+  
+  // Build context with error details
+  const context: Record<string, unknown> = {
+    errorCode: error.code,
+    exitCode: error.exitCode,
+    category: error.category,
+    severity: error.severity,
+    userError: error.isUserError,
+    retryable: error.isRetryable,
+  };
+  
+  // Add path if available
+  if (error.path) {
+    context.path = error.path;
+  }
+  
+  // Add hint if available
+  if (error.hint) {
+    context.hint = error.hint;
+  }
+  
+  // Add diagnostic context
+  if (includeDebugInfo && error.diagnostic.context) {
+    context.diagnostic = error.diagnostic.context;
+  }
+  
+  // Log based on severity
+  switch (logLevel) {
+    case LogLevel.FATAL:
+      logger.fatal(error.message, error, context);
+      break;
+    case LogLevel.ERROR:
+      logger.error(error.message, error, context);
+      break;
+    case LogLevel.WARN:
+      logger.warn(error.message, context);
+      break;
+    case LogLevel.INFO:
+      logger.info(error.message, context);
+      break;
+    default:
+      logger.error(error.message, error, context);
+  }
+}
+
+/**
+ * Log multiple errors to EngineLogger
+ * 
+ * @param errors - Array of Orbyt errors
+ * @param logger - EngineLogger instance
+ * @param includeDebugInfo - Whether to include full diagnostic info
+ */
+export function logErrorsToEngine(
+  errors: OrbytError[],
+  logger: EngineLogger,
+  includeDebugInfo: boolean = true
+): void {
+  // Log summary first
+  logger.error(`Found ${errors.length} error(s) during workflow processing`, undefined, {
+    errorCount: errors.length,
+    errorCodes: errors.map(e => e.code),
+  });
+  
+  // Log each error
+  errors.forEach((error) => {
+    logErrorToEngine(error, logger, includeDebugInfo);
+  });
+}
+
+/**
+ * Format and log error (combined operation)
+ * Returns formatted string AND logs to EngineLogger if provided
+ * 
+ * @param error - Orbyt error
+ * @param logger - Optional EngineLogger instance
+ * @param options - Formatting options
+ * @returns Formatted error string
+ */
+export function formatAndLogError(
+  error: OrbytError,
+  logger?: EngineLogger,
+  options?: {
+    useColors?: boolean;
+    verbose?: boolean;
+    includeDebugInfo?: boolean;
+  }
+): string {
+  const { useColors = true, verbose = false, includeDebugInfo = true } = options || {};
+  
+  // Log to engine if logger provided
+  if (logger) {
+    logErrorToEngine(error, logger, includeDebugInfo);
+  }
+  
+  // Return formatted string for console/CLI
+  return formatError(error, useColors, verbose);
 }

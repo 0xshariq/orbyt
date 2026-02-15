@@ -10,7 +10,8 @@ export * from './ErrorCodes.js';
 export * from './OrbytError.js';
 export * from './WorkflowError.js';
 export * from './TypoDetector.js';
-export * from './FieldRegistry.js';
+// FieldRegistry is internal - not exported to prevent conflicts with security/ReservedFields
+// export * from './FieldRegistry.js';
 export * from './ErrorFormatter.js';
 export * from './SecurityErrors.js';
 export * from './StepError.js';

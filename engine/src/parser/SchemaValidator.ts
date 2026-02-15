@@ -13,11 +13,10 @@ import {
   SchemaError,
   findMatches,
   isLikelyTypo,
-  getValidFields,
-  isValidField,
   OrbytError,
   ErrorSeverity,
 } from '../errors/index.js';
+import { getValidFields, isValidField } from '../errors/FieldRegistry.js';
 
 /**
  * Enhanced schema validator with diagnostic capabilities
