@@ -4,6 +4,14 @@
  * Provides structured logging for the Orbyt Engine using ecosystem-core utilities.
  * Supports multiple output formats and log levels with proper filtering.
  * 
+ * Features:
+ * - Severity-based log level filtering using LogLevelSeverity
+ * - Multiple output formats (pretty, text, json, structured)
+ * - Color support with ANSI codes
+ * - Context and error tracking
+ * - Performance measurement with automatic severity adjustment
+ * - Efficient level comparison using numeric severity
+ * 
  * @module core
  */
 
@@ -100,6 +108,64 @@ export class EngineLogger {
   }
 
   /**
+   * Log with a custom level
+   */
+  logWithLevel(level: LogLevel, message: string, context?: Record<string, unknown>): void {
+    this.log(level, message, context);
+  }
+
+  /**
+   * Log only if severity meets minimum threshold
+   */
+  logIfSeverity(
+    minSeverity: number,
+    level: LogLevel,
+    message: string,
+    context?: Record<string, unknown>
+  ): void {
+    if (LogLevelSeverity[level] >= minSeverity) {
+      this.log(level, message, context);
+    }
+  }
+
+  /**
+   * Measure and log execution time with appropriate log level based on duration
+   */
+  async measureExecution<T>(
+    label: string,
+    fn: () => Promise<T>,
+    thresholds?: { warn?: number; error?: number }
+  ): Promise<T> {
+    const start = Date.now();
+    try {
+      const result = await fn();
+      const duration = Date.now() - start;
+
+      // Choose log level based on duration thresholds
+      let level = LogLevel.DEBUG;
+      if (thresholds?.error && duration > thresholds.error) {
+        level = LogLevel.ERROR;
+      } else if (thresholds?.warn && duration > thresholds.warn) {
+        level = LogLevel.WARN;
+      } else {
+        level = LogLevel.INFO;
+      }
+
+      this.log(level, `${label} completed`, { duration: `${duration}ms` });
+      return result;
+    } catch (error) {
+      const duration = Date.now() - start;
+      this.log(
+        LogLevel.ERROR,
+        `${label} failed`,
+        { duration: `${duration}ms` },
+        error instanceof Error ? error : new Error(String(error))
+      );
+      throw error;
+    }
+  }
+
+  /**
    * Internal log method
    */
   private log(
@@ -108,8 +174,8 @@ export class EngineLogger {
     context?: Record<string, unknown>,
     error?: Error
   ): void {
-    // Check if this level should be logged
-    if (!shouldLog(level, this.config.level)) {
+    // Check if this level should be logged (using severity for better performance)
+    if (!this.shouldLogLevel(level)) {
       return;
     }
 
@@ -126,10 +192,56 @@ export class EngineLogger {
   }
 
   /**
+   * Check if a level should be logged using severity comparison
+   */
+  private shouldLogLevel(level: LogLevel): boolean {
+    return LogLevelSeverity[level] >= LogLevelSeverity[this.config.level];
+  }
+
+  /**
+   * Check if a level is more severe than another
+   */
+  isMoreSevere(level: LogLevel, compareWith: LogLevel): boolean {
+    return LogLevelSeverity[level] > LogLevelSeverity[compareWith];
+  }
+
+  /**
+   * Get severity difference between two levels
+   */
+  getSeverityDiff(level1: LogLevel, level2: LogLevel): number {
+    return LogLevelSeverity[level1] - LogLevelSeverity[level2];
+  }
+
+  /**
+   * Get the numeric severity of the current log level
+   */
+  getCurrentSeverity(): number {
+    return LogLevelSeverity[this.config.level];
+  }
+
+  /**
+   * Get the numeric severity of a log level
+   */
+  getSeverity(level: LogLevel): number {
+    return LogLevelSeverity[level];
+  }
+
+  /**
    * Update logger configuration
    */
   setLevel(level: LogLevel): void {
     this.config.level = level;
+  }
+
+  /**
+   * Set level by severity (0-4)
+   */
+  setLevelBySeverity(severity: number): void {
+    const levels = Object.entries(LogLevelSeverity)
+      .find(([_, sev]) => sev === severity);
+    if (levels) {
+      this.config.level = levels[0] as LogLevel;
+    }
   }
 
   /**
@@ -160,6 +272,34 @@ export class EngineLogger {
    */
   getConfig(): Readonly<EngineLoggerConfig> {
     return { ...this.config };
+  }
+
+  /**
+   * Check if debug logging is enabled
+   */
+  isDebugEnabled(): boolean {
+    return this.willLog(LogLevel.DEBUG);
+  }
+
+  /**
+   * Check if info logging is enabled
+   */
+  isInfoEnabled(): boolean {
+    return this.willLog(LogLevel.INFO);
+  }
+
+  /**
+   * Check if warn logging is enabled
+   */
+  isWarnEnabled(): boolean {
+    return this.willLog(LogLevel.WARN);
+  }
+
+  /**
+   * Check if error logging is enabled
+   */
+  isErrorEnabled(): boolean {
+    return this.willLog(LogLevel.ERROR);
   }
 }
 
