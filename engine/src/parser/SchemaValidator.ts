@@ -17,6 +17,7 @@ import {
   ErrorSeverity,
 } from '../errors/index.js';
 import { getValidFields, isValidField } from '../errors/FieldRegistry.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Enhanced schema validator with diagnostic capabilities
@@ -30,7 +31,11 @@ export class SchemaValidator {
    * @throws {OrbytError} If validation fails with detailed diagnostics
    */
   static validate(rawWorkflow: unknown): WorkflowDefinitionZod {
+    const logger = LoggerManager.getLogger();
+    
     try {
+      logger.validationStarted('workflow', 'schema');
+      
       // First, check for unknown fields at root level
       this.validateUnknownFields(rawWorkflow as Record<string, any>, 'root');
       
@@ -40,8 +45,13 @@ export class SchemaValidator {
       // Additional semantic validations
       this.validateWorkflowBody(validated);
       
+      logger.validationPassed('workflow', 'schema');
+      
       return validated;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.validationFailed('workflow', 'schema', [errorMessage]);
+      
       // If it's already an OrbytError, rethrow it
       if (error instanceof OrbytError) {
         throw error;

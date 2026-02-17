@@ -17,6 +17,7 @@ import { JobScheduler } from './JobScheduler.js';
 import type { WorkflowSchedule, ScheduleExecution, CreateScheduleInput } from './ScheduleTypes.js';
 import { createSchedule } from './ScheduleTypes.js';
 import type { JobQueue } from '../queue/JobQueue.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Scheduler configuration
@@ -128,24 +129,41 @@ export class Scheduler {
    * Start all schedulers
    */
   async start(): Promise<void> {
+    const logger = LoggerManager.getLogger();
+    logger.info('[Scheduler] Starting schedulers');
+    
     await this.cronScheduler.start();
     await this.jobScheduler.start();
+    
+    logger.info('[Scheduler] All schedulers started successfully');
   }
 
   /**
    * Stop all schedulers
    */
   async stop(): Promise<void> {
+    const logger = LoggerManager.getLogger();
+    logger.info('[Scheduler] Stopping schedulers');
+    
     await this.cronScheduler.stop();
     await this.jobScheduler.stop();
+    
+    logger.info('[Scheduler] All schedulers stopped');
   }
 
   /**
    * Add schedule to appropriate scheduler based on trigger type
    */
   async addSchedule(input: CreateScheduleInput): Promise<WorkflowSchedule> {
+    const logger = LoggerManager.getLogger();
     const schedule = createSchedule(input);
     this.schedules.set(schedule.id, schedule);
+
+    logger.info(`[Scheduler] Adding schedule: ${schedule.name} (${schedule.triggerType})`, {
+      scheduleId: schedule.id,
+      triggerType: schedule.triggerType,
+      workflowId: schedule.workflowId,
+    });
 
     switch (schedule.triggerType) {
       case TriggerType.Cron:

@@ -27,6 +27,7 @@
 
 import { OrbytError } from './OrbytError.js';
 import { OrbytErrorCode } from './ErrorCodes.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Debug information for an error
@@ -82,6 +83,14 @@ export class ErrorDebugger {
    * ```
    */
   static analyze(error: OrbytError): ErrorDebugInfo {
+    const logger = LoggerManager.getLogger();
+    
+    logger.debug(`[ErrorDebugger] Analyzing error: ${error.code}`, {
+      code: error.code,
+      message: error.message,
+      path: error.path,
+    });
+    
     // Get base information from error code
     const baseInfo = this.getBaseDebugInfo(error.code);
     

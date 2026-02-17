@@ -26,6 +26,7 @@ import type { EventBus } from '../events/EventBus.js';
 import type { HookManager } from '../hooks/HookManager.js';
 import { EngineEventType, createEvent } from '../events/EngineEvents.js';
 import type { StepHookContext } from '../hooks/LifecycleHooks.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Step execution result
@@ -83,17 +84,17 @@ export interface StepAdapter {
 export class StepExecutor {
   // Legacy adapter support (backward compatibility)
   private adapters = new Map<string, StepAdapter>();
-  
+
   // Modern driver system
   private driverResolver = new DriverResolver();
   private adapterRegistry = new AdapterRegistry();
   private adapterDriver?: AdapterDriver;
-  
+
   private resolver = new VariableResolver();
   private contextStore?: ContextStore;
   private retryPolicy?: RetryPolicy;
   private timeoutManager?: TimeoutManager;
-  
+
   // Event system
   private eventBus?: EventBus;
   private hookManager?: HookManager;
@@ -107,7 +108,7 @@ export class StepExecutor {
   registerAdapter(adapter: StepAdapter): void {
     this.adapters.set(adapter.name, adapter);
   }
-  
+
   /**
    * Register a modern adapter with driver system
    * 
@@ -115,14 +116,14 @@ export class StepExecutor {
    */
   registerModernAdapter(adapter: Adapter): void {
     this.adapterRegistry.register(adapter);
-    
+
     // Initialize AdapterDriver if not already done
     if (!this.adapterDriver) {
       this.adapterDriver = new AdapterDriver(this.adapterRegistry);
       this.driverResolver.register(this.adapterDriver);
     }
   }
-  
+
   /**
    * Register multiple modern adapters
    * 
@@ -160,21 +161,21 @@ export class StepExecutor {
   setTimeoutManager(timeoutManager: TimeoutManager): void {
     this.timeoutManager = timeoutManager;
   }
-  
+
   /**
    * Set event bus for emitting step lifecycle events
    */
   setEventBus(eventBus: EventBus): void {
     this.eventBus = eventBus;
   }
-  
+
   /**
    * Set hook manager for calling lifecycle hooks
    */
   setHookManager(hookManager: HookManager): void {
     this.hookManager = hookManager;
   }
-  
+
   /**
    * Get driver resolver (for advanced use cases)
    * 
@@ -183,7 +184,7 @@ export class StepExecutor {
   getDriverResolver(): DriverResolver {
     return this.driverResolver;
   }
-  
+
   /**
    * Get adapter registry (for advanced use cases)
    * 
@@ -219,6 +220,13 @@ export class StepExecutor {
 
     // Check conditional execution
     if (step.when && !this.evaluateCondition(step.when, context)) {
+      // Log step skipped
+      const logger = LoggerManager.getLogger();
+      logger.info(`Step "${step.name || step.id}" (${step.id}) skipped - condition not met`, {
+        stepId: step.id,
+        condition: step.when,
+      });
+
       // Emit step.skipped event
       if (this.eventBus) {
         await this.eventBus.emit(createEvent(
@@ -237,7 +245,7 @@ export class StepExecutor {
           }
         ));
       }
-      
+
       return {
         stepId: step.id,
         status: 'skipped',
@@ -261,7 +269,7 @@ export class StepExecutor {
       inputs: step.input,
       startTime: startedAt.getTime(),
     };
-    
+
     // Emit step.started event
     if (this.eventBus) {
       await this.eventBus.emit(createEvent(
@@ -280,7 +288,7 @@ export class StepExecutor {
         }
       ));
     }
-    
+
     // Call beforeStep hook
     if (this.hookManager) {
       await this.hookManager.runBeforeStep(hookContext);
@@ -288,6 +296,21 @@ export class StepExecutor {
 
     // Resolve variables in input
     const resolvedInput = this.resolver.resolve(step.input, context);
+
+    // Log step execution started
+    const logger = LoggerManager.getLogger();
+    logger.stepStarted(step.id, step.name || step.id, {
+      adapter: step.adapter,
+      action: step.action,
+      inputs: resolvedInput,
+      workflowId: context.workflow?.id,
+      runId: context.run?.id,
+    });
+
+    // Initialize retry count to 0 at runtime (if retry is configured)
+    if (step.retry) {
+      step.retry.count = 0;
+    }
 
     // Determine retry configuration
     let maxAttempts = step.retry?.max || 1;
@@ -317,7 +340,7 @@ export class StepExecutor {
       try {
         // Update hook context attempt number
         hookContext.attempt = attempts;
-        
+
         // Update attempt count in ContextStore
         if (this.contextStore && attempts > 1) {
           this.contextStore.incrementAttempt();
@@ -342,12 +365,18 @@ export class StepExecutor {
 
         const completedAt = new Date();
         const duration = completedAt.getTime() - startedAt.getTime();
-        
+
+        // Log step completion
+        logger.stepCompleted(step.id, step.name || step.id, duration, {
+          output,
+          attempts,
+        });
+
         // Update hook context
         hookContext.outputs = output;
         hookContext.endTime = completedAt.getTime();
         hookContext.durationMs = duration;
-        
+
         // Emit step.completed event
         if (this.eventBus) {
           await this.eventBus.emit(createEvent(
@@ -368,12 +397,12 @@ export class StepExecutor {
             }
           ));
         }
-        
+
         // Call afterStep hook
         if (this.hookManager) {
           await this.hookManager.runAfterStep(hookContext);
         }
-        
+
         return {
           stepId: step.id,
           status: 'success',
@@ -399,6 +428,10 @@ export class StepExecutor {
 
         // Check if timeout error
         if (lastError.message.includes('timeout')) {
+          // Log step timeout
+          const timeoutMs = step.timeout ? this.parseTimeoutString(step.timeout) : 30000;
+          logger.stepTimeout(step.id, step.name || step.id, timeoutMs);
+
           // Emit step.timeout event
           if (this.eventBus) {
             await this.eventBus.emit(createEvent(
@@ -420,12 +453,12 @@ export class StepExecutor {
               }
             ));
           }
-          
+
           // Call onError hook
           if (this.hookManager) {
             await this.hookManager.runOnError(hookContext, lastError);
           }
-          
+
           const completedAt = new Date();
           return {
             stepId: step.id,
@@ -451,11 +484,20 @@ export class StepExecutor {
 
         // Retry if more attempts available
         if (attempts < maxAttempts) {
-          // Emit step.retrying event
+          // Increment retry count
+          if (step.retry) {
+            step.retry.count = attempts;
+          }
+
+          // Calculate backoff delay
           const backoffMs = backoffStrategy
             ? backoffStrategy.calculateDelay(attempts)
             : (step.retry?.delay || 1000) * (step.retry?.backoff === 'exponential' ? Math.pow(2, attempts - 1) : 1);
-          
+
+          // Log retry attempt
+          logger.stepRetry(step.id, step.name || step.id, attempts, maxAttempts);
+
+          // Emit step.retrying event
           if (this.eventBus) {
             await this.eventBus.emit(createEvent(
               EngineEventType.STEP_RETRYING,
@@ -475,7 +517,7 @@ export class StepExecutor {
               }
             ));
           }
-          
+
           // Call onRetry hook
           if (this.hookManager) {
             await this.hookManager.runOnRetry(hookContext);
@@ -489,7 +531,15 @@ export class StepExecutor {
     // All attempts failed
     const completedAt = new Date();
     const duration = completedAt.getTime() - startedAt.getTime();
-    
+
+    // Log step failure
+    if (lastError) {
+      logger.stepFailed(step.id, step.name || step.id, lastError, {
+        attempts,
+        duration,
+      });
+    }
+
     // Emit step.failed event
     if (this.eventBus && lastError) {
       await this.eventBus.emit(createEvent(
@@ -511,12 +561,12 @@ export class StepExecutor {
         }
       ));
     }
-    
+
     // Call onError hook
     if (this.hookManager && lastError) {
       await this.hookManager.runOnError(hookContext, lastError);
     }
-    
+
     return {
       stepId: step.id,
       status: 'failure',
@@ -541,7 +591,7 @@ export class StepExecutor {
     if (this.adapterDriver) {
       const driverStep = this.convertToDriverStep(step, input);
       const driverContext = this.convertToDriverContext(step, context);
-      
+
       try {
         const result = await this.executeWithDriver(driverStep, driverContext, step);
         return result.output;
@@ -553,11 +603,11 @@ export class StepExecutor {
         throw error;
       }
     }
-    
+
     // Fall back to legacy adapter system
     return this.executeWithLegacyAdapter(step, input, context);
   }
-  
+
   /**
    * Execute using driver system
    */
@@ -566,34 +616,51 @@ export class StepExecutor {
     driverContext: DriverContext,
     step: ParsedStep
   ): Promise<any> {
-    const driver = this.driverResolver.resolve(driverStep);
-    
-    // Apply timeout if configured
-    if (step.timeout || this.timeoutManager) {
-      const timeoutMs = step.timeout
-        ? this.parseTimeoutString(step.timeout)
-        : 30000;
-      
-      if (this.timeoutManager) {
-        return TimeoutManager.execute(
-          () => driver.execute(driverStep, driverContext),
-          {
+    const logger = LoggerManager.getLogger();
+    const startTime = Date.now();
+
+    try {
+      const driver = this.driverResolver.resolve(driverStep);
+
+      let result;
+      // Apply timeout if configured
+      if (step.timeout || this.timeoutManager) {
+        const timeoutMs = step.timeout
+          ? this.parseTimeoutString(step.timeout)
+          : 30000;
+
+        if (this.timeoutManager) {
+          result = await TimeoutManager.execute(
+            () => driver.execute(driverStep, driverContext),
+            {
+              timeoutMs,
+              operation: `Step: ${step.id}`,
+            }
+          );
+        } else {
+          result = await this.withTimeout(
+            driver.execute(driverStep, driverContext),
             timeoutMs,
-            operation: `Step: ${step.id}`,
-          }
-        );
+            step.id
+          );
+        }
+      } else {
+        result = await driver.execute(driverStep, driverContext);
       }
-      
-      return this.withTimeout(
-        driver.execute(driverStep, driverContext),
-        timeoutMs,
-        step.id
-      );
+
+      // Log successful adapter action execution
+      const duration = Date.now() - startTime;
+      logger.adapterActionExecuted(step.adapter, step.action, duration, true);
+
+      return result;
+    } catch (error) {
+      // Log failed adapter action execution
+      const duration = Date.now() - startTime;
+      logger.adapterActionExecuted(step.adapter, step.action, duration, false);
+      throw error;
     }
-    
-    return driver.execute(driverStep, driverContext);
   }
-  
+
   /**
    * Execute using legacy adapter (backward compatibility)
    */
@@ -602,6 +669,9 @@ export class StepExecutor {
     input: Record<string, any>,
     context: any
   ): Promise<any> {
+    const logger = LoggerManager.getLogger();
+    const startTime = Date.now();
+
     const adapter = this.adapters.get(step.adapter);
 
     if (!adapter) {
@@ -611,32 +681,46 @@ export class StepExecutor {
       );
     }
 
-    const executionPromise = adapter.execute(step.action, input, context);
+    try {
+      const executionPromise = adapter.execute(step.action, input, context);
 
-    // Apply timeout if configured
-    if (step.timeout || this.timeoutManager) {
-      const timeoutMs = step.timeout 
-        ? this.parseTimeoutString(step.timeout)
-        : 30000; // Default 30 seconds
+      let result;
+      // Apply timeout if configured
+      if (step.timeout || this.timeoutManager) {
+        const timeoutMs = step.timeout
+          ? this.parseTimeoutString(step.timeout)
+          : 30000; // Default 30 seconds
 
-      // Use TimeoutManager static method if available
-      if (this.timeoutManager) {
-        return TimeoutManager.execute(
-          () => executionPromise,
-          {
-            timeoutMs,
-            operation: `Step: ${step.id}`,
-          }
-        );
+        // Use TimeoutManager static method if available
+        if (this.timeoutManager) {
+          result = await TimeoutManager.execute(
+            () => executionPromise,
+            {
+              timeoutMs,
+              operation: `Step: ${step.id}`,
+            }
+          );
+        } else {
+          // Fallback to local timeout implementation
+          result = await this.withTimeout(executionPromise, timeoutMs, step.id);
+        }
+      } else {
+        result = await executionPromise;
       }
-      
-      // Fallback to local timeout implementation
-      return this.withTimeout(executionPromise, timeoutMs, step.id);
-    }
 
-    return executionPromise;
+      // Log successful adapter action execution
+      const duration = Date.now() - startTime;
+      logger.adapterActionExecuted(step.adapter, step.action, duration, true);
+
+      return result;
+    } catch (error) {
+      // Log failed adapter action execution
+      const duration = Date.now() - startTime;
+      logger.adapterActionExecuted(step.adapter, step.action, duration, false);
+      throw error;
+    }
   }
-  
+
   /**
    * Convert ParsedStep to DriverStep
    */
@@ -652,13 +736,13 @@ export class StepExecutor {
       continueOnError: step.continueOnError,
     };
   }
-  
+
   /**
    * Convert execution context to DriverContext
    */
   private convertToDriverContext(step: ParsedStep, context: any): DriverContext {
     const resolutionContext = this.contextStore?.getResolutionContext() || context;
-    
+
     return {
       stepId: step.id,
       executionId: resolutionContext.run?.id || 'unknown',
@@ -674,7 +758,7 @@ export class StepExecutor {
       workflowContext: resolutionContext.context || {},
     };
   }
-  
+
   /**
    * Parse timeout string to milliseconds
    * @param timeout - Timeout string like "30s", "5m", "1h"

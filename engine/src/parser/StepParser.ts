@@ -7,8 +7,9 @@
  * @module parser
  */
 
-import type { StepDefinition as ZodStepDefinition } from '@dev-ecosystem/core';
+import type {StepDefinition as ZodStepDefinition } from '@dev-ecosystem/core';
 import { ValidationError, SchemaError, findClosestMatch, isLikelyTypo } from '../errors/index.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Parsed internal step representation
@@ -38,11 +39,16 @@ export interface ParsedStep {
   /** Continue workflow on failure */
   continueOnError: boolean;
   
-  /** Retry policy */
+  /** Retry policy configuration */
   retry?: {
+    /** Maximum number of retry attempts */
     max: number;
+    /** Backoff strategy (linear or exponential) */
     backoff?: 'linear' | 'exponential';
+    /** Delay between retries in milliseconds */
     delay?: number;
+    /** Store the current retry count */
+    count?: number;
   };
   
   /** Timeout string (e.g., '30s', '5m') */
@@ -114,11 +120,14 @@ export class StepParser {
     };
     
     // Copy retry policy if present
+    // Note: 'max' is the configuration (maximum retries allowed)
+    // 'count' is runtime state (initialized during execution, not from definition)
     if (stepDef.retry) {
       parsedStep.retry = {
         max: stepDef.retry.max,
         backoff: stepDef.retry.backoff as 'linear' | 'exponential' | undefined,
         delay: stepDef.retry.delay,
+        // count is initialized to 0 during execution
       };
     }
     
@@ -228,7 +237,19 @@ export class StepParser {
    * @returns Array of parsed steps
    */
   static parseAll(stepDefs: ZodStepDefinition[]): ParsedStep[] {
-    return stepDefs.map((step, index) => this.parse(step, index));
+    const logger = LoggerManager.getLogger();
+    logger.debug(`[StepParser] Parsing ${stepDefs.length} steps`, {
+      stepCount: stepDefs.length,
+    });
+    
+    const parsed = stepDefs.map((step, index) => this.parse(step, index));
+    
+    logger.debug(`[StepParser] Successfully parsed all steps`, {
+      stepCount: parsed.length,
+      stepIds: parsed.map(s => s.id),
+    });
+    
+    return parsed;
   }
 
   /**

@@ -33,6 +33,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Runtime context for variable resolution
@@ -304,9 +305,16 @@ export class VariableResolver {
    * @returns Resolved value or undefined
    */
   private lookup(expression: string, ctx: ResolutionContext): any {
+    const logger = LoggerManager.getLogger();
     const parts = expression.split('.');
     const source = parts[0];
     const path = parts.slice(1);
+
+    logger.debug(`[VariableResolver] Resolving variable: ${expression}`, {
+      expression,
+      source,
+      pathLength: path.length,
+    });
 
     // Resolve source
     let value: any;

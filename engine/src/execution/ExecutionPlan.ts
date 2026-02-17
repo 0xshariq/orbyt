@@ -24,6 +24,7 @@ import {
   type DependencyGraph,
   type TopologicalSortResult,
 } from '../graph/DependencyGraph.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Execution phase (group of steps that can run in parallel)
@@ -84,14 +85,28 @@ export class ExecutionPlanner {
    * @throws WorkflowValidationError if dependencies are invalid or cycles exist
    */
   static plan(nodes: ExecutionNode[]): ExecutionPlan {
+    const logger = LoggerManager.getLogger();
+    
+    logger.debug('Creating execution plan', {
+      nodeCount: nodes.length,
+    });
+
     // Step 1: Build dependency graph
     const graph = DependencyResolver.resolve(nodes);
+    logger.debug('Dependency graph resolved', {
+      nodeCount: graph.nodes.size,
+      edgeCount: graph.edges.length,
+    });
 
     // Step 2: Detect cycles (fail fast)
     CycleDetector.detectAndThrow(graph);
+    logger.debug('Cycle detection passed - no circular dependencies');
 
     // Step 3: Topological sort to get execution phases
     const sortResult = TopologicalSorter.sort(graph);
+    logger.debug('Topological sort completed', {
+      phaseCount: sortResult.phases.length,
+    });
 
     // Step 4: Build execution phases with nodes and timeouts
     const phases: ExecutionPhase[] = sortResult.phases.map((stepIds, index) => {
@@ -105,7 +120,7 @@ export class ExecutionPlanner {
     });
 
     // Step 5: Package into execution plan
-    return {
+    const plan = {
       phases: Object.freeze(phases),
       graph,
       totalSteps: nodes.length,
@@ -113,6 +128,15 @@ export class ExecutionPlanner {
       criticalPathLength: phases.length,
       sortResult,
     };
+
+    logger.debug('Execution plan created', {
+      totalSteps: plan.totalSteps,
+      phases: plan.phases.length,
+      maxParallelism: plan.maxParallelism,
+      criticalPathLength: plan.criticalPathLength,
+    });
+
+    return plan;
   }
 
   /**

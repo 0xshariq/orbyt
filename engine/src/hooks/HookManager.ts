@@ -4,6 +4,7 @@ import type {
     StepHookContext,
     HookResult,
 } from './LifecycleHooks.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * HookManager - Manages and executes lifecycle hooks
@@ -48,6 +49,9 @@ export class HookManager {
      */
     register(hook: LifecycleHook): void {
         this.hooks.push(hook);
+        LoggerManager.getLogger().debug('Lifecycle hook registered', {
+            hookCount: this.hooks.length,
+        });
     }
 
     /**
@@ -57,6 +61,10 @@ export class HookManager {
      */
     registerMany(hooks: LifecycleHook[]): void {
         this.hooks.push(...hooks);
+        LoggerManager.getLogger().debug('Multiple lifecycle hooks registered', {
+            count: hooks.length,
+            totalHooks: this.hooks.length,
+        });
     }
 
     /**

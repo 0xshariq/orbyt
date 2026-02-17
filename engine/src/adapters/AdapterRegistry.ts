@@ -10,6 +10,7 @@
 import type { Adapter } from '@dev-ecosystem/core';
 import { OrbytError } from '../errors/OrbytError.js';
 import { OrbytErrorCode, ErrorSeverity } from '../errors/ErrorCodes.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Adapter not found error
@@ -63,11 +64,18 @@ export class AdapterRegistry {
    * @throws {DuplicateAdapterError} If adapter name already registered
    */
   register(adapter: Adapter): void {
+    const logger = LoggerManager.getLogger();
+    
     if (this.adapters.has(adapter.name)) {
       throw new DuplicateAdapterError(adapter.name);
     }
 
     this.adapters.set(adapter.name, adapter);
+    
+    logger.info(`[AdapterRegistry] Adapter registered: ${adapter.name}`, {
+      adapterName: adapter.name,
+      totalAdapters: this.adapters.size,
+    });
   }
 
   /**

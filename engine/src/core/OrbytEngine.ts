@@ -71,7 +71,8 @@ import type { OrbytEngineConfig, LogLevel } from './EngineConfig.js';
 import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
 import type { EngineContext } from './EngineContext.js';
 import { createEngineContext } from './EngineContext.js';
-import { createEngineLogger, type EngineLogger } from './EngineLogger.js';
+import { LoggerManager, type EngineLogger } from '../logging/index.js';
+import { LogLevel as CoreLogLevel } from '@dev-ecosystem/core';
 import { ExecutionEngine } from '../execution/ExecutionEngine.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
 import { WorkflowExecutor } from '../execution/WorkflowExecutor.js';
@@ -88,6 +89,7 @@ import { InternalContextBuilder, type OwnershipContext } from '../execution/Inte
 import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
 import { WorkflowRunOptions } from '../types/core-types.js';
+import { ExplanationGenerator, ExplanationLogger, type ExecutionExplanation } from '../explanation/index.js';
 
 /**
  * OrbytEngine - Main public API
@@ -230,11 +232,28 @@ export class OrbytEngine {
     validateConfig(config);
     this.config = applyConfigDefaults(config);
 
-    // Initialize logger (before anything else for early logging)
-    this.logger = createEngineLogger(
-      this.config.logLevel,
-      this.config.verbose || false
-    );
+    // Map string log level to enum
+    const mapLogLevel = (level: LogLevel): CoreLogLevel => {
+      const mapping: Record<LogLevel, CoreLogLevel> = {
+        'debug': CoreLogLevel.DEBUG,
+        'info': CoreLogLevel.INFO,
+        'warn': CoreLogLevel.WARN,
+        'error': CoreLogLevel.ERROR,
+        'silent': CoreLogLevel.FATAL,
+      };
+      return mapping[level] || CoreLogLevel.INFO;
+    };
+
+    // Initialize LoggerManager (before anything else for early logging)
+    LoggerManager.initialize({
+      level: mapLogLevel(this.config.logLevel),
+      format: 'text',
+      colors: true,
+      timestamp: true,
+      source: 'OrbytEngine',
+      structuredEvents: true,
+    });
+    this.logger = LoggerManager.getLogger();
 
     // Initialize event system
     this.eventBus = new EventBus();
@@ -287,6 +306,20 @@ export class OrbytEngine {
         this.registerHook(hook);
       }
     }
+
+    // Log welcome message and initialization
+    this.logger.info('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    this.logger.info('🚀 Welcome to Orbyt Engine');
+    this.logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    this.logger.info('Orbyt Engine initialized', {
+      version: this.version,
+      logLevel: this.config.logLevel,
+      maxConcurrentWorkflows: this.config.maxConcurrentWorkflows,
+      schedulerEnabled: this.config.enableScheduler,
+      adapterCount: this.config.adapters?.length || 0,
+      hookCount: this.config.hooks?.length || 0,
+    });
+    this.logger.info('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
   }
 
   /**
@@ -723,6 +756,61 @@ export class OrbytEngine {
 
     this.log('info', `Workflow validated: ${parsedWorkflow.name || 'unnamed'}`);
     return true;
+  }
+
+  /**
+   * Explain a workflow without executing it
+   * 
+   * Provides a detailed execution plan showing:
+   * - Step execution order
+   * - Dependencies between steps
+   * - Adapter usage
+   * - Retry and timeout configuration
+   * - Circular dependency detection
+   * 
+   * @param workflow - Workflow to explain (string YAML content or ParsedWorkflow)
+   * @param options - Optional ownership context for tracking
+   * @returns Execution explanation in JSON format
+   * @throws Error if workflow is invalid
+   */
+  async explain(
+    workflow: string | ParsedWorkflow,
+    options?: { _ownershipContext?: Partial<OwnershipContext> }
+  ): Promise<ExecutionExplanation> {
+    // Create internal context for tracking explanations (non-billable)
+    const internalContext = InternalContextBuilder.build(
+      this.version,
+      { ...(options?._ownershipContext || {}), subscriptionTier: 'free' }
+    );
+
+    this.log('debug', 'Explaining workflow', {
+      executionId: internalContext._identity.executionId,
+    });
+
+    let parsedWorkflow: ParsedWorkflow;
+
+    if (typeof workflow === 'string') {
+      // String provided - parse as YAML content
+      // Note: For file paths, use WorkflowLoader.fromFile() before calling explain()
+      parsedWorkflow = this.parseWorkflow(workflow);
+    } else {
+      parsedWorkflow = workflow;
+    }
+
+    // Build execution explanation
+    const explanation = ExplanationGenerator.generate(parsedWorkflow);
+
+    // Log explanation at entry point with 'info' level for CLI visibility
+    ExplanationLogger.log(explanation, 'info');
+
+    this.log('debug', 'Workflow explained', {
+      workflowName: explanation.workflowName,
+      stepCount: explanation.stepCount,
+      executionStrategy: explanation.executionStrategy,
+      hasCycles: explanation.hasCycles,
+    });
+
+    return explanation;
   }
 
   /**

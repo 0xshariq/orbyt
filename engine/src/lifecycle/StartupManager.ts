@@ -6,6 +6,8 @@
  * @module lifecycle
  */
 
+import { LoggerManager } from '../logging/LoggerManager.js';
+
 /**
  * Startup check result
  */
@@ -35,6 +37,10 @@ export class StartupManager {
    */
   registerCheck(name: string, checkFn: CheckFunction): void {
     this.checks.set(name, checkFn);
+    LoggerManager.getLogger().debug('Startup check registered', {
+      checkName: name,
+      totalChecks: this.checks.size,
+    });
   }
 
   /**
@@ -45,8 +51,11 @@ export class StartupManager {
    */
   async runChecks(): Promise<StartupCheck[]> {
     const results: StartupCheck[] = [];
+    const logger = LoggerManager.getLogger();
     
-    console.log('🔍 Running startup checks...\n');
+    logger.info('🔍 Running startup checks...', {
+      totalChecks: this.checks.size,
+    });
 
     for (const [name, checkFn] of this.checks.entries()) {
       const startTime = Date.now();
@@ -61,7 +70,7 @@ export class StartupManager {
           duration,
         });
         
-        console.log(`  ✓ ${name} (${duration}ms)`);
+        logger.info(`  ✓ ${name}`, { duration });
       } catch (error) {
         const duration = Date.now() - startTime;
         const message = error instanceof Error ? error.message : String(error);
@@ -73,20 +82,24 @@ export class StartupManager {
           duration,
         });
         
-        console.log(`  ✗ ${name}: ${message} (${duration}ms)`);
+        logger.error(`  ✗ ${name}: ${message} (${duration}ms)`);
       }
     }
-
-    console.log('');
 
     // Check if any failed
     const failed = results.filter(r => !r.passed);
     if (failed.length > 0) {
+      const failedList = failed.map(f => `${f.name}: ${f.message}`).join(', ');
+      logger.error(`Startup checks failed: ${failedList}`);
       throw new Error(
         `${failed.length} startup check(s) failed:\n` +
         failed.map(f => `  - ${f.name}: ${f.message}`).join('\n')
       );
     }
+
+    logger.info('All startup checks passed', {
+      totalChecks: results.length,
+    });
 
     return results;
   }
@@ -96,8 +109,6 @@ export class StartupManager {
    */
   static createDefaultChecks(): StartupManager {
     const manager = new StartupManager();
-
-    // Check Node version
     manager.registerCheck('Node.js version', () => {
       const version = process.versions.node;
       const major = parseInt(version.split('.')[0], 10);

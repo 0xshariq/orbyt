@@ -14,6 +14,7 @@
  */
 
 import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Known workflow intents
@@ -85,20 +86,41 @@ export class IntentAnalyzer {
      * Future: ML-based classification, pattern recognition
      */
     static classify(workflow: ParsedWorkflow): ClassifiedIntent {
+        const logger = LoggerManager.getLogger();
+        
+        logger.debug('Classifying workflow intent', {
+            workflowName: workflow.name,
+            stepCount: workflow.steps.length,
+        });
+
         // 1. Check explicit intent annotation
         const explicitIntent = this.checkExplicitIntent(workflow);
         if (explicitIntent) {
+            logger.debug('Intent classified from explicit annotation', {
+                intent: explicitIntent.intent,
+                confidence: explicitIntent.confidence,
+            });
             return explicitIntent;
         }
 
         // 2. Analyze workflow structure
         const structuralIntent = this.analyzeStructure(workflow);
         if (structuralIntent.confidence !== 'low') {
+            logger.debug('Intent classified from structure', {
+                intent: structuralIntent.intent,
+                confidence: structuralIntent.confidence,
+                reasoning: structuralIntent.reasoning,
+            });
             return structuralIntent;
         }
 
         // 3. Analyze step patterns
         const patternIntent = this.analyzeStepPatterns(workflow);
+        logger.debug('Intent classified from step patterns', {
+            intent: patternIntent.intent,
+            confidence: patternIntent.confidence,
+            reasoning: patternIntent.reasoning,
+        });
 
         return patternIntent;
     }

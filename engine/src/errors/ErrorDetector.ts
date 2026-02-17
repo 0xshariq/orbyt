@@ -48,6 +48,7 @@ import {
     METADATA_FIELDS
 } from './FieldRegistry.js';
 import { findClosestMatch } from './TypoDetector.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Error context for detection
@@ -148,17 +149,29 @@ export class ErrorDetector {
      * @returns OrbytError with debug info attached
      */
     static detect(context: ErrorContext): OrbytError {
+        const logger = LoggerManager.getLogger();
         let error: OrbytError;
+
+        logger.debug(`[ErrorDetector] Detecting error type: ${context.type}`, {
+            scenario: context.type,
+            field: context.field,
+            location: context.location,
+        });
 
         // Auto-detect reserved fields
         if (context.field && this.isReservedField(context.field)) {
             error = this.handleReservedField(context);
+            logger.error(`[ErrorDetector] Reserved field detected: ${context.field}`, error, {
+                field: context.field,
+                location: context.location,
+            });
             return this.enrichWithDebugInfo(error);
         }
 
         // Auto-detect reserved annotations
         if (context.field && this.isReservedAnnotation(context.field)) {
             error = SecurityError.reservedAnnotation(context.field, context.location || 'unknown');
+            logger.error(`[ErrorDetector] Reserved annotation detected: ${context.field}`, error);
             return this.enrichWithDebugInfo(error);
         }
 

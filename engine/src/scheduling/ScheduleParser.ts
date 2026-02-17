@@ -17,6 +17,7 @@
 
 import cron from 'node-cron';
 import type { ScheduledTask } from 'node-cron';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Schedule parser for cron expressions
@@ -41,9 +42,17 @@ export class ScheduleParser {
    * @returns Next run time
    */
   static getNextRunTime(cronExpression: string, from: Date = new Date()): Date {
+    const logger = LoggerManager.getLogger();
+    
     if (!this.isValidCron(cronExpression)) {
+      logger.error(`[ScheduleParser] Invalid cron expression: ${cronExpression}`);
       throw new Error(`Invalid cron expression: "${cronExpression}"`);
     }
+
+    logger.debug(`[ScheduleParser] Calculating next run time for: ${cronExpression}`, {
+      cronExpression,
+      from: from.toISOString(),
+    });
 
     // Parse cron expression (minute hour day month weekday)
     const parts = cronExpression.trim().split(/\s+/);

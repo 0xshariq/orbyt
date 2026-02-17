@@ -12,6 +12,7 @@ import { SchemaValidator } from './SchemaValidator.js';
 import { StepParser, type ParsedStep } from './StepParser.js';
 import { validateWorkflowSecurity } from '../security/ReservedFields.js';
 import type { WorkflowDefinitionZod } from '@dev-ecosystem/core';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Parsed workflow ready for execution
@@ -105,39 +106,58 @@ export class WorkflowParser {
    * @throws {SecurityError} If reserved fields are detected
    */
   static parse(rawWorkflow: unknown): ParsedWorkflow {
-    // Step 0: SECURITY CHECK - Validate NO reserved fields present
-    // This runs BEFORE any other validation to prevent internal field manipulation
-    // Throws SecurityError with structured error codes if violations found
-    validateWorkflowSecurity(rawWorkflow);
+    const logger = LoggerManager.getLogger();
+    const startTime = Date.now();
+    
+    try {
+      // Step 0: SECURITY CHECK - Validate NO reserved fields present
+      // This runs BEFORE any other validation to prevent internal field manipulation
+      // Throws SecurityError with structured error codes if violations found
+      validateWorkflowSecurity(rawWorkflow);
 
-    // Step 1: Validate against schema (with enhanced diagnostics)
-    const validated: WorkflowDefinitionZod = SchemaValidator.validate(rawWorkflow);
+      // Step 1: Validate against schema (with enhanced diagnostics)
+      logger.parsingStarted('workflow', 'object');
+      const validated: WorkflowDefinitionZod = SchemaValidator.validate(rawWorkflow);
 
-    // Step 2: Parse steps from nested workflow.steps
-    const steps = StepParser.parseAll(validated.workflow.steps);
+      // Step 2: Parse steps from nested workflow.steps
+      const steps = StepParser.parseAll(validated.workflow.steps);
 
-    // Step 3: Run comprehensive step validations
-    StepParser.validateAll(steps);
+      // Step 3: Run comprehensive step validations
+      StepParser.validateAll(steps);
 
-    // Step 4: Build parsed workflow
-    const parsed: ParsedWorkflow = {
-      name: validated.metadata?.name,
-      description: validated.metadata?.description,
-      version: validated.version,
-      kind: validated.kind,
-      steps,
-      inputs: validated.inputs,
-      context: validated.context,
-      secrets: validated.secrets,
-      triggers: validated.triggers,
-      defaults: validated.defaults,
-      policies: validated.policies,
-      permissions: validated.permissions,
-      resources: validated.resources,
-      outputs: validated.outputs,
-    };
+      // Step 4: Build parsed workflow
+      const parsed: ParsedWorkflow = {
+        name: validated.metadata?.name,
+        description: validated.metadata?.description,
+        version: validated.version,
+        kind: validated.kind,
+        steps,
+        inputs: validated.inputs,
+        context: validated.context,
+        secrets: validated.secrets,
+        triggers: validated.triggers,
+        defaults: validated.defaults,
+        policies: validated.policies,
+        permissions: validated.permissions,
+        resources: validated.resources,
+        outputs: validated.outputs,
+      };
 
-    return parsed;
+      const duration = Date.now() - startTime;
+      logger.parsingCompleted('workflow', duration, {
+        stepCount: steps.length,
+        hasInputs: !!validated.inputs,
+        hasTriggers: !!validated.triggers,
+      });
+
+      return parsed;
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      if (error instanceof Error) {
+        logger.parsingFailed('workflow', error, { duration });
+      }
+      throw error;
+    }
   }
 
   /**
@@ -147,11 +167,14 @@ export class WorkflowParser {
    * @returns Parsed workflow
    */
   static fromYAML(yamlContent: string): ParsedWorkflow {
+    const logger = LoggerManager.getLogger();
     try {
+      logger.parsingStarted('YAML', 'yaml');
       const parsed = YAML.parse(yamlContent);
       return this.parse(parsed);
     } catch (error) {
       if (error instanceof Error) {
+        logger.parsingFailed('YAML', error);
         throw new Error(`YAML parsing failed: ${error.message}`);
       }
       throw error;
@@ -165,11 +188,14 @@ export class WorkflowParser {
    * @returns Parsed workflow
    */
   static fromJSON(jsonContent: string): ParsedWorkflow {
+    const logger = LoggerManager.getLogger();
     try {
+      logger.parsingStarted('JSON', 'json');
       const parsed = JSON.parse(jsonContent);
       return this.parse(parsed);
     } catch (error) {
       if (error instanceof Error) {
+        logger.parsingFailed('JSON', error);
         throw new Error(`JSON parsing failed: ${error.message}`);
       }
       throw error;

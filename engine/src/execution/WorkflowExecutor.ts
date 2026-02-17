@@ -24,6 +24,7 @@ import type { EventBus } from '../events/EventBus.js';
 import type { HookManager } from '../hooks/HookManager.js';
 import { EngineEventType, createEvent } from '../events/EngineEvents.js';
 import type { WorkflowHookContext } from '../hooks/LifecycleHooks.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 
 /**
  * Workflow execution result
@@ -130,11 +131,38 @@ export class WorkflowExecutor {
     const stepResults = new Map<string, StepResult>();
     const workflowName = workflow.metadata?.name || workflow.name || 'unnamed';
 
+    // Log workflow execution started
+    LoggerManager.getLogger().workflowStarted(workflowName, {
+      executionId: this.executionId,
+      triggeredBy: options.triggeredBy,
+      inputCount: options.inputs ? Object.keys(options.inputs).length : 0,
+      stepCount: workflow.steps.length,
+    });
+
     // Validate workflow
     this.validateWorkflow(workflow);
 
     // Create ContextStore for this execution
     this.contextStore = this.createContextStore(workflow, options);
+    
+    // Log workflow inputs
+    const logger = LoggerManager.getLogger();
+    if (options.inputs) {
+      for (const [key, value] of Object.entries(options.inputs)) {
+        if (!key.startsWith('_')) {
+          logger.inputProcessed(key, value, 'workflow.inputs');
+        }
+      }
+    }
+    
+    // Log workflow context
+    if (options.context) {
+      for (const [key, value] of Object.entries(options.context)) {
+        if (!key.startsWith('_')) {
+          logger.fieldExecution('context', key, value);
+        }
+      }
+    }
     
     // Create hook context
     const hookContext: WorkflowHookContext = {
@@ -182,6 +210,13 @@ export class WorkflowExecutor {
 
     // Create execution plan
     const plan = ExecutionPlanner.plan(executionNodes);
+    
+    // Log execution plan details
+    logger.info(`[Plan] Execution plan created with ${plan.phases.length} phase(s)`, {
+      totalPhases: plan.phases.length,
+      totalSteps: workflow.steps.length,
+      maxParallelism: plan.maxParallelism,
+    });
 
     // Get context from ContextStore
     const context = this.contextStore.getResolutionContext();

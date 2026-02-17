@@ -6,6 +6,8 @@
  * @module lifecycle
  */
 
+import { LoggerManager } from '../logging/LoggerManager.js';
+
 /**
  * Shutdown handler function
  */
@@ -28,6 +30,10 @@ export class ShutdownManager {
    */
   registerHandler(name: string, handler: ShutdownHandler): void {
     this.handlers.push({ name, handler });
+    LoggerManager.getLogger().debug('Shutdown handler registered', {
+      handlerName: name,
+      totalHandlers: this.handlers.length,
+    });
   }
 
   /**
@@ -36,13 +42,18 @@ export class ShutdownManager {
    * @param timeoutMs - Maximum time per handler
    */
   async executeHandlers(timeoutMs: number = 10000): Promise<void> {
+    const logger = LoggerManager.getLogger();
+    
     if (this.shutdownInProgress) {
-      console.log('⚠️  Shutdown already in progress');
+      logger.warn('Shutdown already in progress');
       return;
     }
 
     this.shutdownInProgress = true;
-    console.log('🛑 Executing shutdown handlers...\n');
+    logger.info('🛑 Executing shutdown handlers', {
+      handlerCount: this.handlers.length,
+      timeoutMs,
+    });
 
     for (const { name, handler } of this.handlers) {
       try {
@@ -54,16 +65,15 @@ export class ShutdownManager {
         });
 
         await Promise.race([handlerPromise, timeoutPromise]);
-        console.log(`  ✓ ${name}`);
+        logger.info(`  ✓ ${name}`);
       } catch (error) {
-        console.log(
-          `  ✗ ${name}: ${error instanceof Error ? error.message : error}`
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(`  ✗ ${name}: ${message}`);
         // Continue with other handlers even if one fails
       }
     }
 
-    console.log('');
+    logger.info('Shutdown handlers completed');
     this.shutdownInProgress = false;
   }
 
@@ -73,17 +83,19 @@ export class ShutdownManager {
    * @param onShutdown - Function to call on shutdown signal
    */
   static setupSignalHandlers(onShutdown: () => Promise<void>): void {
+    const logger = LoggerManager.getLogger();
     const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
     
     for (const signal of signals) {
       process.on(signal, async () => {
-        console.log(`\n📡 Received ${signal} signal`);
+        logger.info(`📡 Received ${signal} signal`, { signal });
         
         try {
           await onShutdown();
           process.exit(0);
         } catch (error) {
-          console.error('❌ Shutdown error:', error);
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error(`Shutdown error: ${message}`);
           process.exit(1);
         }
       });
@@ -91,7 +103,8 @@ export class ShutdownManager {
 
     // Handle uncaught errors
     process.on('uncaughtException', async (error) => {
-      console.error('❌ Uncaught exception:', error);
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error(`Uncaught exception: ${message}`);
       
       try {
         await onShutdown();
@@ -103,7 +116,7 @@ export class ShutdownManager {
     });
 
     process.on('unhandledRejection', async (reason) => {
-      console.error('❌ Unhandled rejection:', reason);
+      logger.error(`Unhandled rejection: ${String(reason)}`);
       
       try {
         await onShutdown();

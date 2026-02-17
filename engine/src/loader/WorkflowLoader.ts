@@ -53,7 +53,7 @@ import { WorkflowParser, type ParsedWorkflow } from '../parser/WorkflowParser.js
 import { ErrorDetector } from '../errors/ErrorDetector.js';
 import { OrbytError } from '../errors/OrbytError.js';
 import { logErrorToEngine } from '../errors/ErrorFormatter.js';
-import type { EngineLogger } from '../core/EngineLogger.js';
+import type { EngineLogger } from '../logging/EngineLogger.js';
 
 /**
  * Workflow loading options
@@ -233,32 +233,40 @@ export class WorkflowLoader {
   }
 
   /**
-   * Validate a workflow without returning parsed result
+   * Validate a workflow and return parsed result with metadata
    * 
-   * Useful for validation-only operations
+   * This is a convenience method that auto-detects the source type:
+   * - File path → load from file
+   * - YAML/JSON string → parse content
+   * - Object → validate object
+   * 
+   * Returns ParsedWorkflow with metadata (name, description, steps count, etc.)
+   * so you can display info about the validated workflow.
    * 
    * @param source - File path, YAML string, JSON string, or object
-   * @returns True if valid
-   * @throws Error if invalid
+   * @param logger - Optional EngineLogger for structured logging
+   * @returns ParsedWorkflow with metadata
+   * @throws OrbytError if invalid
    */
-  static async validate(source: string | unknown): Promise<boolean> {
+  static async validate(
+    source: string | unknown,
+    logger?: EngineLogger
+  ): Promise<ParsedWorkflow> {
     if (typeof source === 'string') {
       // Check if it's a file path
       if (existsSync(source)) {
-        await this.fromFile(source);
+        return await this.fromFile(source, { logger });
       } else {
         // Try parsing as YAML/JSON
         try {
-          this.fromYAML(source);
+          return this.fromYAML(source, undefined, logger);
         } catch {
-          this.fromJSON(source);
+          return this.fromJSON(source, undefined, logger);
         }
       }
     } else {
-      this.fromObject(source);
+      return this.fromObject(source, logger);
     }
-
-    return true;
   }
 
   /**
