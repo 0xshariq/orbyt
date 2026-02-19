@@ -40,18 +40,30 @@ export class HumanFormatter implements Formatter {
 
   constructor(options: FormatterOptions = {}) {
     this.options = options;
-    
     // Disable chalk colors if requested
     if (options.noColor) {
       chalk.level = 0;
     }
-
     // Create logger for structured logging
     this.logger = createCliLogger({
       level: options.verbose ? LogLevel.DEBUG : LogLevel.INFO,
       colors: !options.noColor,
       timestamp: true, // Enable human-readable timestamps
     });
+  }
+
+  /**
+   * Print a summary of log counts by level and type
+   */
+  printLogSummary(): void {
+    this.logger.printLogSummary();
+  }
+
+  /**
+   * Pretty print all logs for CLI output
+   */
+  prettyPrintLogs(verbose = false): void {
+    this.logger.prettyPrintLogs(verbose);
   }
 
   /**

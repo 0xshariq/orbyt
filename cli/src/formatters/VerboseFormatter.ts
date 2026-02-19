@@ -38,18 +38,30 @@ export class VerboseFormatter implements Formatter {
 
   constructor(options: FormatterOptions = {}) {
     this.options = options;
-    
     // Disable chalk colors if requested
     if (options.noColor) {
       chalk.level = 0;
     }
-
     // Create logger for structured logging (verbose mode)
     this.logger = createCliLogger({
       level: LogLevel.DEBUG, // Always debug in verbose mode
       colors: !options.noColor,
       timestamp: true, // Enable timestamps in verbose mode
     });
+  }
+
+  /**
+   * Print a summary of log counts by level and type
+   */
+  printLogSummary(): void {
+    this.logger.printLogSummary();
+  }
+
+  /**
+   * Pretty print all logs for CLI output
+   */
+  prettyPrintLogs(verbose = false): void {
+    this.logger.prettyPrintLogs(verbose);
   }
 
   /**

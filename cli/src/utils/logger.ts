@@ -35,18 +35,11 @@ export type CliLogContext = Record<string, unknown>;
 
 /**
  * CLI Logger configuration (extends engine logger config)
+ * Only context is CLI-specific, all other options are passed to the constructor as overrides.
  */
 export interface CliLoggerConfig extends EngineLoggerConfig {
   /** CLI-specific context (merged with log context) */
   context?: CliLogContext;
-  /** Log level for CLI logger */
-  level?: LogLevel;
-  /** Output format for CLI logger */
-  format?: CliLogFormat;
-  /** Enable/disable colors */
-  colors?: boolean;
-  /** Enable/disable timestamps */
-  timestamp?: boolean;
 }
 
 /**
@@ -70,6 +63,67 @@ export function getEngineLogger() {
 export function resetLoggerManager(): void {
   LoggerManager.reset();
 }
+/**
+ * Filter logs by log level (debug, info, warn, error, fatal)
+ */
+export function filterLogsByLevel(logs: any[], level: LogLevel): any[] {
+  return logs.filter(log => log.level === level);
+}
+
+/**
+ * Filter logs by log type (e.g., WORKFLOW_STARTED, STEP_FAILED, etc.)
+ */
+export function filterLogsByType(logs: any[], type: string): any[] {
+  return logs.filter(log => log.type === type);
+}
+
+/**
+ * Group logs by log level
+ */
+export function groupLogsByLevel(logs: any[]): Record<LogLevel, any[]> {
+  return logs.reduce((acc, log) => {
+    (acc[log.level] = acc[log.level] || []).push(log);
+    return acc;
+  }, {} as Record<LogLevel, any[]>);
+}
+
+/**
+ * Group logs by log type
+ */
+export function groupLogsByType(logs: any[]): Record<string, any[]> {
+  return logs.reduce((acc, log) => {
+    (acc[log.type] = acc[log.type] || []).push(log);
+    return acc;
+  }, {} as Record<string, any[]>);
+}
+
+/**
+ * Print a summary of log counts by level and type
+ */
+export function printLogSummary(logs: any[]): void {
+  const byLevel = groupLogsByLevel(logs);
+  const byType = groupLogsByType(logs);
+  // Print by level
+  console.log('Log Events by Level:');
+  Object.entries(byLevel).forEach(([level, arr]) => {
+    console.log(`  ${level}: ${arr.length}`);
+  });
+  // Print by type
+  console.log('Log Events by Type:');
+  Object.entries(byType).forEach(([type, arr]) => {
+    console.log(`  ${type}: ${arr.length}`);
+  });
+}
+
+/**
+ * Pretty print logs for CLI output (with color if enabled)
+ */
+export function prettyPrintLogs(logs: any[], verbose = false): void {
+  logs.forEach(log => {
+    // Use formatJsonEvent for now; can be improved for color/UX
+    console.log(formatJsonEvent(log, verbose));
+  });
+}
 
 /**
  * CLI Logger class
@@ -82,21 +136,19 @@ export class CliLogger {
   private cliContext: CliLogContext;
 
   constructor(config: Partial<CliLoggerConfig> = {}) {
-    // Always use LoggerManager.getLogger() for logging
-    // Configuration should be done via LoggerManager.initialize() before creating CLI logger
-    if (config.level !== undefined) {
+    // Only context is CLI-specific, all other options are passed as overrides
+    if ('level' in config && config.level !== undefined) {
       LoggerManager.getLogger().setLevel(config.level);
     }
-    if (config.colors !== undefined) {
+    if ('colors' in config && config.colors !== undefined) {
       LoggerManager.getLogger().setColors(config.colors);
     }
-    if (config.format !== undefined) {
+    if ('format' in config && config.format !== undefined) {
       LoggerManager.getLogger().setFormat(config.format);
     }
-    if (config.timestamp !== undefined) {
+    if ('timestamp' in config && config.timestamp !== undefined) {
       LoggerManager.getLogger().setTimestamp(config.timestamp);
     }
-
     this.cliContext = config.context ?? {};
   }
 
@@ -248,6 +300,47 @@ export class CliLogger {
    */
   formatAllLogs(verbose = false): string[] {
     return this.getJsonLogs().map(log => formatJsonEvent(log, verbose));
+  }
+  /**
+   * Filter logs by log level (debug, info, warn, error, fatal)
+   */
+  filterLogsByLevel(level: LogLevel): any[] {
+    return filterLogsByLevel(this.getJsonLogs(), level);
+  }
+
+  /**
+   * Filter logs by log type (e.g., WORKFLOW_STARTED, STEP_FAILED, etc.)
+   */
+  filterLogsByType(type: string): any[] {
+    return filterLogsByType(this.getJsonLogs(), type);
+  }
+
+  /**
+   * Group logs by log level
+   */
+  groupLogsByLevel(): Record<LogLevel, any[]> {
+    return groupLogsByLevel(this.getJsonLogs());
+  }
+
+  /**
+   * Group logs by log type
+   */
+  groupLogsByType(): Record<string, any[]> {
+    return groupLogsByType(this.getJsonLogs());
+  }
+
+  /**
+   * Print a summary of log counts by level and type
+   */
+  printLogSummary(): void {
+    printLogSummary(this.getJsonLogs());
+  }
+
+  /**
+   * Pretty print logs for CLI output (with color if enabled)
+   */
+  prettyPrintLogs(verbose = false): void {
+    prettyPrintLogs(this.getJsonLogs(), verbose);
   }
 }
 
