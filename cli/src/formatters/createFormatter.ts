@@ -14,18 +14,20 @@
 import type { Formatter, FormatterOptions } from './Formatter.js';
 import { HumanFormatter } from './HumanFormatter.js';
 import { VerboseFormatter } from './VerboseFormatter.js';
+import { ExplainHumanFormatter } from './explain/ExplainHumanFormatter.js';
+import { ExplainVerboseFormatter } from './explain/ExplainVerboseFormatter.js';
 import { JsonFormatter } from './JsonFormatter.js';
 import { NullFormatter } from './NullFormatter.js';
 
 /**
  * Supported formatter types
  */
-export type FormatterType = 'human' | 'json' | 'verbose' | 'null';
+export type FormatterType = 'human' | 'json' | 'verbose' | 'null' | 'explain-human' | 'explain-verbose';
 
 /**
  * Available formatter types as a set for validation
  */
-const VALID_FORMATTER_TYPES: Set<string> = new Set(['human', 'json', 'verbose', 'null']);
+const VALID_FORMATTER_TYPES: Set<string> = new Set(['human', 'json', 'verbose', 'null', 'explain-human', 'explain-verbose']);
 
 /**
  * Create a formatter instance
@@ -62,16 +64,16 @@ export function createFormatter(
   switch (type) {
     case 'human':
       return new HumanFormatter(options);
-    
     case 'verbose':
       return new VerboseFormatter(options);
-    
     case 'json':
       return new JsonFormatter(options);
-    
     case 'null':
       return new NullFormatter(options);
-    
+    case 'explain-human':
+      return new ExplainHumanFormatter(options);
+    case 'explain-verbose':
+      return new ExplainVerboseFormatter(options);
     default:
       // TypeScript exhaustiveness check - should never reach here
       const exhaustiveCheck: never = type;
