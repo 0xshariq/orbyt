@@ -17,7 +17,7 @@
  */
 
 import {
-  EngineLogger,
+  LoggerManager,
   type EngineLoggerConfig,
   type EngineLogFormat,
 } from '@orbytautomation/engine';
@@ -39,50 +39,36 @@ export type CliLogContext = Record<string, unknown>;
 export interface CliLoggerConfig extends EngineLoggerConfig {
   /** CLI-specific context (merged with log context) */
   context?: CliLogContext;
+  /** Log level for CLI logger */
+  level?: LogLevel;
+  /** Output format for CLI logger */
+  format?: CliLogFormat;
+  /** Enable/disable colors */
+  colors?: boolean;
+  /** Enable/disable timestamps */
+  timestamp?: boolean;
 }
 
 /**
- * Singleton EngineLogger instance
- * 
- * All CLI loggers use this single EngineLogger instance under the hood.
- * This ensures consistent logging behavior across all formatters and commands.
+ * Get the LoggerManager singleton instance
+ * Use this for all logging and log access in CLI and formatters.
  */
-let engineLoggerInstance: EngineLogger | null = null;
-
-/**
- * Get or create the singleton EngineLogger instance
- */
-function getEngineLogger(config?: Partial<EngineLoggerConfig>): EngineLogger {
-  if (!engineLoggerInstance) {
-    // Create new instance with config
-    engineLoggerInstance = new EngineLogger({
-      level: config?.level ?? LogLevel.INFO,
-      format: config?.format ?? 'pretty',
-      colors: config?.colors ?? true,
-      timestamp: config?.timestamp ?? true, // Engine generates timestamps
-      source: config?.source ?? 'CLI',
-    });
-  } else if (config) {
-    // Update existing logger config if provided
-    engineLoggerInstance.setLevel(config.level ?? LogLevel.INFO);
-    if (config.colors !== undefined) {
-      engineLoggerInstance.setColors(config.colors);
-    }
-    if (config.format !== undefined) {
-      engineLoggerInstance.setFormat(config.format);
-    }
-    if (config.timestamp !== undefined) {
-      engineLoggerInstance.setTimestamp(config.timestamp);
-    }
-  }
-  return engineLoggerInstance;
+export function getLoggerManager() {
+  return LoggerManager;
 }
 
 /**
- * Reset the EngineLogger instance (useful for testing)
+ * Get the EngineLogger instance from LoggerManager
  */
-export function resetEngineLogger(): void {
-  engineLoggerInstance = null;
+export function getEngineLogger() {
+  return LoggerManager.getLogger();
+}
+
+/**
+ * Reset the LoggerManager instance (useful for testing)
+ */
+export function resetLoggerManager(): void {
+  LoggerManager.reset();
 }
 
 /**
@@ -93,27 +79,32 @@ export function resetEngineLogger(): void {
  * This ensures consistency across CLI, API, web dashboards, etc.
  */
 export class CliLogger {
-  private engineLogger: EngineLogger;
   private cliContext: CliLogContext;
 
   constructor(config: Partial<CliLoggerConfig> = {}) {
-    // Use singleton EngineLogger instance
-    this.engineLogger = getEngineLogger({
-      level: config.level ?? LogLevel.INFO,
-      format: config.format ?? 'pretty',
-      colors: config.colors ?? true,
-      timestamp: config.timestamp ?? true, // Engine generates timestamps
-      source: config.source ?? 'CLI',
-    });
+    // Always use LoggerManager.getLogger() for logging
+    // Configuration should be done via LoggerManager.initialize() before creating CLI logger
+    if (config.level !== undefined) {
+      LoggerManager.getLogger().setLevel(config.level);
+    }
+    if (config.colors !== undefined) {
+      LoggerManager.getLogger().setColors(config.colors);
+    }
+    if (config.format !== undefined) {
+      LoggerManager.getLogger().setFormat(config.format);
+    }
+    if (config.timestamp !== undefined) {
+      LoggerManager.getLogger().setTimestamp(config.timestamp);
+    }
 
     this.cliContext = config.context ?? {};
   }
 
   /**
-   * Get the underlying EngineLogger instance
+   * Get the underlying EngineLogger instance (from LoggerManager)
    */
-  getEngineLogger(): EngineLogger {
-    return this.engineLogger;
+  getEngineLogger() {
+    return LoggerManager.getLogger();
   }
 
   /**
@@ -141,52 +132,52 @@ export class CliLogger {
    * Set log level
    */
   setLevel(level: LogLevel): void {
-    this.engineLogger.setLevel(level);
+    LoggerManager.getLogger().setLevel(level);
   }
 
   /**
    * Get current log level
    */
   getLevel(): LogLevel {
-    return this.engineLogger.getConfig().level;
+    return LoggerManager.getLogger().getConfig().level;
   }
 
   /**
    * Set colors enabled/disabled
    */
   setColors(enabled: boolean): void {
-    this.engineLogger.setColors(enabled);
+    LoggerManager.getLogger().setColors(enabled);
   }
 
   /**
    * Check if a log level is enabled
    */
   isLevelEnabled(level: LogLevel): boolean {
-    return this.engineLogger.willLog(level);
+    return LoggerManager.getLogger().willLog(level);
   }
 
   /**
    * Convenience methods for checking specific levels
    */
   isDebugEnabled(): boolean {
-    return this.engineLogger.isDebugEnabled();
+    return LoggerManager.getLogger().isDebugEnabled();
   }
 
   isInfoEnabled(): boolean {
-    return this.engineLogger.isInfoEnabled();
+    return LoggerManager.getLogger().isInfoEnabled();
   }
 
   isWarnEnabled(): boolean {
-    return this.engineLogger.isWarnEnabled();
+    return LoggerManager.getLogger().isWarnEnabled();
   }
 
   isErrorEnabled(): boolean {
-    return this.engineLogger.isErrorEnabled();
+    return LoggerManager.getLogger().isErrorEnabled();
   }
 
   isFatalEnabled(): boolean {
     // Fatal is higher severity than error, so if error is enabled, fatal is too
-    return this.engineLogger.willLog(LogLevel.FATAL);
+    return LoggerManager.getLogger().willLog(LogLevel.FATAL);
   }
 
   /**
@@ -194,23 +185,23 @@ export class CliLogger {
    * All timestamp handling is done by EngineLogger
    */
   debug(message: string, context?: Record<string, unknown>): void {
-    this.engineLogger.debug(message, { ...this.cliContext, ...context });
+    LoggerManager.getLogger().debug(message, { ...this.cliContext, ...context });
   }
 
   info(message: string, context?: Record<string, unknown>): void {
-    this.engineLogger.info(message, { ...this.cliContext, ...context });
+    LoggerManager.getLogger().info(message, { ...this.cliContext, ...context });
   }
 
   warn(message: string, context?: Record<string, unknown>): void {
-    this.engineLogger.warn(message, { ...this.cliContext, ...context });
+    LoggerManager.getLogger().warn(message, { ...this.cliContext, ...context });
   }
 
   error(message: string, error?: Error, context?: Record<string, unknown>): void {
-    this.engineLogger.error(message, error, { ...this.cliContext, ...context });
+    LoggerManager.getLogger().error(message, error, { ...this.cliContext, ...context });
   }
 
   fatal(message: string, error?: Error, context?: Record<string, unknown>): void {
-    this.engineLogger.fatal(message, error, { ...this.cliContext, ...context });
+    LoggerManager.getLogger().fatal(message, error, { ...this.cliContext, ...context });
   }
 
   /**
@@ -221,7 +212,42 @@ export class CliLogger {
     fn: () => Promise<T>,
     thresholds?: { warn?: number; error?: number }
   ): Promise<T> {
-    return this.engineLogger.measureExecution(label, fn, thresholds);
+    return LoggerManager.getLogger().measureExecution(label, fn, thresholds);
+  }
+
+  /**
+   * Get all JSON logs from LoggerManager
+   */
+  getJsonLogs(): any[] {
+    return LoggerManager.getJSONLogs();
+  }
+
+  /**
+   * Get logs filtered by log level
+   */
+  getLogsByLevel(level: LogLevel): any[] {
+    return this.getJsonLogs().filter(log => log.level === level);
+  }
+
+  /**
+   * Get logs filtered by log type
+   */
+  getLogsByType(type: string): any[] {
+    return this.getJsonLogs().filter(log => log.type === type);
+  }
+
+  /**
+   * Format logs for CLI output by log level
+   */
+  formatLogsByLevel(level: LogLevel, verbose = false): string[] {
+    return this.getLogsByLevel(level).map(log => formatJsonEvent(log, verbose));
+  }
+
+  /**
+   * Format all logs for CLI output
+   */
+  formatAllLogs(verbose = false): string[] {
+    return this.getJsonLogs().map(log => formatJsonEvent(log, verbose));
   }
 }
 
@@ -231,32 +257,24 @@ export class CliLogger {
  * Factory function for creating CLI loggers with engine-generated timestamps.
  */
 export function createCliLogger(config?: Partial<CliLoggerConfig>): CliLogger {
-    return new CliLogger(config);
+  return new CliLogger(config);
 }
 
 /**
- * Default logger instance for CLI (singleton pattern)
+ * Get the LoggerManager singleton for CLI and formatters
  */
-let defaultLogger: CliLogger | null = null;
-
-/**
- * Get or create the default CLI logger
- */
-export function getCliLogger(): CliLogger {
-    if (!defaultLogger) {
-        defaultLogger = createCliLogger();
-    }
-    return defaultLogger;
-}
-
-/**
- * Set the default CLI logger
- */
-export function setDefaultCliLogger(logger: CliLogger): void {
-    defaultLogger = logger;
+export function getCliLoggerManager() {
+  return LoggerManager;
 }
 
 // ==================== JSON Formatting Helpers for JSONFormatter ====================
+
+/**
+ * Get structured JSON logs from LoggerManager
+ */
+export function getCliJsonLogs() {
+  return LoggerManager.getJSONLogs();
+}
 
 /**
  * Format CLI event as JSON string
@@ -265,17 +283,17 @@ export function setDefaultCliLogger(logger: CliLogger): void {
  * Each event is a single line of JSON output.
  */
 export function formatJsonEvent(event: unknown, verbose = false): string {
-    const eventObj = event && typeof event === 'object' ? event as Record<string, unknown> : {};
-    const jsonEvent = {
-        ...eventObj,
-        timestamp: event && typeof event === 'object' && 'timestamp' in event
-            ? (event as any).timestamp.toISOString()
-            : new Date().toISOString(),
-    };
+  const eventObj = event && typeof event === 'object' ? event as Record<string, unknown> : {};
+  const jsonEvent = {
+    ...eventObj,
+    timestamp: event && typeof event === 'object' && 'timestamp' in event
+      ? (event as any).timestamp.toISOString()
+      : new Date().toISOString(),
+  };
 
-    return verbose
-        ? JSON.stringify(jsonEvent, null, 2)
-        : JSON.stringify(jsonEvent);
+  return verbose
+    ? JSON.stringify(jsonEvent, null, 2)
+    : JSON.stringify(jsonEvent);
 }
 
 /**
@@ -284,35 +302,35 @@ export function formatJsonEvent(event: unknown, verbose = false): string {
  * Used by JsonFormatter to output final workflow result.
  */
 export function formatJsonResult(result: unknown, verbose = false): string {
-    // Convert Map stepResults to plain object for JSON serialization
-    if (result && typeof result === 'object' && 'stepResults' in result) {
-        const resultObj = result as any;
-        const stepResultsArray: Array<[string, any]> = [];
+  // Convert Map stepResults to plain object for JSON serialization
+  if (result && typeof result === 'object' && 'stepResults' in result) {
+    const resultObj = result as any;
+    const stepResultsArray: Array<[string, any]> = [];
 
-        if (resultObj.stepResults instanceof Map) {
-            for (const [key, value] of resultObj.stepResults.entries()) {
-                stepResultsArray.push([key, value]);
-            }
-        }
-
-        const jsonResult = {
-            ...resultObj,
-            stepResults: Object.fromEntries(stepResultsArray),
-            error: resultObj.error ? {
-                message: resultObj.error.message,
-                name: resultObj.error.name,
-                stack: verbose ? resultObj.error.stack : undefined,
-            } : undefined,
-        };
-
-        return verbose
-            ? JSON.stringify(jsonResult, null, 2)
-            : JSON.stringify(jsonResult);
+    if (resultObj.stepResults instanceof Map) {
+      for (const [key, value] of resultObj.stepResults.entries()) {
+        stepResultsArray.push([key, value]);
+      }
     }
 
+    const jsonResult = {
+      ...resultObj,
+      stepResults: Object.fromEntries(stepResultsArray),
+      error: resultObj.error ? {
+        message: resultObj.error.message,
+        name: resultObj.error.name,
+        stack: verbose ? resultObj.error.stack : undefined,
+      } : undefined,
+    };
+
     return verbose
-        ? JSON.stringify(result, null, 2)
-        : JSON.stringify(result);
+      ? JSON.stringify(jsonResult, null, 2)
+      : JSON.stringify(jsonResult);
+  }
+
+  return verbose
+    ? JSON.stringify(result, null, 2)
+    : JSON.stringify(result);
 }
 
 /**
@@ -321,15 +339,15 @@ export function formatJsonResult(result: unknown, verbose = false): string {
  * Used by JsonFormatter to output errors in structured format.
  */
 export function formatJsonError(error: Error): string {
-    const jsonError = {
-        type: 'error',
-        timestamp: new Date().toISOString(),
-        error: {
-            message: error.message,
-            name: error.name,
-            stack: error.stack,
-        },
-    };
+  const jsonError = {
+    type: 'error',
+    timestamp: new Date().toISOString(),
+    error: {
+      message: error.message,
+      name: error.name,
+      stack: error.stack,
+    },
+  };
 
-    return JSON.stringify(jsonError, null, 2);
+  return JSON.stringify(jsonError, null, 2);
 }

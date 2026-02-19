@@ -32,4 +32,14 @@ export interface CliExplainOptions {
    * No color in output
    */
   noColor?: boolean;
+  
+  /**
+   * Display structured JSON logs from explanation process
+   */
+  showLogs?: boolean;
+  
+  /**
+   * Generate human-readable sentences from logs
+   */
+  sentences?: boolean;
 }
