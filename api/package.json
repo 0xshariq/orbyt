@@ -27,8 +27,8 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@orbytautomation/engine": "^0.2.3",
-    "@dev-ecosystem/core": "^0.4.1",
+    "@orbytautomation/engine": "^0.4.1",
+    "@dev-ecosystem/core": "^0.4.2",
     "bcrypt": "^5.1.1",
     "compression": "^1.8.0",
     "cors": "^2.8.5",
