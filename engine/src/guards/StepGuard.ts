@@ -10,8 +10,8 @@
  * @module guards
  */
 
-import type { ParsedStep } from '../parser/StepParser.js';
 import { VariableResolver } from '../context/VariableResolver.js';
+import { ParsedStep } from '../types/core-types.js';
 
 /**
  * Step validation guard

@@ -7,81 +7,9 @@
  * @module automation/runtime
  */
 
-import { FailureStrategy, type FailureDecision } from '../FailureStrategy.js';
+import { DependencyInfo, FailureContext, FailureDecision, FailureHandlingResult, FailureListeners } from '../../types/core-types.js';
+import { FailureStrategy } from '../FailureStrategy.js';
 
-/**
- * Failure context for tracking execution state
- */
-export interface FailureContext {
-  /** ID of failed step */
-  stepId: string;
-  
-  /** Error that caused failure */
-  error: Error;
-  
-  /** Total steps in workflow */
-  totalSteps: number;
-  
-  /** Number of completed steps */
-  completedSteps: number;
-  
-  /** Number of failed steps so far */
-  failureCount: number;
-  
-  /** Workflow execution ID */
-  executionId?: string;
-}
-
-/**
- * Failure handling result
- */
-export interface FailureHandlingResult {
-  /** Failure decision */
-  decision: FailureDecision;
-  
-  /** Cleanup completed successfully */
-  cleanupSuccess: boolean;
-  
-  /** Error during cleanup (if any) */
-  cleanupError?: Error;
-  
-  /** Steps to skip based on decision */
-  stepsToSkip: string[];
-}
-
-/**
- * Failure event listeners
- */
-export interface FailureListeners {
-  /** Called before handling failure */
-  onBeforeHandle?: (context: FailureContext) => void | Promise<void>;
-  
-  /** Called after decision is made */
-  onDecision?: (decision: FailureDecision, context: FailureContext) => void | Promise<void>;
-  
-  /** Called before cleanup */
-  onBeforeCleanup?: (context: FailureContext) => void | Promise<void>;
-  
-  /** Called after cleanup */
-  onAfterCleanup?: (success: boolean, context: FailureContext) => void | Promise<void>;
-  
-  /** Called when workflow should abort */
-  onAbort?: (reason: string, context: FailureContext) => void | Promise<void>;
-  
-  /** Called when workflow continues after failure */
-  onContinue?: (context: FailureContext) => void | Promise<void>;
-}
-
-/**
- * Dependency information for skip decisions
- */
-export interface DependencyInfo {
-  /** Step ID to dependencies map */
-  stepDependencies: Map<string, string[]>;
-  
-  /** Step ID to dependents map (reverse) */
-  stepDependents: Map<string, string[]>;
-}
 
 /**
  * Failure handler for workflow execution
@@ -122,7 +50,7 @@ export class FailureHandler {
 
     if (decision.runCleanup) {
       await listeners?.onBeforeCleanup?.(context);
-      
+
       try {
         // Strategy already runs onFailure during decide()
         // This is additional cleanup if needed

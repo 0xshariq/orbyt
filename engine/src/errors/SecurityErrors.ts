@@ -30,58 +30,9 @@
  */
 
 import { ExitCodes } from '@dev-ecosystem/core';
-import { OrbytError, type OrbytErrorDiagnostic } from './OrbytError.js';
+import { OrbytError } from './OrbytError.js';
 import { OrbytErrorCode, ErrorSeverity } from './ErrorCodes.js';
-
-/**
- * Security error codes
- */
-export enum SecurityErrorCode {
-  /** User attempted to set a reserved field name */
-  RESERVED_FIELD_OVERRIDE = 'ENGINE_RESERVED_FIELD_OVERRIDE',
-  
-  /** User attempted to set billing-related fields */
-  BILLING_FIELD_OVERRIDE = 'ENGINE_BILLING_FIELD_OVERRIDE',
-  
-  /** User attempted to set execution identity fields */
-  IDENTITY_FIELD_OVERRIDE = 'ENGINE_IDENTITY_FIELD_OVERRIDE',
-  
-  /** User attempted to set ownership fields */
-  OWNERSHIP_FIELD_OVERRIDE = 'ENGINE_OWNERSHIP_FIELD_OVERRIDE',
-  
-  /** User attempted to set usage counter fields */
-  USAGE_COUNTER_OVERRIDE = 'ENGINE_USAGE_COUNTER_OVERRIDE',
-  
-  /** User attempted to set internal state fields */
-  INTERNAL_STATE_OVERRIDE = 'ENGINE_INTERNAL_STATE_OVERRIDE',
-  
-  /** User attempted to use reserved annotation namespace */
-  RESERVED_ANNOTATION_NAMESPACE = 'ENGINE_RESERVED_ANNOTATION_NAMESPACE',
-}
-
-/**
- * Security violation details (legacy format for backward compatibility)
- * @deprecated Use SecurityError factory methods instead
- */
-export interface SecurityViolationDetails {
-  /** Error code for programmatic handling */
-  code: SecurityErrorCode;
-  
-  /** Location where violation occurred */
-  location: string;
-  
-  /** The reserved field that was attempted */
-  field: string;
-  
-  /** The value user tried to set (for debugging) */
-  attemptedValue?: any;
-  
-  /** Why this field is protected */
-  reason: string;
-  
-  /** Suggested fix */
-  suggestion: string;
-}
+import { OrbytErrorDiagnostic, SecurityViolationDetails } from '../types/core-types.js';
 
 /**
  * Security Error

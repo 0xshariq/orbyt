@@ -18,33 +18,9 @@
  * @module state
  */
 
-import { StepStatus, WorkflowStatus } from './ExecutionState.js';
+import { StateMachineConfig, StateTransition, StepStatus, WorkflowStatus } from "../types/core-types.js";
 
-/**
- * State transition record for audit trail
- */
-export interface StateTransition<T> {
-  /** State before transition */
-  readonly from: T;
-  /** State after transition */
-  readonly to: T;
-  /** Timestamp of transition (ms since epoch) */
-  readonly timestamp: number;
-  /** Optional reason for transition */
-  readonly reason?: string;
-}
 
-/**
- * State machine configuration
- */
-export interface StateMachineConfig<T> {
-  /** Initial state */
-  readonly initialState: T;
-  /** Valid transitions map: from → allowed to states */
-  readonly transitions: ReadonlyMap<T, readonly T[]>;
-  /** Terminal states (no further transitions allowed) */
-  readonly terminalStates: ReadonlySet<T>;
-}
 
 /**
  * Generic state machine for enforcing valid transitions

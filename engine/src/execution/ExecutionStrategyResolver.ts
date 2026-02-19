@@ -14,79 +14,9 @@
  * Future: Can implement load-aware, intent-aware execution.
  */
 
-import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
+import { ExecutionStrategyContext, ParsedWorkflow, ResolvedExecutionStrategy } from "../types/core-types.js";
 
-/**
- * Execution strategy types
- */
-export type ExecutionStrategy =
-    | 'default'           // Normal execution
-    | 'sequential'        // Force sequential (low resource mode)
-    | 'aggressive'        // Maximum parallelism
-    | 'conservative'      // Safe mode (more retries, slower)
-    | 'fast-fail'         // Fail fast on errors
-    | 'resilient';        // Maximize success (more retries)
 
-/**
- * Execution context for strategy resolution
- */
-export interface ExecutionStrategyContext {
-    /** Parsed workflow */
-    workflow: ParsedWorkflow;
-
-    /** System metrics (future) */
-    systemLoad?: {
-        cpu: number;
-        memory: number;
-        activeWorkflows: number;
-    };
-
-    /** Workflow intent (from annotations) */
-    intent?: string;
-
-    /** Resource limits */
-    resourceLimits?: {
-        maxConcurrentSteps: number;
-        maxMemory: number;
-        timeout: number;
-    };
-
-    /** Historical data (future) */
-    history?: {
-        previousExecutions: number;
-        averageSuccessRate: number;
-        commonFailures: string[];
-    };
-}
-
-/**
- * Strategy resolution result
- */
-export interface ResolvedExecutionStrategy {
-    /** Selected strategy */
-    strategy: ExecutionStrategy;
-
-    /** Strategy-specific adjustments */
-    adjustments: {
-        /** Concurrency limit */
-        maxConcurrentSteps?: number;
-
-        /** Timeout multiplier */
-        timeoutMultiplier?: number;
-
-        /** Retry strategy override */
-        retryStrategy?: 'exponential' | 'linear' | 'constant';
-
-        /** Max retry attempts */
-        maxRetries?: number;
-
-        /** Enable caching */
-        enableCaching?: boolean;
-    };
-
-    /** Reason for strategy selection (for observability) */
-    reason: string;
-}
 
 /**
  * Execution Strategy Resolver
@@ -158,7 +88,7 @@ export class ExecutionStrategyResolver {
     ): ResolvedExecutionStrategy {
         const load = context.systemLoad!;
         const stepCount = context.workflow.steps.length;
-        
+
         // Determine concurrency based on CPU load
         let maxConcurrentSteps = 2;
         if (load.cpu > 0.9) {
@@ -168,13 +98,13 @@ export class ExecutionStrategyResolver {
         } else {
             maxConcurrentSteps = 3;
         }
-        
+
         // Adjust timeout based on load and workflow size
         let timeoutMultiplier = 1.5;
         if (load.memory > 0.85 || stepCount > 20) {
             timeoutMultiplier = 2.0; // More generous timeout under stress
         }
-        
+
         return {
             strategy: load.cpu > 0.9 ? 'sequential' : 'conservative',
             adjustments: {
@@ -196,27 +126,27 @@ export class ExecutionStrategyResolver {
     ): ResolvedExecutionStrategy {
         const stepCount = context.workflow.steps.length;
         const resourceLimits = context.resourceLimits;
-        
+
         // Data pipelines benefit from retries and caching
         let maxRetries = 5;
         let maxConcurrentSteps: number | undefined;
-        
+
         // For large pipelines, limit concurrency to avoid overwhelming sources
         if (stepCount > 30) {
-            maxConcurrentSteps = resourceLimits?.maxConcurrentSteps 
+            maxConcurrentSteps = resourceLimits?.maxConcurrentSteps
                 ? Math.min(resourceLimits.maxConcurrentSteps, 5)
                 : 5;
         } else if (stepCount > 15) {
-            maxConcurrentSteps = resourceLimits?.maxConcurrentSteps 
+            maxConcurrentSteps = resourceLimits?.maxConcurrentSteps
                 ? Math.min(resourceLimits.maxConcurrentSteps, 10)
                 : 10;
         }
-        
+
         // If historical data shows reliability issues, increase retries
         if (context.history?.averageSuccessRate && context.history.averageSuccessRate < 0.8) {
             maxRetries = 7;
         }
-        
+
         return {
             strategy: 'resilient',
             adjustments: {
@@ -239,11 +169,11 @@ export class ExecutionStrategyResolver {
     ): ResolvedExecutionStrategy {
         const history = context.history!;
         const successRate = history.averageSuccessRate;
-        
+
         // Adjust retries based on historical success rate
         let maxRetries = 3;
         let timeoutMultiplier = 2.0;
-        
+
         if (successRate < 0.3) {
             // Very unreliable - maximum safety measures
             maxRetries = 5;
@@ -253,7 +183,7 @@ export class ExecutionStrategyResolver {
             maxRetries = 4;
             timeoutMultiplier = 2.5;
         }
-        
+
         // Reduce concurrency for unreliable workflows to avoid cascading failures
         let maxConcurrentSteps = 3;
         if (successRate < 0.4) {
@@ -261,12 +191,12 @@ export class ExecutionStrategyResolver {
         } else if (successRate < 0.6) {
             maxConcurrentSteps = 2;
         }
-        
+
         // Analyze common failures to provide specific recommendations
         const failureDetails = history.commonFailures?.length > 0
             ? ` (common failures: ${history.commonFailures.slice(0, 2).join(', ')})`
             : '';
-        
+
         return {
             strategy: successRate < 0.4 ? 'sequential' : 'conservative',
             adjustments: {

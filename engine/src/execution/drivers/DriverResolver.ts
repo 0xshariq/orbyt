@@ -6,10 +6,10 @@
  * @module execution/drivers
  */
 
-import type { ExecutionDriver, DriverStep, DriverContext } from './ExecutionDriver.js';
 import type { AdapterResult } from '@dev-ecosystem/core';
 import { OrbytError } from '../../errors/OrbytError.js';
 import { OrbytErrorCode, ErrorSeverity } from '../../errors/ErrorCodes.js';
+import { DriverContext, DriverStep, ExecutionDriver } from '../../types/core-types.js';
 
 /**
  * Driver not found error

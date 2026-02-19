@@ -16,53 +16,15 @@
  * @module execution
  */
 
-import { ExecutionNode } from './ExecutionNode.js';
 import {
   DependencyResolver,
   CycleDetector,
   TopologicalSorter,
-  type DependencyGraph,
-  type TopologicalSortResult,
 } from '../graph/DependencyGraph.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
+import { ExecutionNode, ExecutionPhase, ExecutionPlan } from '../types/core-types.js';
 
-/**
- * Execution phase (group of steps that can run in parallel)
- */
-export interface ExecutionPhase {
-  /** Phase number (0-indexed) */
-  readonly phase: number;
-  
-  /** Nodes that can execute in parallel */
-  readonly nodes: readonly ExecutionNode[];
-  
-  /** Combined phase timeout (max of all node timeouts) */
-  readonly timeout?: number;
-}
 
-/**
- * Complete execution plan for a workflow.
- * This is a blueprint for execution - it contains NO execution state.
- */
-export interface ExecutionPlan {
-  /** Ordered phases of execution */
-  readonly phases: readonly ExecutionPhase[];
-  
-  /** The validated dependency graph */
-  readonly graph: DependencyGraph;
-  
-  /** Total number of steps */
-  readonly totalSteps: number;
-  
-  /** Maximum parallelism (largest phase size) */
-  readonly maxParallelism: number;
-  
-  /** Critical path length (minimum phases needed) */
-  readonly criticalPathLength: number;
-
-  /** Topological sort result */
-  readonly sortResult: TopologicalSortResult;
-}
 
 /**
  * Execution plan coordinator.
@@ -86,7 +48,7 @@ export class ExecutionPlanner {
    */
   static plan(nodes: ExecutionNode[]): ExecutionPlan {
     const logger = LoggerManager.getLogger();
-    
+
     logger.debug('Creating execution plan', {
       nodeCount: nodes.length,
     });
@@ -111,7 +73,7 @@ export class ExecutionPlanner {
     // Step 4: Build execution phases with nodes and timeouts
     const phases: ExecutionPhase[] = sortResult.phases.map((stepIds, index) => {
       const phaseNodes = stepIds.map((stepId) => graph.nodes.get(stepId)!);
-      
+
       return {
         phase: index,
         nodes: Object.freeze(phaseNodes),
@@ -147,7 +109,7 @@ export class ExecutionPlanner {
     const timeouts = nodes
       .map((node) => node.metadata.timeout)
       .filter((t): t is number => t !== undefined);
-    
+
     return timeouts.length > 0 ? Math.max(...timeouts) : undefined;
   }
 

@@ -7,35 +7,8 @@
  * @module automation
  */
 
-import { BackoffStrategy, type BackoffType } from './BackoffStrategy.js';
-
-/**
- * Retry condition - determines if error is retryable
- */
-export type RetryCondition = (error: Error, attempt: number) => boolean;
-
-/**
- * Retry policy configuration
- */
-export interface RetryPolicyConfig {
-  /** Maximum retry attempts (0 = no retries) */
-  maxAttempts: number;
-  
-  /** Backoff strategy for delays between retries */
-  backoffStrategy: BackoffStrategy;
-  
-  /** Custom retry condition (default: retry all errors) */
-  retryCondition?: RetryCondition;
-  
-  /** Specific error types to retry (if provided, only these are retried) */
-  retryableErrors?: Array<new (...args: any[]) => Error>;
-  
-  /** Error messages to match for retry (regex patterns) */
-  retryableMessages?: RegExp[];
-  
-  /** Abort retry on specific errors (overrides other conditions) */
-  abortOn?: Array<new (...args: any[]) => Error>;
-}
+import { BackoffType, RetryCondition, RetryPolicyConfig } from '../types/core-types.js';
+import { BackoffStrategy } from './BackoffStrategy.js';
 
 /**
  * Retry policy for operation execution

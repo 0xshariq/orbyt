@@ -14,101 +14,19 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
 import { WorkflowParser } from '../parser/WorkflowParser.js';
-import { WorkflowExecutor, type WorkflowResult, type ExecutionOptions } from './WorkflowExecutor.js';
+import { WorkflowExecutor } from './WorkflowExecutor.js';
 import { StepExecutor } from './StepExecutor.js';
 import { Scheduler } from '../scheduling/Scheduler.js';
-import type { JobQueue, Job } from '../queue/JobQueue.js';
 import { InMemoryQueue } from '../queue/InMemoryQueue.js';
-import { JobPriority, createJob } from '../queue/JobQueue.js';
-import { RetryPolicy } from '../automation/RetryPolicy.js';
-import { TimeoutManager } from '../automation/TimeoutManager.js';
+import { createJob } from '../queue/JobQueue.js';
 import { EventBus } from '../events/EventBus.js';
 import { HookManager } from '../hooks/HookManager.js';
-import { EngineEventType, createEvent } from '../events/EngineEvents.js';
+import {  createEvent } from '../events/EngineEvents.js';
 import type { LifecycleHook } from '../hooks/LifecycleHooks.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
-
-/**
- * Execution trigger type
- */
-export type TriggerType = 'manual' | 'scheduled' | 'event' | 'webhook';
-
-/**
- * Workflow execution job payload
- */
-export interface WorkflowExecutionPayload {
-  /** Workflow definition (YAML string or parsed object) */
-  workflow: string | ParsedWorkflow;
-
-  /** Execution options */
-  options?: ExecutionOptions;
-
-  /** Trigger information */
-  trigger: {
-    type: TriggerType;
-    source?: string;
-    metadata?: Record<string, any>;
-  };
-}
-
-/**
- * Execution engine configuration
- */
-export interface EngineConfig {
-  /** Maximum concurrent workflow executions */
-  maxConcurrentExecutions?: number;
-
-  /** Default workflow timeout (ms) */
-  defaultTimeout?: number;
-
-  /** Enable scheduler */
-  enableScheduler?: boolean;
-
-  /** Custom job queue (default: InMemoryQueue) */
-  queue?: JobQueue;
-
-  /** Global retry policy for workflows */
-  retryPolicy?: RetryPolicy;
-
-  /** Timeout manager instance */
-  timeoutManager?: TimeoutManager;
-}
-
-/**
- * Workflow execution status
- */
-export interface WorkflowExecutionStatus {
-  /** Execution ID */
-  executionId: string;
-
-  /** Workflow name */
-  workflowName: string;
-
-  /** Current status */
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'timeout';
-
-  /** Trigger information */
-  trigger: {
-    type: TriggerType;
-    source?: string;
-    triggeredAt: Date;
-  };
-
-  /** Execution result (if completed) */
-  result?: WorkflowResult;
-
-  /** Error (if failed) */
-  error?: Error;
-
-  /** Progress information */
-  progress?: {
-    currentStep?: string;
-    completedSteps: number;
-    totalSteps: number;
-  };
-}
+import { EngineConfig, EngineEventType, ExecutionOptions, Job, JobPriority, JobQueue, ParsedWorkflow, WorkflowExecutionPayload, WorkflowExecutionStatus, WorkflowResult } from '../types/core-types.js';
+import { TriggerType } from '@dev-ecosystem/core';
 
 /**
  * Main execution engine
@@ -262,7 +180,7 @@ export class ExecutionEngine {
         triggeredBy: options.triggeredBy || 'manual',
       },
       trigger: {
-        type: 'manual',
+        type: TriggerType.Manual,
         source: 'api',
         metadata: {},
       },
@@ -304,7 +222,7 @@ export class ExecutionEngine {
       workflowName,
       status: 'queued',
       trigger: {
-        type: 'manual',
+        type: TriggerType.Manual,
         source: 'api',
         triggeredAt: new Date(),
       },
@@ -337,7 +255,7 @@ export class ExecutionEngine {
       workflowName: parsedWorkflow.metadata?.name || parsedWorkflow.name || 'unnamed',
       status: 'running',
       trigger: {
-        type: 'manual',
+        type: TriggerType.Manual,
         source: 'api',
         triggeredAt: new Date(),
       },
@@ -578,13 +496,13 @@ export class ExecutionEngine {
 
     } catch (error) {
       const errorObj = error instanceof Error ? error : new Error(String(error));
-      
+
       // Log execution failed  
       logger.error(`[ExecutionEngine] Workflow execution failed: ${job.metadata?.workflowName || 'unknown'}`, errorObj, {
         executionId,
         error: errorObj.message,
       });
-      
+
       // Mark job as failed
       await this.queue.markFailed(job.id, errorObj);
 

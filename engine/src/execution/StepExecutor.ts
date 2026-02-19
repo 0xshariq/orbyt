@@ -10,8 +10,6 @@
  * @module execution
  */
 
-import type { ParsedStep } from '../parser/StepParser.js';
-import type { ResolutionContext } from '../context/VariableResolver.js';
 import { VariableResolver } from '../context/VariableResolver.js';
 import { ContextStore } from '../context/ContextStore.js';
 import { RetryPolicy } from '../automation/RetryPolicy.js';
@@ -19,61 +17,14 @@ import { BackoffStrategy } from '../automation/BackoffStrategy.js';
 import { TimeoutManager } from '../automation/TimeoutManager.js';
 import { DriverResolver } from './drivers/DriverResolver.js';
 import { AdapterDriver } from './drivers/AdapterDriver.js';
-import type { DriverStep, DriverContext } from './drivers/ExecutionDriver.js';
 import { AdapterRegistry } from '../adapters/AdapterRegistry.js';
 import type { Adapter } from '@dev-ecosystem/core';
 import type { EventBus } from '../events/EventBus.js';
 import type { HookManager } from '../hooks/HookManager.js';
-import { EngineEventType, createEvent } from '../events/EngineEvents.js';
+import { createEvent } from '../events/EngineEvents.js';
 import type { StepHookContext } from '../hooks/LifecycleHooks.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
-
-/**
- * Step execution result
- */
-export interface StepResult {
-  /** Step ID */
-  stepId: string;
-
-  /** Execution status */
-  status: 'success' | 'failure' | 'skipped' | 'timeout';
-
-  /** Step output data */
-  output: any;
-
-  /** Error if failed */
-  error?: Error;
-
-  /** Execution duration (ms) */
-  duration: number;
-
-  /** Number of retry attempts */
-  attempts: number;
-
-  /** Start timestamp */
-  startedAt: Date;
-
-  /** End timestamp */
-  completedAt: Date;
-}
-
-/**
- * Adapter interface for step execution
- */
-export interface StepAdapter {
-  /** Adapter name */
-  name: string;
-
-  /**
-   * Execute step with the adapter
-   * 
-   * @param action - Full action name (e.g., 'http.request.get')
-   * @param input - Resolved input parameters
-   * @param context - Execution context
-   * @returns Adapter output
-   */
-  execute(action: string, input: Record<string, any>, context: any): Promise<any>;
-}
+import { DriverContext, DriverStep, EngineEventType, ParsedStep, ResolutionContext, StepAdapter, StepResult } from '../types/core-types.js';
 
 /**
  * Step executor with retry and timeout logic

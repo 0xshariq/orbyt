@@ -8,15 +8,9 @@
  * @module explanation
  */
 
-import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
-import type { ParsedStep } from '../parser/StepParser.js';
-import type {
-    ExecutionExplanation,
-    ExplainedStep,
-    DataFlowPrediction,
-    ConditionalPathAnalysis,
-    ExecutionTimeEstimation,
-} from './ExplanationTypes.js';
+import { ConditionalPathAnalysis, DataFlowPrediction, ExecutionExplanation, ExecutionTimeEstimation, ExplainedStep, ParsedStep, ParsedWorkflow } from "../types/core-types.js";
+
+
 
 /**
  * Explanation Generator
@@ -518,7 +512,7 @@ export class ExplanationGenerator {
 
                         // Check if this output is referenced in other step's inputs
                         const inputStr = JSON.stringify(otherStep.input || {});
-                        if (inputStr.includes(`steps.${step.id}.${key}`) || 
+                        if (inputStr.includes(`steps.${step.id}.${key}`) ||
                             inputStr.includes(`steps.${step.id}[${key}]`)) {
                             usedBy.push(otherStep.id);
                         }
@@ -540,7 +534,7 @@ export class ExplanationGenerator {
 
             // Check for unresolved dependencies
             const deps = dependencyGraph[step.id] || [];
-            const hasUnresolvedDependencies = deps.some(depId => 
+            const hasUnresolvedDependencies = deps.some(depId =>
                 !workflow.steps.find(s => s.id === depId)
             );
 
@@ -624,7 +618,7 @@ export class ExplanationGenerator {
 
                 // No dependencies on conditional steps
                 const deps = dependencyGraph[step.id] || [];
-                return !deps.some(depId => 
+                return !deps.some(depId =>
                     conditionalSteps.some(cs => cs.step === depId)
                 );
             })
@@ -671,8 +665,8 @@ export class ExplanationGenerator {
             // Adjust for timeout if specified
             let timeEstimate = { ...estimate };
             if (step.timeout) {
-                const timeout = typeof step.timeout === 'string' 
-                    ? parseInt(step.timeout) 
+                const timeout = typeof step.timeout === 'string'
+                    ? parseInt(step.timeout)
                     : step.timeout;
                 if (!isNaN(timeout)) {
                     timeEstimate.max = Math.min(timeEstimate.max, timeout);
@@ -694,10 +688,10 @@ export class ExplanationGenerator {
 
             visited.add(stepId);
             const deps = dependencyGraph[stepId] || [];
-            const depth = deps.length === 0 
-                ? 0 
+            const depth = deps.length === 0
+                ? 0
                 : Math.max(...deps.map(d => calculateDepth(d, new Set(visited)))) + 1;
-            
+
             stepDepths.set(stepId, depth);
             return depth;
         };
@@ -716,7 +710,7 @@ export class ExplanationGenerator {
 
             // In parallel execution, phase time = max of any step in that phase
             // In sequential, phase time = sum of all steps
-            const stepTimes = stepsInPhase.map(stepId => 
+            const stepTimes = stepsInPhase.map(stepId =>
                 byStep.find(s => s.step === stepId)!
             );
 
@@ -748,7 +742,7 @@ export class ExplanationGenerator {
                 }
 
                 const depPaths = deps.map(d => calculatePath(d, new Set(visited)));
-                const longestDep = depPaths.reduce((max, curr) => 
+                const longestDep = depPaths.reduce((max, curr) =>
                     curr.duration > max.duration ? curr : max
                 );
 
@@ -763,15 +757,15 @@ export class ExplanationGenerator {
 
             // Find the longest path among all end nodes (steps with no dependents)
             const endNodes = workflow.steps.filter(step => {
-                return !workflow.steps.some(other => 
+                return !workflow.steps.some(other =>
                     (other.needs || []).includes(step.id)
                 );
             });
 
             const allPaths = endNodes.map(step => calculatePath(step.id));
-            const longestPath = allPaths.reduce((max, curr) => 
+            const longestPath = allPaths.reduce((max, curr) =>
                 curr.duration > max.duration ? curr : max
-            , { duration: 0, path: [] as string[] });
+                , { duration: 0, path: [] as string[] });
 
             // Mark critical path steps
             longestPath.path.forEach((stepId: string) => {
@@ -896,7 +890,7 @@ export class ExplanationGenerator {
 
         // Data flow sentence
         if (explanation.dataFlow && explanation.dataFlow.length > 0) {
-            const stepsWithInputs = explanation.dataFlow.filter(df => 
+            const stepsWithInputs = explanation.dataFlow.filter(df =>
                 df.inputs.some(i => i.source === 'workflow.inputs')
             ).length;
             const stepsWithOutputs = explanation.dataFlow.filter(df => df.outputs.length > 0).length;

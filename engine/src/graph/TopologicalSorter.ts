@@ -28,28 +28,8 @@
  */
 
 import { WorkflowValidationError } from '@dev-ecosystem/core';
-import { DependencyGraph, DependencyResolver } from './DependencyResolver.js';
-
-/**
- * Result of topological sorting
- */
-export interface TopologicalSortResult {
-  /** 
-   * Execution phases - each inner array is a phase,
-   * steps in the same phase can run in parallel
-   */
-  readonly phases: readonly (readonly string[])[];
-  
-  /**
-   * Total number of phases
-   */
-  readonly phaseCount: number;
-
-  /**
-   * Map of stepId → phase number (0-indexed)
-   */
-  readonly stepPhases: ReadonlyMap<string, number>;
-}
+import { DependencyResolver } from './DependencyResolver.js';
+import { CriticalPathResult, DependencyGraph, TopologicalSortResult } from '../types/core-types.js';
 
 /**
  * Performs topological sorting to determine execution order.
@@ -68,23 +48,23 @@ export class TopologicalSorter {
   static sort(graph: DependencyGraph): TopologicalSortResult {
     // Calculate in-degrees (number of dependencies for each node)
     const inDegrees = DependencyResolver.calculateInDegrees(graph);
-    
+
     // Track which nodes have been processed
     const processed = new Set<string>();
-    
+
     // Store phases
     const phases: string[][] = [];
-    
+
     // Map of stepId → phase number
     const stepPhases = new Map<string, number>();
 
     // Kahn's algorithm
     let currentPhaseIndex = 0;
-    
+
     while (processed.size < graph.nodes.size) {
       // Find all nodes with in-degree 0 (ready to execute)
       const currentPhase: string[] = [];
-      
+
       for (const [stepId, inDegree] of inDegrees) {
         if (inDegree === 0 && !processed.has(stepId)) {
           currentPhase.push(stepId);
@@ -97,7 +77,7 @@ export class TopologicalSorter {
         const remaining = Array.from(graph.nodes.keys()).filter(
           (id) => !processed.has(id)
         );
-        
+
         throw new WorkflowValidationError(
           'Cannot create execution plan: circular dependency detected during topological sort',
           {
@@ -197,7 +177,7 @@ export class TopologicalSorter {
     for (const phase of sortResult.phases) {
       for (const stepId of phase) {
         const dependencies = graph.adjacencyList.get(stepId) || [];
-        
+
         if (dependencies.length === 0) {
           earliestStart.set(stepId, 0);
         } else {
@@ -235,13 +215,13 @@ export class TopologicalSorter {
 
         const dependents = graph.reverseDependencies.get(stepId) || [];
         const duration = stepDurations.get(stepId) || 0;
-        
+
         let minLatest = workflowDuration;
         for (const dependent of dependents) {
           const dependentLatest = latestStart.get(dependent)!;
           minLatest = Math.min(minLatest, dependentLatest);
         }
-        
+
         latestStart.set(stepId, minLatest - duration);
       }
     }
@@ -270,20 +250,4 @@ export class TopologicalSorter {
       slack,
     };
   }
-}
-
-/**
- * Result of critical path analysis
- */
-export interface CriticalPathResult {
-  /** Steps on the critical path (zero slack) */
-  readonly criticalPath: readonly string[];
-  /** Estimated total workflow duration */
-  readonly workflowDuration: number;
-  /** Earliest start time for each step */
-  readonly earliestStart: ReadonlyMap<string, number>;
-  /** Latest start time for each step without delaying workflow */
-  readonly latestStart: ReadonlyMap<string, number>;
-  /** Slack (float) for each step - how much it can be delayed */
-  readonly slack: ReadonlyMap<string, number>;
 }

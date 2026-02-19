@@ -7,55 +7,8 @@
  * @module context
  */
 
-import type { ResolutionContext } from './VariableResolver.js';
+import { ContextConfig, ResolutionContext } from "../types/core-types.js";
 
-/**
- * Execution context configuration
- */
-export interface ContextConfig {
-    /** Execution ID */
-    executionId: string;
-
-    /** Workflow ID */
-    workflowId: string;
-
-    /** Workflow name */
-    workflowName: string;
-
-    /** Workflow version */
-    version?: string;
-
-    /** Workflow description */
-    description?: string;
-
-    /** Workflow tags */
-    tags?: string[];
-
-    /** Workflow owner */
-    owner?: string;
-
-    /** Runtime inputs */
-    inputs?: Record<string, any>;
-
-    /** Resolved secrets */
-    secrets?: Record<string, any>;
-
-    /** Environment variables */
-    env?: Record<string, any>;
-
-    /** Workflow metadata */
-    metadata?: {
-        createdAt?: string;
-        updatedAt?: string;
-        annotations?: Record<string, any>;
-    };
-
-    /** Additional context */
-    context?: Record<string, any>;
-
-    /** Triggered by (user, system, schedule) */
-    triggeredBy?: string;
-}
 
 /**
  * Context Store

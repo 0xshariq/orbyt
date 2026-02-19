@@ -12,12 +12,11 @@
  */
 
 import { TriggerType } from '@dev-ecosystem/core';
-import { CronScheduler, type SchedulerEventListeners } from './CronScheduler.js';
+import { CronScheduler } from './CronScheduler.js';
 import { JobScheduler } from './JobScheduler.js';
-import type { WorkflowSchedule, ScheduleExecution, CreateScheduleInput } from './ScheduleTypes.js';
 import { createSchedule } from './ScheduleTypes.js';
-import type { JobQueue } from '../queue/JobQueue.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
+import { CreateScheduleInput, JobQueue, ScheduleExecution, SchedulerEventListeners, WorkflowSchedule } from '../types/core-types.js';
 
 /**
  * Scheduler configuration

@@ -9,7 +9,9 @@
  * @module guards
  */
 
-import type { ParsedStep } from '../parser/StepParser.js';
+import { ParsedStep } from "../types/core-types.js";
+
+
 
 /**
  * Workflow validation guard

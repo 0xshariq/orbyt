@@ -10,82 +10,18 @@
  * @module execution
  */
 
-import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
-import type { ParsedStep } from '../parser/StepParser.js';
-import type { ResolutionContext } from '../context/VariableResolver.js';
-import type { StepResult } from './StepExecutor.js';
 import { StepExecutor } from './StepExecutor.js';
-import { ExecutionPlanner, type ExecutionPlan } from './ExecutionPlan.js';
-import { createExecutionNode, type ExecutionNode } from './ExecutionNode.js';
+import { ExecutionPlanner } from './ExecutionPlan.js';
+import { createExecutionNode } from './ExecutionNode.js';
 import { WorkflowGuard } from '../guards/WorkflowGuard.js';
 import { StepGuard } from '../guards/StepGuard.js';
 import { ContextStore } from '../context/ContextStore.js';
 import type { EventBus } from '../events/EventBus.js';
 import type { HookManager } from '../hooks/HookManager.js';
-import { EngineEventType, createEvent } from '../events/EngineEvents.js';
+import { createEvent } from '../events/EngineEvents.js';
 import type { WorkflowHookContext } from '../hooks/LifecycleHooks.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
-
-/**
- * Workflow execution result
- */
-export interface WorkflowResult {
-  /** Workflow name */
-  workflowName: string;
-  
-  /** Overall status */
-  status: 'success' | 'failure' | 'partial' | 'timeout';
-  
-  /** All step results */
-  stepResults: Map<string, StepResult>;
-  
-  /** Total execution duration (ms) */
-  duration: number;
-  
-  /** Start timestamp */
-  startedAt: Date;
-  
-  /** End timestamp  */
-  completedAt: Date;
-  
-  /** Error if workflow failed */
-  error?: Error;
-  
-  /** Execution metadata */
-  metadata: {
-    totalSteps: number;
-    successfulSteps: number;
-    failedSteps: number;
-    skippedSteps: number;
-    phases: number;
-  };
-}
-
-/**
- * Workflow execution options
- */
-export interface ExecutionOptions {
-  /** Workflow timeout (ms) */
-  timeout?: number;
-  
-  /** Initial environment variables */
-  env?: Record<string, any>;
-  
-  /** Workflow inputs */
-  inputs?: Record<string, any>;
-  
-  /** Resolved secrets */
-  secrets?: Record<string, any>;
-  
-  /** Additional context */
-  context?: Record<string, any>;
-  
-  /** Continue on step failure */
-  continueOnError?: boolean;
-  
-  /** Trigger source (who/what triggered this execution) */
-  triggeredBy?: string;
-}
+import { EngineEventType, type ExecutionNode, type ExecutionOptions, type ExecutionPlan, type ParsedStep, type ParsedWorkflow, type ResolutionContext, type StepResult, type WorkflowResult } from '../types/core-types.js';
 
 /**
  * Workflow executor

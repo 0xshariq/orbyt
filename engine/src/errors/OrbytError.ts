@@ -24,33 +24,7 @@ import {
   isUserError,
   isRetryable
 } from './ErrorCodes.js';
-
-/**
- * Diagnostic error information
- * Contains all data needed to understand and debug an error
- */
-export interface OrbytErrorDiagnostic {
-  /** Structured error code (e.g., ORB-S-001) */
-  code: OrbytErrorCode;
-  
-  /** Human-readable error message */
-  message: string;
-  
-  /** Process exit code from ecosystem-core (for CLI) */
-  exitCode?: ExitCodes;
-  
-  /** Path to the error location (e.g., "workflow.steps[2].uses") */
-  path?: string;
-  
-  /** Optional suggestion for fixing the error */
-  hint?: string;
-  
-  /** Error severity (ERROR, WARNING, INFO) */
-  severity: ErrorSeverity;
-  
-  /** Additional context data for debugging */
-  context?: Record<string, any>;
-}
+import { OrbytErrorDiagnostic } from '../types/core-types.js';
 
 /**
  * Base error class for all Orbyt errors

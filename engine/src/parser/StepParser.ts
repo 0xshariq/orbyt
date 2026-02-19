@@ -7,59 +7,10 @@
  * @module parser
  */
 
-import type {StepDefinition as ZodStepDefinition } from '@dev-ecosystem/core';
+import type { StepDefinition as ZodStepDefinition } from '@dev-ecosystem/core';
 import { ValidationError, SchemaError, findClosestMatch, isLikelyTypo } from '../errors/index.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
-
-/**
- * Parsed internal step representation
- */
-export interface ParsedStep {
-  /** Unique step identifier */
-  id: string;
-  
-  /** Adapter type (http, shell, cli, plugin, etc.) */
-  adapter: string;
-  
-  /** Full action name (e.g., 'http.request.get') */
-  action: string;
-  
-  /** Input parameters for the step */
-  input: Record<string, any>;
-  
-  /** Step dependencies (other step IDs) */
-  needs: string[];
-  
-  /** Optional name */
-  name?: string;
-  
-  /** Conditional execution expression */
-  when?: string;
-  
-  /** Continue workflow on failure */
-  continueOnError: boolean;
-  
-  /** Retry policy configuration */
-  retry?: {
-    /** Maximum number of retry attempts */
-    max: number;
-    /** Backoff strategy (linear or exponential) */
-    backoff?: 'linear' | 'exponential';
-    /** Delay between retries in milliseconds */
-    delay?: number;
-    /** Store the current retry count */
-    count?: number;
-  };
-  
-  /** Timeout string (e.g., '30s', '5m') */
-  timeout?: string;
-  
-  /** Environment variables for this step */
-  env?: Record<string, string>;
-  
-  /** Output mappings */
-  outputs?: Record<string, string>;
-}
+import type { ParsedStep } from '../types/core-types.js';
 
 /**
  * Parses individual workflow steps with enhanced validation
@@ -75,12 +26,12 @@ export class StepParser {
    */
   static parse(stepDef: ZodStepDefinition, stepIndex?: number): ParsedStep {
     const stepPath = stepIndex !== undefined ? `workflow.steps[${stepIndex}]` : 'workflow.steps';
-    
+
     // Validate required fields
     if (!stepDef.id) {
       throw SchemaError.missingField('id', stepPath);
     }
-    
+
     // Validate ID format (alphanumeric, hyphens, underscores)
     if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(stepDef.id)) {
       throw new SchemaError({
@@ -91,19 +42,19 @@ export class StepParser {
         severity: 'error' as any,
       });
     }
-    
+
     if (!stepDef.uses) {
       throw SchemaError.missingField('uses', `${stepPath}.${stepDef.id}`);
     }
 
     // Resolve adapter type from the 'uses' field (with validation)
     const adapter = this.resolveAdapter(stepDef.uses, `${stepPath}.${stepDef.id}`);
-    
+
     // Validate conditional expression if present
     if (stepDef.when) {
       this.validateConditionalExpression(stepDef.when, `${stepPath}.${stepDef.id}.when`);
     }
-    
+
     // Build parsed step
     const parsedStep: ParsedStep = {
       id: stepDef.id,
@@ -118,7 +69,7 @@ export class StepParser {
       env: stepDef.env,
       outputs: stepDef.outputs,
     };
-    
+
     // Copy retry policy if present
     // Note: 'max' is the configuration (maximum retries allowed)
     // 'count' is runtime state (initialized during execution, not from definition)
@@ -130,7 +81,7 @@ export class StepParser {
         // count is initialized to 0 during execution
       };
     }
-    
+
     return parsedStep;
   }
 
@@ -148,7 +99,7 @@ export class StepParser {
    * @param stepPath - Path for error messages
    * @returns Adapter type string
    */
-  static resolveAdapter(uses: string, stepPath?: string): string {    
+  static resolveAdapter(uses: string, stepPath?: string): string {
     // Validate format: must contain at least one dot
     if (!uses.includes('.')) {
       throw new SchemaError({
@@ -159,17 +110,17 @@ export class StepParser {
         severity: 'error' as any,
       });
     }
-    
+
     // Extract prefix before first dot
     const prefix = uses.split('.')[0];
-    
+
     // Built-in adapter types
     const builtInAdapters = ['http', 'shell', 'cli', 'fs', 'webhook'];
-    
+
     if (builtInAdapters.includes(prefix)) {
       return prefix;
     }
-    
+
     // Check for common typos in built-in adapters
     const closestAdapter = findClosestMatch(prefix, builtInAdapters, 0.7);
     if (closestAdapter && isLikelyTypo(prefix, closestAdapter)) {
@@ -181,7 +132,7 @@ export class StepParser {
         severity: 'error' as any,
       });
     }
-    
+
     // Everything else is a plugin adapter
     return 'plugin';
   }
@@ -204,19 +155,19 @@ export class StepParser {
         severity: 'error' as any,
       });
     }
-    
+
     // Check for common variable reference patterns and provide hints
     const validPrefixes = ['inputs.', 'secrets.', 'steps.', 'context.'];
     const hasVariable = /\$\{([^}]+)\}/.test(condition);
-    
+
     if (hasVariable) {
       // Extract variables
       const variables = condition.match(/\$\{([^}]+)\}/g) || [];
-      
+
       for (const variable of variables) {
         const varName = variable.slice(2, -1); // Remove ${ and }
         const hasValidPrefix = validPrefixes.some(prefix => varName.startsWith(prefix));
-        
+
         if (!hasValidPrefix && !varName.startsWith('env.')) {
           throw new SchemaError({
             code: 'ORB-V-006' as any,
@@ -229,7 +180,7 @@ export class StepParser {
       }
     }
   }
-  
+
   /**
    * Parse multiple steps
    * 
@@ -241,14 +192,14 @@ export class StepParser {
     logger.debug(`[StepParser] Parsing ${stepDefs.length} steps`, {
       stepCount: stepDefs.length,
     });
-    
+
     const parsed = stepDefs.map((step, index) => this.parse(step, index));
-    
+
     logger.debug(`[StepParser] Successfully parsed all steps`, {
       stepCount: parsed.length,
       stepIds: parsed.map(s => s.id),
     });
-    
+
     return parsed;
   }
 
@@ -260,7 +211,7 @@ export class StepParser {
    */
   static validateUniqueIds(steps: ParsedStep[]): void {
     const idMap = new Map<string, number>();
-    
+
     steps.forEach((step, index) => {
       if (idMap.has(step.id)) {
         const firstIndex = idMap.get(step.id)!;
@@ -275,7 +226,7 @@ export class StepParser {
       idMap.set(step.id, index);
     });
   }
-  
+
   /**
    * Validate step dependencies (needs) refer to valid steps
    * Enhanced with better error messages and suggestions
@@ -286,7 +237,7 @@ export class StepParser {
   static validateDependencies(steps: ParsedStep[]): void {
     const stepIds = new Set(steps.map(s => s.id));
     const allStepIds = Array.from(stepIds);
-    
+
     steps.forEach((step, index) => {
       for (const dependency of step.needs) {
         if (!stepIds.has(dependency)) {
@@ -295,7 +246,7 @@ export class StepParser {
           const hint = suggestion
             ? `Did you mean "${suggestion}"? Available steps: ${allStepIds.join(', ')}`
             : `Available steps: ${allStepIds.join(', ')}`;
-          
+
           throw new ValidationError({
             code: 'ORB-V-002' as any,
             message: `Unknown step "${dependency}"`,
@@ -307,7 +258,7 @@ export class StepParser {
       }
     });
   }
-  
+
   /**
    * Detect circular dependencies in step graph
    * 
@@ -318,7 +269,7 @@ export class StepParser {
     const stepMap = new Map(steps.map((s, i) => [s.id, { step: s, index: i }]));
     const visited = new Set<string>();
     const recursionStack = new Set<string>();
-    
+
     function visit(stepId: string, path: string[]): void {
       if (recursionStack.has(stepId)) {
         // Found cycle
@@ -329,14 +280,14 @@ export class StepParser {
           'workflow.steps'
         );
       }
-      
+
       if (visited.has(stepId)) {
         return; // Already processed
       }
-      
+
       visited.add(stepId);
       recursionStack.add(stepId);
-      
+
       // Visit dependencies
       const stepData = stepMap.get(stepId);
       if (stepData) {
@@ -344,10 +295,10 @@ export class StepParser {
           visit(dep, [...path, stepId]);
         }
       }
-      
+
       recursionStack.delete(stepId);
     }
-    
+
     // Visit all steps
     for (const step of steps) {
       if (!visited.has(step.id)) {
@@ -355,7 +306,7 @@ export class StepParser {
       }
     }
   }
-  
+
   /**
    * Run all validation checks on parsed steps
    * Enhanced with comprehensive validation
@@ -368,11 +319,11 @@ export class StepParser {
     this.validateUniqueIds(steps);
     this.validateDependencies(steps);
     this.detectCircularDependencies(steps);
-    
+
     // Additional semantic validations
     this.validateOutputReferences(steps);
   }
-  
+
   /**
    * Validate output references in step output mappings
    * Ensures steps don't reference outputs from steps that haven't executed yet
@@ -383,16 +334,16 @@ export class StepParser {
     // Build execution order considering dependencies
     const stepMap = new Map(steps.map(s => [s.id, s]));
     const executed = new Set<string>();
-    
+
     // Simple topological order (dependencies-first)
     const getExecutionOrder = (): string[] => {
       const order: string[] = [];
       const visited = new Set<string>();
-      
+
       function visit(stepId: string): void {
         if (visited.has(stepId)) return;
         visited.add(stepId);
-        
+
         const step = stepMap.get(stepId);
         if (step) {
           // Visit dependencies first
@@ -402,21 +353,21 @@ export class StepParser {
           order.push(stepId);
         }
       }
-      
+
       for (const step of steps) {
         visit(step.id);
       }
-      
+
       return order;
     };
-    
+
     const executionOrder = getExecutionOrder();
-    
+
     // Validate each step's outputs don't reference future steps
     executionOrder.forEach((stepId) => {
       const step = stepMap.get(stepId);
       if (!step || !step.outputs) return;
-      
+
       // Check if output values reference other steps
       for (const [outputKey, outputValue] of Object.entries(step.outputs)) {
         // Look for ${steps.X.outputs.Y} patterns
@@ -436,7 +387,7 @@ export class StepParser {
           }
         }
       }
-      
+
       executed.add(stepId);
     });
   }

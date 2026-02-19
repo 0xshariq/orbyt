@@ -8,19 +8,7 @@
  * @status stub - will be implemented when core engine is stable
  */
 
-/**
- * Permission types for workflow execution
- */
-export enum Permission {
-  HTTP_REQUEST = 'http:request',
-  SHELL_EXECUTE = 'shell:execute',
-  FILE_READ = 'file:read',
-  FILE_WRITE = 'file:write',
-  DB_READ = 'db:read',
-  DB_WRITE = 'db:write',
-  NETWORK_ACCESS = 'network:access',
-  SYSTEM_ACCESS = 'system:access',
-}
+import { Permission } from "../types/core-types.js";
 
 /**
  * Permission policy configuration

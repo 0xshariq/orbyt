@@ -12,85 +12,11 @@
  * @module security
  */
 
-import { 
-  SecurityError, 
-  SecurityErrorCode, 
-  type SecurityViolationDetails 
+import {
+  SecurityError,
 } from '../errors/SecurityErrors.js';
+import { RESERVED_ANNOTATION_PREFIXES, RESERVED_CONTEXT_FIELDS, RESERVED_STEP_FIELDS, RESERVED_WORKFLOW_FIELDS, SecurityErrorCode, SecurityViolationDetails } from '../types/core-types.js';
 
-/**
- * Reserved top-level workflow fields
- * These are NEVER user-controlled, always engine-injected
- */
-export const RESERVED_WORKFLOW_FIELDS = [
-  '_internal',           // Internal execution context
-  '_identity',           // Execution identity
-  '_ownership',          // Ownership context
-  '_billing',            // Billing context
-  '_usage',              // Usage tracking
-  '_audit',              // Audit trail
-  '_system',             // System fields
-  '_engine',             // Engine metadata
-  '_execution',          // Execution context (internal)
-  '_runtime',            // Runtime context (internal)
-  '_security',           // Security context
-  '_metadata',           // Internal metadata
-] as const;
-
-/**
- * Reserved context field names
- * Users cannot set these in workflow context
- */
-export const RESERVED_CONTEXT_FIELDS = [
-  '_internal',
-  '_identity',
-  '_ownership',
-  '_billing',
-  '_usage',
-  '_audit',
-  '_system',
-  '_engine',
-  '_security',
-  'executionId',
-  'runId',
-  'traceId',
-  'userId',
-  'workspaceId',
-  'subscriptionId',
-  'subscriptionTier',
-  'billingId',
-  'billingMode',
-  'pricingTier',
-  'pricingModel',
-  'billingSnapshot',
-] as const;
-
-/**
- * Reserved step field names
- * Users cannot set these in step definitions
- */
-export const RESERVED_STEP_FIELDS = [
-  '_internal',
-  '_billing',
-  '_usage',
-  '_audit',
-  'executionId',
-  'runId',
-  'stepExecutionId',
-] as const;
-
-/**
- * Reserved annotation prefixes
- * These annotation namespaces are reserved for engine use
- */
-export const RESERVED_ANNOTATION_PREFIXES = [
-  'engine.',
-  'system.',
-  'internal.',
-  'billing.',
-  'audit.',
-  'security.',
-] as const;
 
 /**
  * Check if a field name is reserved
@@ -128,27 +54,27 @@ function determineErrorCode(field: string): SecurityErrorCode {
   if (field.includes('billing') || field.includes('pricing') || field.includes('cost') || field.includes('subscription')) {
     return SecurityErrorCode.BILLING_FIELD_OVERRIDE;
   }
-  
+
   // Identity fields
   if (field.includes('executionId') || field.includes('runId') || field.includes('traceId')) {
     return SecurityErrorCode.IDENTITY_FIELD_OVERRIDE;
   }
-  
+
   // Ownership fields
   if (field.includes('userId') || field.includes('workspaceId') || field.includes('subscriptionId')) {
     return SecurityErrorCode.OWNERSHIP_FIELD_OVERRIDE;
   }
-  
+
   // Usage counter fields
   if (field.includes('usage') || field.includes('count') || field.includes('duration')) {
     return SecurityErrorCode.USAGE_COUNTER_OVERRIDE;
   }
-  
+
   // Internal state fields (anything starting with _)
   if (field.startsWith('_')) {
     return SecurityErrorCode.INTERNAL_STATE_OVERRIDE;
   }
-  
+
   // Default to reserved field override
   return SecurityErrorCode.RESERVED_FIELD_OVERRIDE;
 }
@@ -160,31 +86,31 @@ function getFieldReason(field: string): string {
   if (field.startsWith('_billing') || field.includes('billing')) {
     return 'Billing fields control pricing and cost calculation. User manipulation would compromise revenue integrity.';
   }
-  
+
   if (field.startsWith('_internal')) {
     return 'Internal fields contain engine state. User manipulation would break execution and audit tracking.';
   }
-  
+
   if (field.startsWith('_identity')) {
     return 'Identity fields link execution to audit trail. User manipulation would compromise compliance.';
   }
-  
+
   if (field.startsWith('_ownership')) {
     return 'Ownership fields determine access rights. User manipulation would be a security violation.';
   }
-  
+
   if (field.startsWith('_usage')) {
     return 'Usage counters track resource consumption. User manipulation would compromise billing and quotas.';
   }
-  
+
   if (field.includes('executionId') || field.includes('runId')) {
     return 'Execution identifiers must be engine-generated for audit integrity and traceability.';
   }
-  
+
   if (field.startsWith('_')) {
     return 'Fields starting with "_" are reserved for engine internals and cannot be user-controlled.';
   }
-  
+
   return 'This field is reserved for engine control to ensure system integrity.';
 }
 
@@ -198,7 +124,7 @@ export function findReservedFields(
   checkPrefix = true
 ): string[] {
   const found: string[] = [];
-  
+
   for (const key of Object.keys(obj)) {
     // Check against reserved list
     if (reservedList.includes(key as any)) {
@@ -209,7 +135,7 @@ export function findReservedFields(
       found.push(key);
     }
   }
-  
+
   return found;
 }
 
@@ -223,7 +149,7 @@ export function findReservedFields(
  */
 export function validateWorkflowSecurity(workflow: any): void {
   const violations: SecurityViolationDetails[] = [];
-  
+
   // 1. Check top-level workflow fields
   const topLevelViolations = findReservedFields(workflow, RESERVED_WORKFLOW_FIELDS);
   for (const field of topLevelViolations) {
@@ -236,7 +162,7 @@ export function validateWorkflowSecurity(workflow: any): void {
       suggestion: `Remove '${field}' from your workflow YAML. The engine will inject this field automatically during execution.`,
     });
   }
-  
+
   // 2. Check workflow.context for reserved fields
   if (workflow.context && typeof workflow.context === 'object') {
     const contextViolations = findReservedFields(workflow.context, RESERVED_CONTEXT_FIELDS);
@@ -251,7 +177,7 @@ export function validateWorkflowSecurity(workflow: any): void {
       });
     }
   }
-  
+
   // 3. Check annotations for reserved prefixes
   if (workflow.annotations && typeof workflow.annotations === 'object') {
     for (const key of Object.keys(workflow.annotations)) {
@@ -267,7 +193,7 @@ export function validateWorkflowSecurity(workflow: any): void {
       }
     }
   }
-  
+
   // 4. Check steps for reserved fields
   if (workflow.workflow?.steps && Array.isArray(workflow.workflow.steps)) {
     workflow.workflow.steps.forEach((step: any, index: number) => {
@@ -284,7 +210,7 @@ export function validateWorkflowSecurity(workflow: any): void {
       }
     });
   }
-  
+
   // If violations found, throw SecurityError
   if (violations.length > 0) {
     throw new SecurityError(violations);

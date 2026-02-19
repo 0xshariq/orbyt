@@ -11,10 +11,8 @@
  * 4. ExecutionPlan - Coordinate above to create execution plan
  */
 
-export { DependencyResolver, type DependencyGraph, type DependencyEdge } from './DependencyResolver.js';
-export { CycleDetector, type CycleDetectionResult } from './CycleDetector.js';
+export { DependencyResolver } from './DependencyResolver.js';
+export { CycleDetector } from './CycleDetector.js';
 export {
-  TopologicalSorter,
-  type TopologicalSortResult,
-  type CriticalPathResult,
+  TopologicalSorter
 } from './TopologicalSorter.js';

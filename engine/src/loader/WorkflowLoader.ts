@@ -49,38 +49,12 @@ import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import YAML from 'yaml';
-import { WorkflowParser, type ParsedWorkflow } from '../parser/WorkflowParser.js';
+import { WorkflowParser } from '../parser/WorkflowParser.js';
 import { ErrorDetector } from '../errors/ErrorDetector.js';
 import { OrbytError } from '../errors/OrbytError.js';
 import { logErrorToEngine } from '../errors/ErrorFormatter.js';
 import type { EngineLogger } from '../logging/EngineLogger.js';
-
-/**
- * Workflow loading options
- */
-export interface WorkflowLoadOptions {
-  /**
-   * Base directory for resolving relative paths
-   * Defaults to dirname of the loaded file
-   */
-  baseDir?: string;
-
-  /**
-   * Variables to inject during loading
-   */
-  variables?: Record<string, any>;
-
-  /**
-   * Whether to validate the workflow after loading
-   * Default: true
-   */
-  validate?: boolean;
-
-  /**
-   * Optional EngineLogger for structured error logging
-   */
-  logger?: EngineLogger;
-}
+import { ParsedWorkflow, WorkflowLoadOptions } from '../types/core-types.js';
 
 /**
  * Workflow Loader

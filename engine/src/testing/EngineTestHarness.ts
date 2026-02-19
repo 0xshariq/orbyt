@@ -8,7 +8,7 @@
  * @status stub - will be enhanced when testing framework is needed
  */
 
-import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
+import { ParsedWorkflow } from '../types/core-types.js';
 import { MockAdapter } from './MockAdapter.js';
 import type { Adapter } from '@dev-ecosystem/core';
 

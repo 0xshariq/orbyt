@@ -34,62 +34,7 @@
 
 import { randomUUID } from 'crypto';
 import { LoggerManager } from '../logging/LoggerManager.js';
-
-/**
- * Runtime context for variable resolution
- */
-export interface ResolutionContext {
-  /** Global environment variables */
-  env: Record<string, any>;
-  
-  /** Step outputs (stepId -> output data) */
-  steps: Map<string, any>;
-  
-  /** Workflow metadata */
-  workflow: {
-    id: string;
-    name: string;
-    version?: string;
-    description?: string;
-    tags?: string[];
-    owner?: string;
-  };
-  
-  /** Current run information */
-  run: {
-    id: string;
-    timestamp: Date;
-    attempt: number;
-    startedAt?: Date;
-    triggeredBy?: string;
-  };
-  
-  /** Workflow inputs (runtime parameters) */
-  inputs?: Record<string, any>;
-  
-  /** Resolved secrets (name -> value) */
-  secrets?: Record<string, any>;
-  
-  /** Additional runtime context */
-  context?: Record<string, any>;
-  
-  /** Workflow metadata (extended) */
-  metadata?: {
-    createdAt?: string;
-    updatedAt?: string;
-    annotations?: Record<string, any>;
-  };
-  
-  // Future placeholders (not yet implemented)
-  /** Telemetry data (future) */
-  telemetry?: Record<string, any>;
-  
-  /** Resource information (future) */
-  resources?: Record<string, any>;
-  
-  /** Compliance metadata (future) */
-  compliance?: Record<string, any>;
-}
+import { ResolutionContext } from '../types/core-types.js';
 
 /**
  * Variable resolver engine

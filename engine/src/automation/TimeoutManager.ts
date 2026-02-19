@@ -7,6 +7,8 @@
  * @module automation
  */
 
+import { TimeoutConfig, TimeoutResult } from "../types/core-types.js";
+
 /**
  * Timeout error
  */
@@ -19,40 +21,6 @@ export class TimeoutError extends Error {
     super(message);
     this.name = 'TimeoutError';
   }
-}
-
-/**
- * Timeout configuration
- */
-export interface TimeoutConfig {
-  /** Timeout duration in milliseconds */
-  timeoutMs: number;
-  
-  /** Operation name for error messages */
-  operation?: string;
-  
-  /** Cleanup function to run on timeout */
-  onTimeout?: () => Promise<void> | void;
-  
-  /** Whether to run cleanup before throwing (default: true) */
-  cleanupBeforeThrow?: boolean;
-}
-
-/**
- * Timeout result
- */
-export interface TimeoutResult<T> {
-  /** Operation result (undefined if timed out) */
-  result?: T;
-  
-  /** Whether operation timed out */
-  timedOut: boolean;
-  
-  /** Actual duration in milliseconds */
-  durationMs: number;
-  
-  /** Timeout error if timed out */
-  error?: TimeoutError;
 }
 
 /**

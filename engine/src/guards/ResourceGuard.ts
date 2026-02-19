@@ -10,33 +10,9 @@
  * @module guards
  */
 
-import type { ParsedStep } from '../parser/StepParser.js';
+import { ParsedStep, PermissionPolicy } from "../types/core-types.js";
 
-/**
- * Permission policy for workflow execution
- */
-export interface PermissionPolicy {
-  /** Allow network access */
-  allowNetwork?: boolean;
-  
-  /** Allow file system access */
-  allowFileSystem?: boolean;
-  
-  /** Allow shell command execution */
-  allowShell?: boolean;
-  
-  /** Allowed adapter types */
-  allowedAdapters?: string[];
-  
-  /** Blocked adapter types */
-  blockedAdapters?: string[];
-  
-  /** Maximum step timeout (ms) */
-  maxStepTimeout?: number;
-  
-  /** Maximum workflow timeout (ms) */
-  maxWorkflowTimeout?: number;
-}
+
 
 /**
  * Default permission policy (permissive)

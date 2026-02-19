@@ -41,7 +41,7 @@ export type * from './execution/index.js';
 export * from './execution/index.js';
 
 // Explanation types (for CLI and API integrations)
-export type { ExecutionExplanation, ExplainedStep } from './explanation/index.js';
+export * from './explanation/index.js';
 
 // Parser (for validation and custom tooling)
 export * from './parser/index.js';
@@ -63,6 +63,7 @@ export * from './scheduling/index.js';
 export * from './errors/index.js';
 
 // Security (read-only - for understanding reserved fields)
+export { PermissionPolicy } from './security/index.js';
 export * from './security/index.js';
 
 // export * from './workflow/index.js';
@@ -71,3 +72,5 @@ export * from './loader/index.js';
 export * from './explanation/index.js';
 
 export * from './logging/index.js';
+
+export * from './types/index.js';

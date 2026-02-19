@@ -7,53 +7,7 @@
  * @module automation
  */
 
-/**
- * Failure strategy type
- */
-export type FailureStrategyType = 
-  | 'abort'      // Stop workflow immediately
-  | 'continue'   // Continue with next steps
-  | 'skipDependent'; // Skip steps that depend on failed step
-
-/**
- * Failure strategy configuration
- */
-export interface FailureStrategyConfig {
-  /** Strategy type */
-  type: FailureStrategyType;
-  
-  /** Allow partial workflow completion */
-  allowPartialSuccess?: boolean;
-  
-  /** Maximum number of step failures before aborting workflow */
-  maxFailures?: number;
-  
-  /** Critical step IDs that must succeed (failure = abort) */
-  criticalSteps?: string[];
-  
-  /** Cleanup function to run on failure */
-  onFailure?: (stepId: string, error: Error) => Promise<void> | void;
-}
-
-/**
- * Failure decision for a specific step failure
- */
-export interface FailureDecision {
-  /** Should workflow continue? */
-  continueWorkflow: boolean;
-  
-  /** Should execute cleanup? */
-  runCleanup: boolean;
-  
-  /** Should skip dependent steps? */
-  skipDependentSteps: boolean;
-  
-  /** Reason for decision */
-  reason: string;
-  
-  /** Final workflow status if abort */
-  finalStatus?: 'failed' | 'partial';
-}
+import { FailureDecision, FailureStrategyConfig, FailureStrategyType } from "../types/core-types.js";
 
 /**
  * Failure strategy for workflow execution

@@ -23,29 +23,7 @@
  */
 
 import { WorkflowValidationError } from '@dev-ecosystem/core';
-import { DependencyGraph } from './DependencyResolver.js';
-
-/**
- * Result of cycle detection
- */
-export interface CycleDetectionResult {
-  /** Whether a cycle was detected */
-  readonly hasCycle: boolean;
-  /** The cycle path if one was found (e.g., ['A', 'B', 'C', 'A']) */
-  readonly cyclePath?: readonly string[];
-}
-
-/**
- * Node visit state for DFS traversal
- */
-enum VisitState {
-  /** Not yet visited */
-  WHITE = 'white',
-  /** Currently being visited (in DFS stack) */
-  GRAY = 'gray',
-  /** Fully visited, all descendants explored */
-  BLACK = 'black',
-}
+import { CycleDetectionResult, DependencyGraph, VisitState } from '../types/core-types.js';
 
 /**
  * Detects cycles in dependency graphs.

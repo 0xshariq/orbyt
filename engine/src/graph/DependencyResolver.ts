@@ -20,31 +20,7 @@
  */
 
 import { WorkflowValidationError } from '@dev-ecosystem/core';
-import { ExecutionNode } from '../execution/ExecutionNode.js';
-
-/**
- * Represents a directed edge in the dependency graph
- */
-export interface DependencyEdge {
-  /** The step that depends on another */
-  readonly from: string;
-  /** The step that must complete first */
-  readonly to: string;
-}
-
-/**
- * The complete dependency graph structure
- */
-export interface DependencyGraph {
-  /** All execution nodes indexed by stepId */
-  readonly nodes: ReadonlyMap<string, ExecutionNode>;
-  /** All dependency edges */
-  readonly edges: readonly DependencyEdge[];
-  /** Adjacency list: stepId → list of dependencies */
-  readonly adjacencyList: ReadonlyMap<string, readonly string[]>;
-  /** Reverse adjacency list: stepId → list of dependents */
-  readonly reverseDependencies: ReadonlyMap<string, readonly string[]>;
-}
+import { DependencyEdge, DependencyGraph, ExecutionNode } from '../types/core-types.js';
 
 /**
  * Resolves dependencies between workflow steps.

@@ -7,30 +7,7 @@
  * @module automation
  */
 
-/**
- * Backoff strategy type
- */
-export type BackoffType = 'fixed' | 'linear' | 'exponential';
-
-/**
- * Backoff strategy configuration
- */
-export interface BackoffConfig {
-  /** Strategy type */
-  type: BackoffType;
-  
-  /** Base delay in milliseconds */
-  baseDelayMs: number;
-  
-  /** Maximum delay cap in milliseconds */
-  maxDelayMs?: number;
-  
-  /** Multiplier for exponential backoff (default: 2) */
-  multiplier?: number;
-  
-  /** Add random jitter (0-1, default: 0.1 = 10%) */
-  jitter?: number;
-}
+import { BackoffConfig, BackoffType } from "../types/core-types.js";
 
 /**
  * Backoff strategy for calculating retry delays

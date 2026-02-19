@@ -1,4 +1,5 @@
-import type { OrbytEvent } from './EngineEvents.js';
+import { OrbytEvent } from "../types/core-types.js";
+
 
 /**
  * Event handler function signature

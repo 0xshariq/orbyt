@@ -11,8 +11,9 @@
  * @module explanation
  */
 
-import type { ExecutionExplanation, ExplanationEvent } from './ExplanationTypes.js';
+
 import { LoggerManager } from '../logging/LoggerManager.js';
+import { ExecutionExplanation, ExplanationEvent } from '../types/core-types.js';
 
 /**
  * Explanation Logger

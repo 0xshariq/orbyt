@@ -9,90 +9,11 @@
 
 import YAML from 'yaml';
 import { SchemaValidator } from './SchemaValidator.js';
-import { StepParser, type ParsedStep } from './StepParser.js';
+import { StepParser } from './StepParser.js';
 import { validateWorkflowSecurity } from '../security/ReservedFields.js';
 import type { WorkflowDefinitionZod } from '@dev-ecosystem/core';
 import { LoggerManager } from '../logging/LoggerManager.js';
-
-/**
- * Parsed workflow ready for execution
- */
-export interface ParsedWorkflow {
-  /** Workflow metadata */
-  name?: string;
-  description?: string;
-  version: string;
-  kind: string;
-  tags?: string[];
-  owner?: string;
-
-  /** Metadata object (if provided separately) */
-  metadata?: {
-    name?: string;
-    description?: string;
-    tags?: string[];
-    owner?: string;
-    version?: string;
-    createdAt?: string;
-    updatedAt?: string;
-  };
-
-  /** Annotations for AI and UI hints */
-  annotations?: {
-    'ai.intent'?: string;
-    'ui.group'?: string;
-    'ui.icon'?: string;
-    [key: string]: any;
-  };
-
-  /** Workflow steps */
-  steps: ParsedStep[];
-
-  /** Global workflow inputs */
-  inputs?: Record<string, any>;
-
-  /** Global environment variables */
-  context?: Record<string, any>;
-
-  /** Secret references */
-  secrets?: {
-    vault?: string;
-    refs?: Record<string, string>;
-  };
-
-  /** Trigger configuration */
-  triggers?: Array<{
-    type: string;
-    [key: string]: any;
-  }>;
-
-  /** Defaults */
-  defaults?: {
-    retry?: {
-      max: number;
-      backoff?: 'linear' | 'exponential';
-      delay?: number;
-    };
-    timeout?: string;
-    adapter?: string;
-  };
-
-  /** Policies */
-  policies?: {
-    failure?: 'stop' | 'continue' | 'isolate';
-    concurrency?: number;
-    sandbox?: 'none' | 'basic' | 'strict';
-  };
-
-  /** Permissions */
-  permissions?: any;
-
-  /** Resources */
-  resources?: any;
-
-  /** Outputs */
-  outputs?: Record<string, string>;
-}
+import { ParsedWorkflow } from '../types/core-types.js';
 
 /**
  * Main workflow parser class

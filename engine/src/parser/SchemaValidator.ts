@@ -32,40 +32,40 @@ export class SchemaValidator {
    */
   static validate(rawWorkflow: unknown): WorkflowDefinitionZod {
     const logger = LoggerManager.getLogger();
-    
+
     try {
       logger.validationStarted('workflow', 'schema');
-      
+
       // First, check for unknown fields at root level
       this.validateUnknownFields(rawWorkflow as Record<string, any>, 'root');
-      
+
       // Use Zod schema from ecosystem-core for structural validation
       const validated = OrbytWorkflowSchema.parse(rawWorkflow);
-      
+
       // Additional semantic validations
       this.validateWorkflowBody(validated);
-      
+
       logger.validationPassed('workflow', 'schema');
-      
+
       return validated;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.validationFailed('workflow', 'schema', [errorMessage]);
-      
+
       // If it's already an OrbytError, rethrow it
       if (error instanceof OrbytError) {
         throw error;
       }
-      
+
       // Transform Zod errors into diagnostic-rich OrbytErrors
       if (error instanceof z.ZodError) {
         throw this.transformZodError(error);
       }
-      
+
       throw error;
     }
   }
-  
+
   /**
    * Check for unknown fields and suggest corrections
    * Enhanced with multiple suggestions and better context
@@ -80,25 +80,25 @@ export class SchemaValidator {
     if (!obj || typeof obj !== 'object') {
       return;
     }
-    
+
     // Free-form field paths - these can contain any user-defined keys
     const FREE_FORM_PATHS = ['annotations', 'context', 'secrets', 'inputs'];
     const isFreeFormPath = FREE_FORM_PATHS.some(fp => path === fp || path.endsWith('.' + fp));
-    
+
     // Skip validation for free-form paths (user can define any fields)
     if (isFreeFormPath) {
       return;
     }
-    
+
     const validFields = getValidFields(path);
     const actualFields = Object.keys(obj);
-    
+
     for (const field of actualFields) {
       if (!isValidField(field, path)) {
         // Find multiple suggestions (up to 3)
         const suggestions = findMatches(field, Array.from(validFields), 3, 0.5);
         const bestMatch = suggestions[0];
-        
+
         // Build hint with multiple suggestions or best match
         let hint: string;
         if (suggestions.length > 1) {
@@ -108,12 +108,12 @@ export class SchemaValidator {
         } else {
           hint = `Valid fields at ${path}: ${Array.from(validFields).join(', ')}`;
         }
-        
+
         // Check if this looks like a very close typo (>0.8 similarity)
         if (bestMatch && isLikelyTypo(field, bestMatch)) {
           hint = `This looks like a typo of "${bestMatch}"!`;
         }
-        
+
         // Throw error with enhanced suggestion
         throw new SchemaError({
           code: 'ORB-S-001' as any,
@@ -123,12 +123,12 @@ export class SchemaValidator {
           severity: ErrorSeverity.ERROR,
         });
       }
-      
+
       // Recursively validate nested objects
       // Skip validation for free-form fields (user-defined content)
       const FREE_FORM_FIELDS = ['annotations', 'context', 'with', 'outputs', 'env', 'secrets', 'inputs'];
       const value = obj[field];
-      
+
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         // Don't validate contents of free-form fields (they can contain any keys)
         if (!FREE_FORM_FIELDS.includes(field)) {
@@ -136,7 +136,7 @@ export class SchemaValidator {
           this.validateUnknownFields(value, nestedPath);
         }
       }
-      
+
       // Validate array items (steps, triggers, etc.)
       if (Array.isArray(value)) {
         if (field === 'steps') {
@@ -161,7 +161,7 @@ export class SchemaValidator {
       }
     }
   }
-  
+
   /**
    * Validate workflow body structure and semantics
    * 
@@ -172,7 +172,7 @@ export class SchemaValidator {
     if (!workflow.workflow || !workflow.workflow.steps) {
       throw SchemaError.missingField('workflow.steps', 'workflow');
     }
-    
+
     // Validate steps array is not empty
     if (workflow.workflow.steps.length === 0) {
       throw new SchemaError({
@@ -184,7 +184,7 @@ export class SchemaValidator {
       });
     }
   }
-  
+
   /**
    * Transform Zod validation error into OrbytError with better diagnostics
    * 
@@ -195,7 +195,7 @@ export class SchemaValidator {
     // Get the first error (we'll enhance to handle multiple later)
     const firstIssue = error.issues[0];
     const path = firstIssue.path.join('.');
-    
+
     // Determine error type and create appropriate error
     switch (firstIssue.code) {
       case 'invalid_type':
@@ -208,7 +208,7 @@ export class SchemaValidator {
           String(receivedType),
           path
         );
-      
+
       case 'invalid_union':
         // Handle union/enum-like errors
         return new SchemaError({
@@ -218,7 +218,7 @@ export class SchemaValidator {
           hint: 'Check the allowed values in the workflow schema documentation.',
           severity: ErrorSeverity.ERROR,
         });
-      
+
       default:
         // Generic schema error
         return new SchemaError({
@@ -230,7 +230,7 @@ export class SchemaValidator {
         });
     }
   }
-  
+
   /**
    * Check if workflow data is valid without throwing
    * 
@@ -245,7 +245,7 @@ export class SchemaValidator {
       return false;
     }
   }
-  
+
   /**
    * Safely validate and return result with success/error
    * 

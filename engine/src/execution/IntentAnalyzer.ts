@@ -13,64 +13,10 @@
  * Future: Pattern recognition, ML-based classification.
  */
 
-import type { ParsedWorkflow } from '../parser/WorkflowParser.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
+import { ClassifiedIntent, IntentRecommendations, ParsedWorkflow, WorkflowIntent } from '../types/core-types.js';
 
-/**
- * Known workflow intents
- */
-export type WorkflowIntent =
-    | 'data-pipeline'      // ETL, data transformation
-    | 'deployment'         // Deploy applications
-    | 'testing'            // Test automation
-    | 'monitoring'         // Health checks, monitoring
-    | 'notification'       // Send notifications
-    | 'integration'        // Service integration
-    | 'automation'         // General automation
-    | 'orchestration'      // Multi-service orchestration
-    | 'unknown';           // Cannot determine
 
-/**
- * Intent classification confidence
- */
-export type IntentConfidence = 'high' | 'medium' | 'low';
-
-/**
- * Intent classification result
- */
-export interface ClassifiedIntent {
-    /** Primary intent */
-    intent: WorkflowIntent;
-
-    /** Classification confidence */
-    confidence: IntentConfidence;
-
-    /** Secondary intents (if any) */
-    secondaryIntents?: WorkflowIntent[];
-
-    /** Reasoning (for debugging) */
-    reasoning: string;
-
-    /** Detected patterns */
-    patterns: string[];
-}
-
-/**
- * Intent-based recommendations
- */
-export interface IntentRecommendations {
-    /** Suggested adapters */
-    suggestedAdapters?: string[];
-
-    /** Optimization hints */
-    optimizations?: string[];
-
-    /** Common pitfalls to avoid */
-    warnings?: string[];
-
-    /** Best practices */
-    bestPractices?: string[];
-}
 
 /**
  * Intent Layer Analyzer

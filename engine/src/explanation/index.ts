@@ -7,10 +7,5 @@
  * @module explanation
  */
 
-export { ExplanationGenerator } from './ExplanationGenerator.js';
-export { ExplanationLogger } from './ExplanationLogger.js';
-export type {
-    ExplainedStep,
-    ExecutionExplanation,
-    ExplanationEvent,
-} from './ExplanationTypes.js';
+export * from './ExplanationGenerator.js';
+export * from './ExplanationLogger.js';

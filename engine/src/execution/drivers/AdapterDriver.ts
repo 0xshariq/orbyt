@@ -7,9 +7,10 @@
  * @module execution/drivers
  */
 
-import { BaseDriver, type DriverStep, type DriverContext } from './ExecutionDriver.js';
+import { BaseDriver } from './ExecutionDriver.js';
 import type { AdapterRegistry } from '../../adapters/AdapterRegistry.js';
 import type { AdapterResult, AdapterContext } from '@dev-ecosystem/core';
+import { DriverContext, DriverStep } from '../../types/core-types.js';
 
 /**
  * Adapter Driver

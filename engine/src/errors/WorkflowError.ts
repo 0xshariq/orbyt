@@ -31,8 +31,9 @@
  */
 
 import { ExitCodes } from '@dev-ecosystem/core';
-import { OrbytError, type OrbytErrorDiagnostic } from './OrbytError.js';
+import { OrbytError } from './OrbytError.js';
 import { OrbytErrorCode, ErrorSeverity } from './ErrorCodes.js';
+import { OrbytErrorDiagnostic } from '../types/core-types.js';
 
 /**
  * Schema validation error (structure problems)

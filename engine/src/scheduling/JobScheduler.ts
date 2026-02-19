@@ -10,8 +10,8 @@
 import { Worker } from 'worker_threads';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import type { JobQueue, Job } from '../queue/JobQueue.js';
-import { JobPriority, createJob } from '../queue/JobQueue.js';
+import {  createJob } from '../queue/JobQueue.js';
+import { Job, JobPriority, JobQueue } from '../types/core-types.js';
 
 /**
  * Job scheduler configuration

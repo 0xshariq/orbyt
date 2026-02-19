@@ -8,7 +8,9 @@
  * @module queue
  */
 
-import type { Job, JobQueue, QueueStats, QueueConfig } from './JobQueue.js';
+import { Job, JobQueue, QueueConfig, QueueStats } from "../types/core-types.js";
+
+
 
 /**
  * In-memory job queue implementation

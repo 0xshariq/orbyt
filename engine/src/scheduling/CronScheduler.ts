@@ -10,50 +10,9 @@
 import { type ScheduledTask } from 'node-cron';
 import { TriggerType } from '@dev-ecosystem/core';
 import { ScheduleParser } from './ScheduleParser.js';
-import type { WorkflowSchedule, ScheduleExecution, ScheduleStatus } from './ScheduleTypes.js';
-import { shouldScheduleRun, isScheduleExpired } from './ScheduleTypes.js';
+import { CronSchedulerConfig, ScheduleExecution, SchedulerEventListeners, ScheduleStatus, WorkflowSchedule } from '../types/core-types.js';
+import { isScheduleExpired, shouldScheduleRun } from './ScheduleTypes.js';
 
-/**
- * Scheduler configuration
- */
-export interface CronSchedulerConfig {
-  /** Enable schedule execution (false = dry run mode) */
-  enabled?: boolean;
-  
-  /** Maximum concurrent workflow executions */
-  maxConcurrent?: number;
-  
-  /** Timezone for schedules (default: UTC) */
-  defaultTimezone?: string;
-}
-
-/**
- * Schedule trigger callback
- */
-export type ScheduleTriggerCallback = (
-  schedule: WorkflowSchedule,
-  execution: ScheduleExecution
-) => Promise<void> | void;
-
-/**
- * Scheduler event listeners
- */
-export interface SchedulerEventListeners {
-  /** Called when schedule is triggered */
-  onScheduleTrigger?: ScheduleTriggerCallback;
-  
-  /** Called when schedule execution completes */
-  onExecutionComplete?: (execution: ScheduleExecution) => void | Promise<void>;
-  
-  /** Called when schedule execution fails */
-  onExecutionFailed?: (execution: ScheduleExecution, error: Error) => void | Promise<void>;
-  
-  /** Called when scheduler starts */
-  onStart?: () => void | Promise<void>;
-  
-  /** Called when scheduler stops */
-  onStop?: () => void | Promise<void>;
-}
 
 /**
  * Cron scheduler for time-based workflow triggers

@@ -8,42 +8,7 @@
  * @status stub - will be implemented when core engine is stable
  */
 
-import type { PermissionPolicy } from './PermissionPolicy.js';
-
-/**
- * Sandbox configuration
- */
-export interface SandboxConfig {
-  /** Policy to enforce */
-  policy: PermissionPolicy;
-  
-  /** Isolated environment variables */
-  env?: Record<string, string>;
-  
-  /** Working directory */
-  cwd?: string;
-}
-
-/**
- * Sandbox execution context
- */
-export interface SandboxContext {
-  /** Sandbox ID */
-  id: string;
-  
-  /** Policy being enforced */
-  policy: PermissionPolicy;
-  
-  /** Start time */
-  startedAt: Date;
-  
-  /** Resource usage tracking */
-  usage: {
-    memory: number;
-    cpu: number;
-    duration: number;
-  };
-}
+import { SandboxConfig, SandboxContext } from "../types/core-types.js";
 
 /**
  * Sandbox Manager
