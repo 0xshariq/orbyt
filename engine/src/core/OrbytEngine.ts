@@ -66,7 +66,7 @@
  * @module core
  */
 
-import YAML from 'yaml';
+import { WorkflowLoader } from '../loader/WorkflowLoader.js';
 import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
 import { createEngineContext } from './EngineContext.js';
 import { LoggerManager, type EngineLogger } from '../logging/index.js';
@@ -74,7 +74,6 @@ import { LogLevel as CoreLogLevel } from '@dev-ecosystem/core';
 import { ExecutionEngine } from '../execution/ExecutionEngine.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
 import { WorkflowExecutor } from '../execution/WorkflowExecutor.js';
-import { WorkflowParser } from '../parser/WorkflowParser.js';
 import { EventBus } from '../events/EventBus.js';
 import { HookManager } from '../hooks/HookManager.js';
 import { AdapterRegistry } from '../adapters/AdapterRegistry.js';
@@ -449,16 +448,33 @@ export class OrbytEngine {
       await this.start();
     }
 
-    // SECURITY: Sanitize user context to prevent injection of internal fields
-    const sanitizedOptions = this.sanitizeUserOptions(options);
 
-    // Create internal execution context (billing, ownership, audit)
-    // This is NEVER user-controlled - engine injects it
+
+    // Accept string (YAML/JSON), file path, or object. Always validate/parse via loader.
+    let parsedWorkflow: ParsedWorkflow;
+    if (typeof workflow === 'string') {
+      // Try file path first, then YAML/JSON content
+      if (WorkflowLoader.looksLikeFilePath(workflow) && require('fs').existsSync(workflow)) {
+        parsedWorkflow = await WorkflowLoader.fromFile(workflow);
+      } else {
+        try {
+          parsedWorkflow = WorkflowLoader.fromYAML(workflow);
+        } catch {
+          parsedWorkflow = WorkflowLoader.fromJSON(workflow);
+        }
+      }
+    } else if (typeof workflow === 'object' && workflow !== null) {
+      parsedWorkflow = WorkflowLoader.fromObject(workflow);
+    } else {
+      throw new Error('Invalid workflow input: must be file path, YAML/JSON string, or object');
+    }
+
+    // Inject internal fields after validation
+    const sanitizedOptions = options;
     const internalContext = InternalContextBuilder.build(
       this.version,
       sanitizedOptions._ownershipContext
     );
-
     this.log('debug', 'Internal execution context created', {
       executionId: internalContext._identity.executionId,
       runId: internalContext._identity.runId,
@@ -466,33 +482,6 @@ export class OrbytEngine {
       subscriptionTier: internalContext._ownership.subscriptionTier,
       isBillable: internalContext._billing.isBillable,
     });
-
-    // ============================================================================
-    // STEP 1: WORKFLOW PARSING (If string provided)
-    // ============================================================================
-    // Engine accepts:
-    // 1. ParsedWorkflow object (primary - already validated)
-    // 2. YAML string content (convenience - will parse and validate)
-    // 
-    // Engine does NOT accept:
-    // - File paths (use WorkflowLoader.fromFile() instead)
-    // 
-    // This keeps engine I/O-agnostic.
-
-    let parsedWorkflow: ParsedWorkflow;
-
-    if (typeof workflow === 'string') {
-      // String provided - parse as YAML content
-      this.log('debug', 'Parsing workflow from YAML string');
-      parsedWorkflow = this.parseWorkflow(workflow);
-    } else {
-      // Object provided - use directly (already parsed and validated)
-      this.log('debug', 'Using pre-parsed workflow object');
-      parsedWorkflow = workflow;
-    }
-
-    // At this point, parsedWorkflow is guaranteed to be:
-    // - Parsed from YAML (if string provided)  
 
     // Handle dry-run mode
     if (options.dryRun || this.config.mode === 'dry-run') {
@@ -592,47 +581,6 @@ export class OrbytEngine {
   }
 
   /**
-   * Sanitize user-provided options to prevent injection attacks
-   * SECURITY: Users should never be able to override internal fields
-   */
-  private sanitizeUserOptions(options: WorkflowRunOptions): WorkflowRunOptions {
-    const sanitized = { ...options };
-
-    // Remove any attempts to inject internal fields through context
-    if (sanitized.context) {
-      const cleanContext = { ...sanitized.context };
-
-      // Remove internal fields that users should never control
-      delete (cleanContext as any)._internal;
-      delete (cleanContext as any)._identity;
-      delete (cleanContext as any)._ownership;
-      delete (cleanContext as any)._billing;
-      delete (cleanContext as any)._billingSnapshot;
-      delete (cleanContext as any)._usage;
-      delete (cleanContext as any)._audit;
-      delete (cleanContext as any).executionId;
-      delete (cleanContext as any).runId;
-      delete (cleanContext as any).billingId;
-      delete (cleanContext as any).subscriptionId;
-      delete (cleanContext as any).userId;
-      delete (cleanContext as any).workspaceId;
-
-      sanitized.context = cleanContext;
-
-      this.log('debug', 'User context sanitized - removed internal fields');
-    }
-
-    // Validate ownership context is only set by trusted sources (bridge/API)
-    if (sanitized._ownershipContext) {
-      // Future: Add authentication check here
-      // For now, allow it (assuming CLI/local mode)
-      this.log('debug', 'Ownership context provided by caller');
-    }
-
-    return sanitized;
-  }
-
-  /**
    * Billing lifecycle hook - called after workflow completes
    * INTERNAL: Used to track usage and send billing data to analytics bridge
    */
@@ -675,49 +623,6 @@ export class OrbytEngine {
   }
 
   /**
-   * Parse a workflow from YAML string
-   * 
-   * WORKFLOW PARSING PIPELINE:
-   * ==========================
-   * 1. Validate YAML syntax (catch malformed YAML early)
-   * 2. Parse YAML to object
-   * 3. Security validation (reject reserved internal fields)
-   * 4. Schema validation (validate against Zod schema)
-   * 5. Step parsing and validation
-   * 6. Return parsed workflow ready for execution
-   * 
-   * @param yaml - YAML workflow definition
-   * @returns Parsed workflow
-   */
-  parseWorkflow(yaml: string): ParsedWorkflow {
-    this.log('debug', 'Parsing workflow from YAML string');
-
-    // Step 1: Validate YAML syntax first for better error messages
-    let parsedObject: any;
-    try {
-      parsedObject = YAML.parse(yaml);
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      this.log('error', `YAML syntax validation failed: ${errorMsg}`);
-      throw new Error(`Invalid YAML syntax: ${errorMsg}`);
-    }
-
-    this.log('debug', 'YAML syntax validated successfully');
-
-    // Step 2: Use WorkflowParser for security, schema, and step validation
-    // This handles: security checks, Zod validation, step parsing
-    try {
-      const parsed = WorkflowParser.parse(parsedObject);
-      this.log('debug', `Workflow parsed successfully: ${parsed.name || 'unnamed'}`);
-      return parsed;
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      this.log('error', `Workflow validation failed: ${errorMsg}`);
-      throw error; // Re-throw with original error (contains security/validation details)
-    }
-  }
-
-  /**
    * Validate a workflow without executing it
    * 
    * @param workflow - Workflow to validate
@@ -726,32 +631,10 @@ export class OrbytEngine {
    */
   async validate(
     workflow: string | ParsedWorkflow,
-    options?: { _ownershipContext?: Partial<OwnershipContext> }
+    options?: { _ownershipContext?: Partial<OwnershipContext>; logger?: EngineLogger }
   ): Promise<boolean> {
-    // Create internal context for tracking validations (non-billable)
-    const internalContext = InternalContextBuilder.build(
-      this.version,
-      { ...(options?._ownershipContext || {}), subscriptionTier: 'free' }
-    );
-
-    this.log('debug', 'Validating workflow', {
-      executionId: internalContext._identity.executionId,
-    });
-
-    let parsedWorkflow: ParsedWorkflow;
-
-    if (typeof workflow === 'string') {
-      // String provided - parse as YAML content
-      // Note: For file paths, use WorkflowLoader.fromFile() before calling validate()
-      parsedWorkflow = this.parseWorkflow(workflow);
-    } else {
-      parsedWorkflow = workflow;
-    }
-
-    // Parsing itself validates schema
-    // Additional validation could be added here
-
-    this.log('info', `Workflow validated: ${parsedWorkflow.name || 'unnamed'}`);
+    // Use WorkflowLoader.validate to check workflow validity, passing logger if present
+    await WorkflowLoader.validate(workflow, options?.logger);
     return true;
   }
 
@@ -772,41 +655,19 @@ export class OrbytEngine {
    */
   async explain(
     workflow: string | ParsedWorkflow,
-    options?: { _ownershipContext?: Partial<OwnershipContext> }
+    options?: { _ownershipContext?: Partial<OwnershipContext>; logger?: EngineLogger }
   ): Promise<ExecutionExplanation> {
-    // Create internal context for tracking explanations (non-billable)
-    const internalContext = InternalContextBuilder.build(
-      this.version,
-      { ...(options?._ownershipContext || {}), subscriptionTier: 'free' }
-    );
-
-    this.log('debug', 'Explaining workflow', {
-      executionId: internalContext._identity.executionId,
-    });
-
+    // Accept already loaded/validated workflow object
     let parsedWorkflow: ParsedWorkflow;
-
     if (typeof workflow === 'string') {
-      // String provided - parse as YAML content
-      // Note: For file paths, use WorkflowLoader.fromFile() before calling explain()
-      parsedWorkflow = this.parseWorkflow(workflow);
+      parsedWorkflow = await WorkflowLoader.validate(workflow, options?.logger);
     } else {
       parsedWorkflow = workflow;
     }
-
-    // Build execution explanation
+    // Generate explanation
     const explanation = ExplanationGenerator.generate(parsedWorkflow);
-
-    // Log explanation at entry point with 'info' level for CLI visibility
+    // Log explanation for CLI visibility
     ExplanationLogger.log(explanation, 'info');
-
-    this.log('debug', 'Workflow explained', {
-      workflowName: explanation.workflowName,
-      stepCount: explanation.stepCount,
-      executionStrategy: explanation.executionStrategy,
-      hasCycles: explanation.hasCycles,
-    });
-
     return explanation;
   }
 
