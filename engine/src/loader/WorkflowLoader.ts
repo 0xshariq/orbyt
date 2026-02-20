@@ -50,11 +50,13 @@ import { existsSync } from 'fs';
 import { resolve } from 'path';
 import YAML from 'yaml';
 import { WorkflowParser } from '../parser/WorkflowParser.js';
+import { SecurityError } from '../errors/SecurityErrors.js';
+import { validateWorkflowSecurity, getAllReservedFieldViolations } from '../security/ReservedFields.js';
 import { ErrorDetector } from '../errors/ErrorDetector.js';
 import { OrbytError } from '../errors/OrbytError.js';
 import { logErrorToEngine } from '../errors/ErrorFormatter.js';
 import type { EngineLogger } from '../logging/EngineLogger.js';
-import { ParsedWorkflow, WorkflowLoadOptions } from '../types/core-types.js';
+import { ParsedWorkflow, SecurityErrorCode, WorkflowLoadOptions } from '../types/core-types.js';
 
 /**
  * Workflow Loader
@@ -85,7 +87,6 @@ export class WorkflowLoader {
   ): Promise<ParsedWorkflow> {
     // Step 1: Validate file exists
     const resolvedPath = resolve(filePath);
-
     if (!existsSync(resolvedPath)) {
       throw new Error(
         `Workflow file not found: ${filePath}\nResolved path: ${resolvedPath}`
@@ -101,26 +102,60 @@ export class WorkflowLoader {
       throw new Error(`Failed to read workflow file: ${errorMsg}`);
     }
 
-    // Step 3: Detect format and parse
+    // Step 3: Detect format and parse to object (YAML/JSON)
     const isYAML = filePath.endsWith('.yaml') || filePath.endsWith('.yml');
     const isJSON = filePath.endsWith('.json');
-
-    let parsed: ParsedWorkflow;
-
-    if (isYAML) {
-      parsed = this.fromYAML(content, resolvedPath, options.logger);
-    } else if (isJSON) {
-      parsed = this.fromJSON(content, resolvedPath, options.logger);
-    } else {
-      // Try YAML first (more common for workflows), fallback to JSON
-      try {
-        parsed = this.fromYAML(content, resolvedPath, options.logger);
-      } catch {
-        parsed = this.fromJSON(content, resolvedPath, options.logger);
+    let workflowObject: any;
+    try {
+      if (isYAML) {
+        workflowObject = this.parseYAMLToObject(content, resolvedPath);
+      } else if (isJSON) {
+        workflowObject = this.parseJSONToObject(content, resolvedPath);
+      } else {
+        try {
+          workflowObject = this.parseYAMLToObject(content, resolvedPath);
+        } catch {
+          workflowObject = this.parseJSONToObject(content, resolvedPath);
+        }
       }
+    } catch (err) {
+      throw err;
     }
 
-    // Step 4: Apply variables if provided
+    // Step 4: SECURITY - Check for internal/reserved fields before any validation
+    if (workflowObject && typeof workflowObject === 'object') {
+      // Use getAllReservedFieldViolations for detailed error reporting
+      const violations = getAllReservedFieldViolations(workflowObject);
+      if (violations.length > 0) {
+        // Use the first violation for error context, but attach all for diagnostics
+        const v = violations[0];
+        // Map SecurityErrorCode to the correct fieldType for SecurityError
+        let fieldType: 'billing' | 'execution' | 'identity' | 'ownership' | 'usage' | 'internal' = 'internal';
+        // Use enum values for type safety
+        const code = v.code;
+        if (code === SecurityErrorCode.BILLING_FIELD_OVERRIDE) fieldType = 'billing';
+        else if (code === SecurityErrorCode.IDENTITY_FIELD_OVERRIDE) fieldType = 'identity';
+        else if (code === SecurityErrorCode.OWNERSHIP_FIELD_OVERRIDE) fieldType = 'ownership';
+        else if (code === SecurityErrorCode.USAGE_COUNTER_OVERRIDE) fieldType = 'usage';
+        else if (code === SecurityErrorCode.INTERNAL_STATE_OVERRIDE) fieldType = 'internal';
+        else fieldType = 'internal';
+        const err = SecurityError.reservedFieldOverride(v.field, v.location, fieldType);
+        (err as any).reason = v.reason;
+        (err as any).allViolations = violations;
+        throw err;
+      }
+      // Also run strict validation for immediate throw (backward compatibility)
+      validateWorkflowSecurity(workflowObject);
+    }
+
+    // Step 5: Validate and parse (schema, steps, etc)
+    let parsed: ParsedWorkflow = this.validateAndParse(workflowObject, resolvedPath, options.logger);
+
+    // Step 6: Inject internal fields (engine-only, after validation)
+    // Example: parsed._internal = InternalContextBuilder.build(...);
+    // (Actual injection logic should be implemented here as needed)
+
+    // Step 7: Apply variables if provided
     if (options.variables && parsed.inputs) {
       parsed.inputs = { ...parsed.inputs, ...options.variables };
     }
@@ -398,4 +433,11 @@ export class WorkflowLoader {
       throw orbytError;
     }
   }
+  // Exported static methods for engine and external use
+  static loadFromFile = WorkflowLoader.fromFile;
+  static loadFromYAML = WorkflowLoader.fromYAML;
+  static loadFromJSON = WorkflowLoader.fromJSON;
+  static loadFromObject = WorkflowLoader.fromObject;
+  static validateWorkflow = WorkflowLoader.validate;
+  static loadFromString = WorkflowLoader.fromString;
 }
