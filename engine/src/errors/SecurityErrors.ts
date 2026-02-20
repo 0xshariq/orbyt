@@ -47,7 +47,7 @@ import { OrbytErrorDiagnostic, SecurityViolationDetails } from '../types/core-ty
  */
 export class SecurityError extends OrbytError {
   public readonly violations?: SecurityViolationDetails[]; // For backward compatibility
-  
+
   constructor(diagnostic: OrbytErrorDiagnostic | SecurityViolationDetails[]) {
     // Support both new OrbytError format and legacy SecurityViolationDetails[] format
     if (Array.isArray(diagnostic)) {
@@ -71,7 +71,7 @@ export class SecurityError extends OrbytError {
       });
     }
   }
-  
+
   /**
    * Format violations into a clear, actionable error message
    */
@@ -90,7 +90,7 @@ export class SecurityError extends OrbytError {
       '🚫 User workflows CANNOT set these fields. The engine injects them.',
       '',
     ];
-    
+
     if (violations.length === 1) {
       const v = violations[0];
       lines.push('VIOLATION DETAILS:');
@@ -104,7 +104,7 @@ export class SecurityError extends OrbytError {
     } else {
       lines.push(`FOUND ${violations.length} VIOLATIONS:`);
       lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      
+
       violations.forEach((v, index) => {
         lines.push('');
         lines.push(`${index + 1}. ${v.code}`);
@@ -114,7 +114,7 @@ export class SecurityError extends OrbytError {
         lines.push(`   Solution: ${v.suggestion}`);
       });
     }
-    
+
     lines.push('');
     lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     lines.push('WHY THIS MATTERS:');
@@ -148,7 +148,7 @@ export class SecurityError extends OrbytError {
     lines.push('    ✅ GOOD: customConfig: { ... }');
     lines.push('');
     lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    
+
     return lines.join('\n');
   }
 
@@ -248,7 +248,7 @@ export class SecurityError extends OrbytError {
     const hint = requiredPermission
       ? `This operation requires permission: ${requiredPermission}`
       : 'Check access permissions and workflow ownership';
-    
+
     return new SecurityError({
       code: OrbytErrorCode.RUNTIME_PERMISSION_DENIED,
       exitCode: ExitCodes.PERMISSION_DENIED,
@@ -259,7 +259,7 @@ export class SecurityError extends OrbytError {
       context: { resource, requiredPermission },
     });
   }
-  
+
   /**
    * Convert to JSON for API responses
    */
