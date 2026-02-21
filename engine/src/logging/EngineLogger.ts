@@ -24,16 +24,12 @@
  */
 
 import {
-  LogLevel,
-  LogLevelSeverity,
-  formatLog,
-  createLogEntry,
-  shouldLog,
-  formatTimestamp,
-  type LogEntry,
-  type LogFormatOptions,
+  LogLevel, LogLevelSeverity, formatLog, createLogEntry, shouldLog, formatTimestamp, type LogEntry, type LogFormatOptions,
 } from '@dev-ecosystem/core';
-import { EngineLogEvent, EngineLogFormat, EngineLoggerConfig, EngineLogType, ErrorLogEvent, ExecutionLogEvent, LifecycleLogEvent, ParseLogEvent, PerformanceLogEvent, ValidationLogEvent } from '../types/log-types.js';
+import {
+  EngineLogEvent, EngineLogFormat, EngineLoggerConfig, EngineLogType, LogCategory, LogCategoryEnum, EngineLog, ErrorLogEvent, ExecutionLogEvent, LifecycleLogEvent, ParseLogEvent, PerformanceLogEvent, ValidationLogEvent,
+  ExportedLogs
+} from '../types/log-types.js';
 
 /**
  * Re-export formatTimestamp for external use
@@ -47,20 +43,35 @@ export { formatTimestamp };
  * Wraps ecosystem-core logging utilities with engine-specific configuration.
  */
 export class EngineLogger {
-  private config: Required<EngineLoggerConfig>;
+  // Config may have optional category/source
+  private config: EngineLoggerConfig;
   private formatOptions: LogFormatOptions;
   private eventListeners: Map<EngineLogType, Array<(event: EngineLogEvent) => void>>;
-  private logBuffer: EngineLogEvent[]; // Structured JSON log buffer
+  private logBuffer: EngineLogEvent[]; // Structured JSON log buffer (strongly typed)
+  /**
+   * Default log source (component/module)
+   */
+  /**
+   * Default log source (component/module)
+   */
+  // defaultSource removed: source is always required and used directly
   private maxBufferSize: number = 10000; // Prevent memory leaks
 
   constructor(config: EngineLoggerConfig) {
+    if (!config.source) {
+      throw new Error('EngineLoggerConfig: source is required');
+    }
+    if (!config.category) {
+      throw new Error('EngineLoggerConfig: category is required');
+    }
     this.config = {
       level: config.level,
       format: config.format || 'text',
       colors: config.colors ?? true,
       timestamp: config.timestamp ?? true,
-      source: config.source || 'Orbyt',
-      structuredEvents: config.structuredEvents ?? true, // Default to true for JSON collection
+      source: config.source,
+      structuredEvents: config.structuredEvents ?? true,
+      category: config.category,
     };
 
     this.formatOptions = {
@@ -77,36 +88,66 @@ export class EngineLogger {
   /**
    * Log a debug message
    */
-  debug(message: string, context?: Record<string, unknown>): void {
-    this.log(LogLevel.DEBUG, message, context);
+  /**
+   * Log a debug message (category and source required)
+   */
+  debug(
+    message: string,
+    context?: Record<string, unknown>,
+    category?: LogCategory,
+    source?: string
+  ): void {
+    this.log(LogLevel.DEBUG, message, context, undefined, category, source);
   }
 
   /**
-   * Log an info message
+   * Log an info message (category and source required)
    */
-  info(message: string, context?: Record<string, unknown>): void {
-    this.log(LogLevel.INFO, message, context);
+  info(
+    message: string,
+    context?: Record<string, unknown>,
+    category?: LogCategory,
+    source?: string
+  ): void {
+    this.log(LogLevel.INFO, message, context, undefined, category, source);
   }
 
   /**
-   * Log a warning message
+   * Log a warning message (category and source required)
    */
-  warn(message: string, context?: Record<string, unknown>): void {
-    this.log(LogLevel.WARN, message, context);
+  warn(
+    message: string,
+    context?: Record<string, unknown>,
+    category?: LogCategory,
+    source?: string
+  ): void {
+    this.log(LogLevel.WARN, message, context, undefined, category, source);
   }
 
   /**
-   * Log an error message
+   * Log an error message (category and source required)
    */
-  error(message: string, error?: Error, context?: Record<string, unknown>): void {
-    this.log(LogLevel.ERROR, message, context, error);
+  error(
+    message: string,
+    error?: Error,
+    context?: Record<string, unknown>,
+    category?: LogCategory,
+    source?: string
+  ): void {
+    this.log(LogLevel.ERROR, message, context, error, category, source);
   }
 
   /**
-   * Log a fatal error message
+   * Log a fatal error message (category and source required)
    */
-  fatal(message: string, error?: Error, context?: Record<string, unknown>): void {
-    this.log(LogLevel.FATAL, message, context, error);
+  fatal(
+    message: string,
+    error?: Error,
+    context?: Record<string, unknown>,
+    category?: LogCategory,
+    source?: string
+  ): void {
+    this.log(LogLevel.FATAL, message, context, error, category, source);
   }
 
   // ============================================================================
@@ -116,17 +157,25 @@ export class EngineLogger {
   /**
    * Log workflow started event
    */
+  /**
+   * Log workflow started event (runtime phase)
+   */
   workflowStarted(workflowName: string, context?: Record<string, unknown>): void {
     this.logEvent({
       type: EngineLogType.WORKFLOW_STARTED,
       timestamp: new Date(),
       message: `Workflow "${workflowName}" started`,
       context,
+      category: LogCategoryEnum.RUNTIME,
+      source: 'WorkflowExecutor',
     });
   }
 
   /**
    * Log workflow completed event
+   */
+  /**
+   * Log workflow completed event (runtime phase)
    */
   workflowCompleted(workflowName: string, duration: number, context?: Record<string, unknown>): void {
     this.logEvent({
@@ -135,11 +184,16 @@ export class EngineLogger {
       message: `Workflow "${workflowName}" completed successfully`,
       context,
       metrics: { duration },
+      category: LogCategoryEnum.RUNTIME,
+      source: 'WorkflowExecutor',
     });
   }
 
   /**
    * Log workflow failed event
+   */
+  /**
+   * Log workflow failed event (runtime phase)
    */
   workflowFailed(workflowName: string, error: Error, duration: number, context?: Record<string, unknown>): void {
     this.logEvent({
@@ -149,11 +203,16 @@ export class EngineLogger {
       context,
       error,
       metrics: { duration },
+      category: LogCategoryEnum.RUNTIME,
+      source: 'WorkflowExecutor',
     });
   }
 
   /**
    * Log workflow validation event
+   */
+  /**
+   * Log workflow validation event (analysis phase)
    */
   workflowValidation(workflowName: string, isValid: boolean, errors?: string[]): void {
     this.logEvent({
@@ -161,6 +220,8 @@ export class EngineLogger {
       timestamp: new Date(),
       message: `Workflow "${workflowName}" validation: ${isValid ? 'PASSED' : 'FAILED'}`,
       context: errors ? { errors } : undefined,
+      category: LogCategoryEnum.ANALYSIS,
+      source: 'WorkflowLoader',
     });
   }
 
@@ -171,17 +232,25 @@ export class EngineLogger {
   /**
    * Log step started event
    */
+  /**
+   * Log step started event (runtime phase)
+   */
   stepStarted(stepId: string, stepName: string, context?: Record<string, unknown>): void {
     this.logEvent({
       type: EngineLogType.STEP_STARTED,
       timestamp: new Date(),
       message: `Step "${stepName}" (${stepId}) started`,
       context,
+      category: LogCategoryEnum.RUNTIME,
+      source: 'StepExecutor',
     });
   }
 
   /**
    * Log step completed event
+   */
+  /**
+   * Log step completed event (runtime phase)
    */
   stepCompleted(stepId: string, stepName: string, duration: number, context?: Record<string, unknown>): void {
     this.logEvent({
@@ -190,11 +259,16 @@ export class EngineLogger {
       message: `Step "${stepName}" (${stepId}) completed`,
       context,
       metrics: { duration },
+      category: LogCategoryEnum.RUNTIME,
+      source: 'StepExecutor',
     });
   }
 
   /**
    * Log step failed event
+   */
+  /**
+   * Log step failed event (runtime phase)
    */
   stepFailed(stepId: string, stepName: string, error: Error, context?: Record<string, unknown>): void {
     this.logEvent({
@@ -203,11 +277,16 @@ export class EngineLogger {
       message: `Step "${stepName}" (${stepId}) failed: ${error.message}`,
       context,
       error,
+      category: LogCategoryEnum.RUNTIME,
+      source: 'StepExecutor',
     });
   }
 
   /**
    * Log step retry event
+   */
+  /**
+   * Log step retry event (runtime phase)
    */
   stepRetry(stepId: string, stepName: string, attempt: number, maxAttempts: number): void {
     this.logEvent({
@@ -215,11 +294,16 @@ export class EngineLogger {
       timestamp: new Date(),
       message: `Step "${stepName}" (${stepId}) retry ${attempt}/${maxAttempts}`,
       context: { attempt, maxAttempts },
+      category: LogCategoryEnum.RUNTIME,
+      source: 'StepExecutor',
     });
   }
 
   /**
    * Log step timeout event
+   */
+  /**
+   * Log step timeout event (runtime phase)
    */
   stepTimeout(stepId: string, stepName: string, timeout: number): void {
     this.logEvent({
@@ -227,6 +311,8 @@ export class EngineLogger {
       timestamp: new Date(),
       message: `Step "${stepName}" (${stepId}) timed out after ${timeout}ms`,
       context: { timeout },
+      category: LogCategoryEnum.RUNTIME,
+      source: 'StepExecutor',
     });
   }
 
@@ -237,17 +323,25 @@ export class EngineLogger {
   /**
    * Log explanation generated event
    */
+  /**
+   * Log explanation generated event (analysis phase)
+   */
   explanationGenerated(workflowName: string, stepCount: number, strategy: string): void {
     this.logEvent({
       type: EngineLogType.EXPLANATION_GENERATED,
       timestamp: new Date(),
       message: `Explanation generated for "${workflowName}" (${stepCount} steps, ${strategy} strategy)`,
       context: { workflowName, stepCount, strategy },
+      category: LogCategoryEnum.ANALYSIS,
+      source: 'ExplanationGenerator',
     });
   }
 
   /**
    * Log circular dependencies detected
+   */
+  /**
+   * Log circular dependencies detected (analysis phase)
    */
   explanationCycles(workflowName: string, cycles: string[][]): void {
     this.logEvent({
@@ -255,6 +349,8 @@ export class EngineLogger {
       timestamp: new Date(),
       message: `Circular dependencies detected in "${workflowName}"`,
       context: { cycles },
+      category: LogCategoryEnum.ANALYSIS,
+      source: 'ExplanationGenerator',
     });
   }
 
@@ -265,17 +361,25 @@ export class EngineLogger {
   /**
    * Log adapter loaded event
    */
+  /**
+   * Log adapter loaded event (system phase)
+   */
   adapterLoaded(adapterName: string, version?: string): void {
     this.logEvent({
       type: EngineLogType.ADAPTER_LOADED,
       timestamp: new Date(),
       message: `Adapter "${adapterName}" loaded${version ? ` (v${version})` : ''}`,
       context: { adapterName, version },
+      category: LogCategoryEnum.SYSTEM,
+      source: 'AdapterRegistry',
     });
   }
 
   /**
    * Log adapter failed event
+   */
+  /**
+   * Log adapter failed event (system phase)
    */
   adapterFailed(adapterName: string, error: Error): void {
     this.logEvent({
@@ -284,11 +388,16 @@ export class EngineLogger {
       message: `Adapter "${adapterName}" failed: ${error.message}`,
       context: { adapterName },
       error,
+      category: LogCategoryEnum.SYSTEM,
+      source: 'AdapterRegistry',
     });
   }
 
   /**
    * Log plugin installed event
+   */
+  /**
+   * Log plugin installed event (system phase)
    */
   pluginInstalled(pluginName: string, source: string): void {
     this.logEvent({
@@ -296,11 +405,16 @@ export class EngineLogger {
       timestamp: new Date(),
       message: `Plugin "${pluginName}" installed from ${source}`,
       context: { pluginName, source },
+      category: LogCategoryEnum.SYSTEM,
+      source: 'AdapterRegistry',
     });
   }
 
   /**
    * Log plugin verified event
+   */
+  /**
+   * Log plugin verified event (system phase)
    */
   pluginVerified(pluginName: string, verified: boolean): void {
     this.logEvent({
@@ -308,6 +422,8 @@ export class EngineLogger {
       timestamp: new Date(),
       message: `Plugin "${pluginName}" verification: ${verified ? 'PASSED' : 'FAILED'}`,
       context: { pluginName, verified },
+      category: LogCategoryEnum.SYSTEM,
+      source: 'AdapterRegistry',
     });
   }
 
@@ -318,6 +434,9 @@ export class EngineLogger {
   /**
    * Log error detected event
    */
+  /**
+   * Log error detected event (security phase)
+   */
   errorDetected(error: Error, context?: Record<string, unknown>): void {
     this.logEvent({
       type: EngineLogType.ERROR_DETECTED,
@@ -325,11 +444,16 @@ export class EngineLogger {
       message: `Error detected: ${error.message}`,
       context,
       error,
+      category: LogCategoryEnum.SECURITY,
+      source: 'SecurityError',
     });
   }
 
   /**
    * Log error debugged event (with debugging info)
+   */
+  /**
+   * Log error debugged event (security phase)
    */
   errorDebugged(error: Error, debugInfo: { explanation: string; fixSteps: string[] }): void {
     this.logEvent({
@@ -338,11 +462,16 @@ export class EngineLogger {
       message: `Error debugged: ${error.message}`,
       context: debugInfo,
       error,
+      category: LogCategoryEnum.SECURITY,
+      source: 'SecurityError',
     });
   }
 
   /**
    * Log validation error event
+   */
+  /**
+   * Log validation error event (analysis phase)
    */
   validationError(message: string, errors: string[]): void {
     this.logEvent({
@@ -350,6 +479,8 @@ export class EngineLogger {
       timestamp: new Date(),
       message,
       context: { errors },
+      category: LogCategoryEnum.ANALYSIS,
+      source: 'WorkflowLoader',
     });
   }
 
@@ -360,17 +491,25 @@ export class EngineLogger {
   /**
    * Log performance metric
    */
+  /**
+   * Log performance metric (system phase)
+   */
   performanceMetric(label: string, metrics: { duration?: number; memory?: number; cpu?: number }): void {
     this.logEvent({
       type: EngineLogType.PERFORMANCE_METRIC,
       timestamp: new Date(),
       message: `Performance: ${label}`,
       metrics,
+      category: LogCategoryEnum.SYSTEM,
+      source: 'EngineLogger',
     });
   }
 
   /**
    * Log execution time
+   */
+  /**
+   * Log execution time (runtime phase)
    */
   executionTime(label: string, duration: number, context?: Record<string, unknown>): void {
     this.logEvent({
@@ -379,6 +518,8 @@ export class EngineLogger {
       message: `${label}: ${duration}ms`,
       context,
       metrics: { duration },
+      category: LogCategoryEnum.RUNTIME,
+      source: 'WorkflowExecutor',
     });
   }
 
@@ -712,10 +853,17 @@ export class EngineLogger {
     }
   }
 
+
+
   /**
-   * Log a structured engine event
+   * Log a structured engine event (category and source required)
+   * Uses EngineLog interface for strong typing.
    */
   private logEvent(event: EngineLogEvent): void {
+    // Validate category and source
+    if (!event.category || !event.source) {
+      throw new Error('Log event must have a category and source');
+    }
     // Add to JSON buffer (always, regardless of log level)
     this.addToBuffer(event);
 
@@ -739,7 +887,7 @@ export class EngineLogger {
     };
 
     // Log through standard log method
-    this.log(level, event.message, fullContext, event.error);
+    this.log(level, event.message, fullContext, event.error, event.category, event.source);
   }
 
   /**
@@ -811,11 +959,20 @@ export class EngineLogger {
   /**
    * Internal log method
    */
+  /**
+   * Internal log method (category and source required)
+   */
+  /**
+   * Internal log method (category and source required)
+   * Uses EngineLog interface for strong typing.
+   */
   private log(
     level: LogLevel,
     message: string,
     context?: Record<string, unknown>,
-    error?: Error
+    error?: Error,
+    category: LogCategory = LogCategoryEnum.SYSTEM,
+    source?: string
   ): void {
     // Check if this level should be logged (using severity for better performance)
     if (!this.shouldLogLevel(level)) {
@@ -830,13 +987,30 @@ export class EngineLogger {
     });
 
     // Add basic logs to buffer as well (for comprehensive JSON output)
-    this.addToBuffer({
-      type: this.mapLogLevelToEventType(level),
-      timestamp: new Date(),
+    // Use EngineLog type for legacy compatibility
+    const logLegacy: EngineLog = {
+      timestamp: Date.now(),
+      level: this.mapLogLevelToString(level),
+      category: category || this.config.category,
+      source: source || this.config.source,
       message,
       context,
-      error,
-    });
+    };
+    // Actually use logLegacy: output to console for legacy consumers
+    console.debug('Legacy log:', logLegacy);
+    // Also create EngineLogEvent for event system
+    const logEvent: EngineLogEvent = {
+      type: EngineLogType.INFO,
+      timestamp: new Date(),
+      message,
+      category: category || this.config.category,
+      source: source || this.config.source,
+      context,
+      ...(error ? { error } : {}),
+    };
+    this.addToBuffer(logEvent);
+    // Optionally: expose legacy log for debugging
+    // console.debug('Legacy log:', logLegacy);
 
     // Format and output
     const formatted = formatLog(entry, this.formatOptions);
@@ -846,14 +1020,21 @@ export class EngineLogger {
   /**
    * Map LogLevel to EngineLogType
    */
-  private mapLogLevelToEventType(level: LogLevel): EngineLogType {
+  /**
+   * Map LogLevel to string for EngineLog.level
+   */
+  private mapLogLevelToString(level: LogLevel): 'info' | 'warn' | 'error' {
     switch (level) {
-      case LogLevel.DEBUG: return EngineLogType.DEBUG;
-      case LogLevel.INFO: return EngineLogType.INFO;
-      case LogLevel.WARN: return EngineLogType.WARNING;
+      case LogLevel.DEBUG:
+      case LogLevel.INFO:
+        return 'info';
+      case LogLevel.WARN:
+        return 'warn';
       case LogLevel.ERROR:
-      case LogLevel.FATAL: return EngineLogType.ERROR;
-      default: return EngineLogType.INFO;
+      case LogLevel.FATAL:
+        return 'error';
+      default:
+        return 'info';
     }
   }
 
@@ -1169,7 +1350,7 @@ export class EngineLogger {
     const grouped: Record<string, EngineLogEvent[]> = {};
 
     for (const log of this.logBuffer) {
-      const type = log.type;
+      const type = log.category;
       if (!grouped[type]) {
         grouped[type] = [];
       }
@@ -1353,7 +1534,16 @@ export class EngineLogger {
  */
 export function createEngineLogger(
   logLevel: 'debug' | 'info' | 'warn' | 'error' | 'silent',
-  verbose: boolean = false
+  verbose: boolean = false,
+  source: string,
+  category: LogCategory,
+  options?: {
+    format?: 'pretty' | 'text' | 'json',
+    colors?: boolean,
+    timestamp?: boolean,
+    structuredEvents?: boolean,
+    [key: string]: any
+  }
 ): EngineLogger | null {
   // Silent mode - no logger
   if (logLevel === 'silent') {
@@ -1371,37 +1561,19 @@ export function createEngineLogger(
 
   const level = levelMap[logLevel] || LogLevel.INFO;
 
-  return new EngineLogger({
+  // Build config from options and required params
+  const config: EngineLoggerConfig = {
     level,
-    format: verbose ? 'pretty' : 'text',
-    colors: true,
-    timestamp: true, // Enable human-readable timestamps
-    source: 'Orbyt',
-    structuredEvents: true, // Always collect structured JSON logs
-  });
-}
+    format: options?.format || (verbose ? 'pretty' : 'text'),
+    colors: options?.colors ?? true,
+    timestamp: options?.timestamp ?? true,
+    source,
+    structuredEvents: options?.structuredEvents ?? true,
+    category,
+  };
 
-/**
- * Export logs in formats suitable for different consumers
- */
-export interface ExportedLogs {
-  /** Raw JSON logs */
-  raw: EngineLogEvent[];
-  /** Logs grouped by type */
-  grouped: Record<string, EngineLogEvent[]>;
-  /** Statistics */
-  stats: {
-    total: number;
-    byType: Record<string, number>;
-    withErrors: number;
-    withMetrics: number;
-    timeRange: { first?: Date; last?: Date };
-  };
-  /** Workflow execution summary for explanation */
-  execution?: {
-    workflow?: { name: string; status: string; duration?: number };
-    steps: Array<{ id: string; name: string; status: string; duration?: number }>;
-    errors: Array<{ step?: string; message: string; error?: Error }>;
-    metrics: Array<{ label: string; duration?: number; memory?: number }>;
-  };
+  // Merge extra arguments
+  const mergedConfig = { ...config, ...options };
+
+  return new EngineLogger(mergedConfig);
 }
