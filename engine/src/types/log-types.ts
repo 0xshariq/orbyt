@@ -1,4 +1,56 @@
+
 import { LogLevel } from "@dev-ecosystem/core";
+
+/**
+ * Log categories (phase-based, not feature-based)
+ *
+ * - 'system': Engine lifecycle, infrastructure, configuration, adapter registration
+ * - 'analysis': Parsing, validation, explain, plan building, cycle detection
+ * - 'runtime': Actual workflow execution (steps, retries, completion, failures)
+ * - 'security': Internal field violation, reserved field usage, permission rejection
+ *
+ * Never add feature, adapter, or business domain categories here.
+ */
+export type LogCategory =
+  | 'system'   // Engine lifecycle, infra, config
+  | 'analysis' // Parsing, validation, explain, plan
+  | 'runtime'  // Workflow execution
+  | 'security';// Security events
+
+/**
+ * Enum for log categories (for strict usage)
+ */
+export enum LogCategoryEnum {
+  SYSTEM = 'system',
+  ANALYSIS = 'analysis',
+  RUNTIME = 'runtime',
+  SECURITY = 'security',
+}
+
+/**
+ * Interface for a structured engine log entry
+ * Every log must have a category and source.
+ */
+export interface EngineLog {
+  timestamp: number;
+  level: 'info' | 'warn' | 'error';
+  category: LogCategory;
+  source: string; // e.g. 'WorkflowExecutor', 'WorkflowLoader', 'AdapterRegistry'
+  message: string;
+  context?: Record<string, unknown>;
+}
+
+/**
+ * Engine log structure (every log must have category and source)
+ */
+export interface EngineLog {
+  timestamp: number;
+  level: 'info' | 'warn' | 'error';
+  category: LogCategory;
+  source: string; // e.g. 'WorkflowExecutor', 'WorkflowLoader', etc.
+  message: string;
+  context?: Record<string, unknown>;
+}
 
 
 /**
@@ -55,7 +107,7 @@ export enum EngineLogType {
 }
 
 /**
- * Structured engine log event
+ * Structured engine log event (with category and source)
  */
 export interface EngineLogEvent {
   /** Event type */
@@ -64,6 +116,10 @@ export interface EngineLogEvent {
   timestamp: Date;
   /** Log message */
   message: string;
+  /** Log category (phase) */
+  category: LogCategory;
+  /** Log source (component/module) */
+  source: string;
   /** Additional context */
   context?: Record<string, unknown>;
   /** Error object if applicable */
@@ -156,7 +212,34 @@ export interface EngineLoggerConfig {
   /** Include timestamps */
   timestamp?: boolean;
   /** Source identifier */
-  source?: string;
+  source: string;
   /** Enable structured event logging */
   structuredEvents?: boolean;
+  /** Log category */
+  category: LogCategory;
+}
+
+/**
+ * Export logs in formats suitable for different consumers
+ */
+export interface ExportedLogs {
+  /** Raw JSON logs */
+  raw: EngineLogEvent[];
+  /** Logs grouped by type */
+  grouped: Record<string, EngineLogEvent[]>;
+  /** Statistics */
+  stats: {
+    total: number;
+    byType: Record<string, number>;
+    withErrors: number;
+    withMetrics: number;
+    timeRange: { first?: Date; last?: Date };
+  };
+  /** Workflow execution summary for explanation */
+  execution?: {
+    workflow?: { name: string; status: string; duration?: number };
+    steps: Array<{ id: string; name: string; status: string; duration?: number }>;
+    errors: Array<{ step?: string; message: string; error?: Error }>;
+    metrics: Array<{ label: string; duration?: number; memory?: number }>;
+  };
 }
