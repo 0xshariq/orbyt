@@ -70,6 +70,7 @@ import { WorkflowLoader } from '../loader/WorkflowLoader.js';
 import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
 import { createEngineContext } from './EngineContext.js';
 import { LoggerManager, type EngineLogger } from '../logging/index.js';
+import { LogCategoryEnum } from '../types/log-types.js';
 import { LogLevel as CoreLogLevel } from '@dev-ecosystem/core';
 import { ExecutionEngine } from '../execution/ExecutionEngine.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
@@ -248,6 +249,7 @@ export class OrbytEngine {
       timestamp: true,
       source: 'OrbytEngine',
       structuredEvents: true,
+      category: LogCategoryEnum.SYSTEM,
     });
     this.logger = LoggerManager.getLogger();
 
