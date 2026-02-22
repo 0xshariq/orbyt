@@ -10,7 +10,6 @@
 import YAML from 'yaml';
 import { SchemaValidator } from './SchemaValidator.js';
 import { StepParser } from './StepParser.js';
-import { validateWorkflowSecurity } from '../security/ReservedFields.js';
 import type { WorkflowDefinitionZod } from '@dev-ecosystem/core';
 import { LoggerManager } from '../logging/LoggerManager.js';
 import { ParsedWorkflow } from '../types/core-types.js';
@@ -31,11 +30,6 @@ export class WorkflowParser {
     const startTime = Date.now();
     
     try {
-      // Step 0: SECURITY CHECK - Validate NO reserved fields present
-      // This runs BEFORE any other validation to prevent internal field manipulation
-      // Throws SecurityError with structured error codes if violations found
-      validateWorkflowSecurity(rawWorkflow);
-
       // Step 1: Validate against schema (with enhanced diagnostics)
       logger.parsingStarted('workflow', 'object');
       const validated: WorkflowDefinitionZod = SchemaValidator.validate(rawWorkflow);
