@@ -1532,48 +1532,6 @@ export class EngineLogger {
 /**
  * Create a logger instance from engine config
  */
-export function createEngineLogger(
-  logLevel: 'debug' | 'info' | 'warn' | 'error' | 'silent',
-  verbose: boolean = false,
-  source: string,
-  category: LogCategory,
-  options?: {
-    format?: 'pretty' | 'text' | 'json',
-    colors?: boolean,
-    timestamp?: boolean,
-    structuredEvents?: boolean,
-    [key: string]: any
-  }
-): EngineLogger | null {
-  // Silent mode - no logger
-  if (logLevel === 'silent') {
-    return null;
-  }
-
-  // Map engine log level to ecosystem LogLevel
-  const levelMap: Record<string, LogLevel> = {
-    debug: LogLevel.DEBUG,
-    info: LogLevel.INFO,
-    warn: LogLevel.WARN,
-    error: LogLevel.ERROR,
-    fatal: LogLevel.FATAL,
-  };
-
-  const level = levelMap[logLevel] || LogLevel.INFO;
-
-  // Build config from options and required params
-  const config: EngineLoggerConfig = {
-    level,
-    format: options?.format || (verbose ? 'pretty' : 'text'),
-    colors: options?.colors ?? true,
-    timestamp: options?.timestamp ?? true,
-    source,
-    structuredEvents: options?.structuredEvents ?? true,
-    category,
-  };
-
-  // Merge extra arguments
-  const mergedConfig = { ...config, ...options };
-
-  return new EngineLogger(mergedConfig);
+export function createEngineLogger(config: EngineLoggerConfig): EngineLogger {
+  return new EngineLogger(config);
 }
