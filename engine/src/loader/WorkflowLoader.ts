@@ -51,7 +51,7 @@ import { resolve } from 'path';
 import YAML from 'yaml';
 import { WorkflowParser } from '../parser/WorkflowParser.js';
 import { SecurityError } from '../errors/SecurityErrors.js';
-import { validateWorkflowSecurity, getAllReservedFieldViolations } from '../security/ReservedFields.js';
+import { getAllReservedFieldViolations } from '../security/ReservedFields.js';
 import { ErrorDetector } from '../errors/ErrorDetector.js';
 import { OrbytError } from '../errors/OrbytError.js';
 import { logErrorToEngine } from '../errors/ErrorFormatter.js';
@@ -145,7 +145,7 @@ export class WorkflowLoader {
         throw err;
       }
       // Also run strict validation for immediate throw (backward compatibility)
-      validateWorkflowSecurity(workflowObject);
+      // validateWorkflowSecurity removed: all security validation now handled by getAllReservedFieldViolations
     }
 
     // Step 5: Validate and parse (schema, steps, etc)
