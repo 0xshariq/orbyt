@@ -26,7 +26,7 @@ import { resolve } from 'path';
 import type { Command } from 'commander';
 import { WorkflowLoader, type ExecutionExplanation } from '@orbytautomation/engine';
 import { OrbytEngine } from '@orbytautomation/engine';
-import { createFormatter, type FormatterType } from '../formatters/createFormatter.js';
+import { createExplainFormatter, type ExplainFormatterType } from '../formatters/explain/createExplainFormatter.js';
 import type { CliExplainOptions } from '../types/CliExplainOptions.js';
 
 /**
@@ -49,19 +49,11 @@ export function registerExplainCommand(program: Command): void {
  */
 async function explainWorkflow(workflowPath: string, options: CliExplainOptions): Promise<void> {
   // Determine format
-  const format = (options.format || 'human') as FormatterType;
-
-  // Apply verbose to format if flag is set
+  let format = (options.format || 'human') as ExplainFormatterType;
   if (options.verbose && format === 'human') {
-    options.format = 'verbose';
+    format = 'verbose';
   }
-
-  // Create formatter
-  const formatter = createFormatter(format, {
-    verbose: options.verbose,
-    silent: options.silent,
-    noColor: options.noColor,
-  });
+  const formatter = createExplainFormatter(format, options);
 
   try {
     // Resolve and check path exists
@@ -101,13 +93,13 @@ async function explainWorkflow(workflowPath: string, options: CliExplainOptions)
     // Output based on format
     if (format === 'json') {
       // JSON output - machine-readable
-      console.log(JSON.stringify(explanation, null, 2));
+      formatter.showExplanation(explanation);
     } else if (options.graph) {
       // Graph output - ASCII DAG
       showGraph(explanation, formatter);
     } else {
-      // Human-readable output
-      showHumanExplanation(explanation, formatter, options.verbose || false);
+      // Human/verbose output
+      formatter.showExplanation(explanation);
     }
 
     // Exit success
@@ -122,167 +114,8 @@ async function explainWorkflow(workflowPath: string, options: CliExplainOptions)
   }
 }
 
-/**
- * Show human-readable explanation
- */
-function showHumanExplanation(
-  explanation: ExecutionExplanation,
-  formatter: ReturnType<typeof createFormatter>,
-  verbose: boolean
-): void {
-  // Header
-  formatter.showInfo(`▶ Workflow: ${explanation.workflowName || 'unnamed'}`);
-  if (explanation.description) {
-    formatter.showInfo(`  ${explanation.description}`);
-  }
-  formatter.showInfo(`▶ Version: ${explanation.version}`);
-  formatter.showInfo(`▶ Kind: ${explanation.kind}`);
-  formatter.showInfo(`▶ Steps: ${explanation.stepCount}`);
-  formatter.showInfo(`▶ Execution Mode: ${explanation.executionStrategy}`);
-  
-  if (explanation.phases && explanation.phases > 1) {
-    formatter.showInfo(`▶ Phases: ${explanation.phases}`);
-  }
-  
-  // Show adapters being used
-  if (explanation.adaptersUsed && explanation.adaptersUsed.length > 0) {
-    formatter.showInfo(`▶ Adapters Used: ${explanation.adaptersUsed.join(', ')}`);
-  }
   
   // Show tags and owner if present
-  if (explanation.tags && explanation.tags.length > 0) {
-    formatter.showInfo(`▶ Tags: ${explanation.tags.join(', ')}`);
-  }
-  
-  if (explanation.owner) {
-    formatter.showInfo(`▶ Owner: ${explanation.owner}`);
-  }
-  
-  // Show workflow-level configuration
-  if (verbose || explanation.inputs || explanation.secrets || explanation.context || explanation.outputs) {
-    formatter.showInfo(`\nWorkflow Configuration:\n`);
-    
-    // Show inputs
-    if (explanation.inputs && Object.keys(explanation.inputs).length > 0) {
-      formatter.showInfo(`Inputs:`);
-      Object.entries(explanation.inputs).forEach(([key, value]) => {
-        const typeOrDefault = typeof value === 'object' && value !== null 
-          ? `${value.type || 'any'}${value.required ? ' (required)' : ''}${value.default !== undefined ? ` = ${JSON.stringify(value.default)}` : ''}`
-          : JSON.stringify(value);
-        formatter.showInfo(`  ${key}: ${typeOrDefault}`);
-        if (verbose && typeof value === 'object' && value.description) {
-          formatter.showInfo(`    → ${value.description}`);
-        }
-      });
-      formatter.showInfo('');
-    }
-    
-    // Show secrets (keys only, never values)
-    if (explanation.secrets && explanation.secrets.keys && explanation.secrets.keys.length > 0) {
-      formatter.showInfo(`Secrets (${explanation.secrets.vault || 'default vault'}):`);
-      explanation.secrets.keys.forEach(key => {
-        formatter.showInfo(`  🔒 ${key}`);
-      });
-      formatter.showInfo('');
-    }
-    
-    // Show context variables
-    if (explanation.context && Object.keys(explanation.context).length > 0) {
-      formatter.showInfo(`Context:`);
-      Object.entries(explanation.context).forEach(([key, value]) => {
-        formatter.showInfo(`  ${key}: ${JSON.stringify(value)}`);
-      });
-      formatter.showInfo('');
-    }
-    
-    // Show defaults
-    if (explanation.defaults) {
-      formatter.showInfo(`Defaults:`);
-      if (explanation.defaults.timeout) {
-        formatter.showInfo(`  timeout: ${explanation.defaults.timeout}`);
-      }
-      if (explanation.defaults.adapter) {
-        formatter.showInfo(`  adapter: ${explanation.defaults.adapter}`);
-      }
-      formatter.showInfo('');
-    }
-    
-    // Show policies
-    if (explanation.policies) {
-      formatter.showInfo(`Policies:`);
-      if (explanation.policies.failure) {
-        formatter.showInfo(`  failure: ${explanation.policies.failure}`);
-      }
-      if (explanation.policies.concurrency) {
-        formatter.showInfo(`  concurrency: ${explanation.policies.concurrency}`);
-      }
-      if (explanation.policies.sandbox) {
-        formatter.showInfo(`  sandbox: ${explanation.policies.sandbox}`);
-      }
-      formatter.showInfo('');
-    }
-  }
-  
-  formatter.showInfo(`\nExecution Plan:\n`);
-
-  // Show each step
-  for (let i = 0; i < explanation.steps.length; i++) {
-    const step = explanation.steps[i];
-    
-    formatter.showInfo(`${i + 1}. ${step.name || step.id}`);
-    formatter.showInfo(`   uses: ${step.uses}`);
-    
-    if (step.needs && step.needs.length > 0) {
-      formatter.showInfo(`   needs: [${step.needs.join(', ')}]`);
-    }
-    
-    if (step.when) {
-      formatter.showInfo(`   when: ${step.when}`);
-    }
-    
-    if (verbose) {
-      // Show detailed configuration in verbose mode
-      if (step.timeout) {
-        formatter.showInfo(`   timeout: ${step.timeout}`);
-      }
-      
-      if (step.retry) {
-        let retryStr = `max: ${step.retry.max || 1}`;
-        if (step.retry.backoff) {
-          retryStr += `, backoff: ${step.retry.backoff}`;
-        }
-        if (step.retry.delay) {
-          retryStr += `, delay: ${step.retry.delay}ms`;
-        }
-        formatter.showInfo(`   retry: ${retryStr}`);
-      }
-      
-      if (step.continueOnError) {
-        formatter.showInfo(`   continueOnError: true`);
-      }
-      
-      if (step.with && Object.keys(step.with).length > 0) {
-        formatter.showInfo(`   with:`);
-        Object.entries(step.with).forEach(([key, value]) => {
-          formatter.showInfo(`     ${key}: ${JSON.stringify(value)}`);
-        });
-      }
-    } else {
-      // In non-verbose mode, just show timeout/retry if present
-      if (step.retry) {
-        formatter.showInfo(`   retry: ${step.retry.max || 1}`);
-      }
-      if (step.timeout) {
-        formatter.showInfo(`   timeout: ${step.timeout}`);
-      }
-    }
-    
-    formatter.showInfo(''); // Blank line between steps
-  }
-
-  // Footer
-  formatter.showInfo(`✔ Plan valid. No cycles detected.`);
-}
 
 /**
  * Show ASCII dependency graph
