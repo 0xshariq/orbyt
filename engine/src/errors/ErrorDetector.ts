@@ -31,7 +31,8 @@
  * @module errors/detector
  */
 
-import { OrbytError } from './OrbytError.js';
+import { OrbytError, type ErrorDebugInfo } from './OrbytError.js';
+import { OrbytErrorCode, ErrorSeverity } from './ErrorCodes.js';
 import { SchemaError, ValidationError } from './WorkflowError.js';
 import { StepError } from './StepError.js';
 import { SecurityError } from './SecurityErrors.js';
@@ -41,18 +42,48 @@ import {
     RESERVED_CONTEXT_FIELDS,
     RESERVED_STEP_FIELDS,
     RESERVED_ANNOTATION_PREFIXES,
-    ROOT_FIELDS,
-    WORKFLOW_FIELDS,
-    STEP_FIELDS,
-    CONTEXT_FIELDS,
-    METADATA_FIELDS
+    // getValidFields returns the correct field list for any workflow path,
+    // replacing the old manual getValidFieldsForLocation implementation.
+    getValidFields,
 } from './FieldRegistry.js';
-import { findClosestMatch } from './TypoDetector.js';
+import {
+    // findClosestMatch — best single suggestion for the error hint
+    findClosestMatch,
+    // findMatches — top-N suggestions stored in context for the debugger
+    findMatches,
+} from './TypoDetector.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
+import type { WorkflowContext } from '../types/log-types.js';
 
 /**
- * Error context for detection
- * Provides information about what went wrong
+ * Error Detector (Smart Error Classification)
+ * 
+ * Automatically detects error types and assigns correct error codes.
+ * Makes the engine smart enough to classify errors without manual coding.
+ * Also enriches errors with debug information for developers.
+ * 
+ * PHILOSOPHY:
+ * ==========
+ * Instead of manually throwing specific error codes everywhere,
+ * the detector analyzes the error context and assigns the right code.
+ * Debug information is automatically attached at detection time.
+ * 
+ * USAGE:
+ * ======
+ * ```typescript
+ * // Instead of manual classification:
+ * if (field === 'version') {
+ *   throw SchemaError.missingField('version', 'workflow');
+ * }
+ * 
+ * // Let detector classify automatically:
+ * const error = ErrorDetector.detect({
+ *   type: 'missing_field',
+ *   field: 'version',
+ *   location: 'workflow'
+ * });
+ * throw error; // Already has debug info attached!
+ * ```
  */
 export interface ErrorContext {
     /** Type of error scenario */
@@ -260,10 +291,13 @@ export class ErrorDetector {
     /**
      * Detect error from raw exception
      * Analyzes exception and tries to classify it
-     * 
-     * @param error - Raw error/exception
+     *
+     * @param error    - Raw error/exception
      * @param location - Where the error occurred
      * @returns Classified OrbytError with debug info
+     *
+     * @deprecated Since 0.5.0 — prefer {@link detectFromExceptionEnhanced} which
+     *   also extracts line/column numbers from YAML parse errors.
      */
     static detectFromException(error: Error, location?: string): OrbytError {
         const message = error.message.toLowerCase();
@@ -299,7 +333,111 @@ export class ErrorDetector {
         });
     }
 
+    /**
+     * Detect error from raw exception — enhanced variant with line/column extraction.
+     *
+     * Identical to {@link detectFromException} but additionally:
+     * - Extracts `line` / `col` from YAML parse errors via the `yaml` library's
+     *   `linePos` property (e.g. `error.linePos[0].line`).
+     * - Falls back to common message patterns: "line X, col Y", "(X:Y)".
+     * - Injects position into `diagnostic.context` so formatters can show
+     *   the exact location in the workflow file.
+     *
+     * Prefer this method over {@link detectFromException} when the original
+     * exception is available and location-aware output is desired.
+     *
+     * @param error    - Raw error/exception from the parser or validator
+     * @param location - Where the error occurred (file path or logical path)
+     * @returns Classified OrbytError with line/column in `diagnostic.context`
+     * @since 0.5.0
+     */
+    static detectFromExceptionEnhanced(error: Error, location?: string): OrbytError {
+        const message = error.message.toLowerCase();
+        const stack = error.stack;
+
+        let scenario: ErrorScenario = 'unknown';
+
+        if (message.includes('yaml') || message.includes('parse') || message.includes('syntax')) {
+            scenario = 'parse_error';
+        } else if (message.includes('unknown field') || message.includes('unexpected field')) {
+            scenario = 'unknown_field';
+        } else if (message.includes('missing') || message.includes('required')) {
+            scenario = 'missing_field';
+        } else if (message.includes('type') || message.includes('expected')) {
+            scenario = 'invalid_type';
+        } else if (message.includes('circular') || message.includes('cycle')) {
+            scenario = 'circular_dependency';
+        } else if (message.includes('duplicate')) {
+            scenario = 'duplicate_id';
+        } else if (message.includes('timeout')) {
+            scenario = 'step_timeout';
+        } else if (message.includes('permission') || message.includes('denied')) {
+            scenario = 'permission_denied';
+        }
+
+        // For parse errors extract position so the formatter can show line:col
+        const position = (scenario === 'parse_error')
+            ? this.extractYAMLPosition(error)
+            : {};
+
+        return this.detect({
+            type: scenario,
+            location,
+            rawMessage: error.message,
+            stack,
+            data: { ...position },
+        });
+    }
+
     // ==================== HELPER METHODS ====================
+
+    /**
+     * Extract line and column information from a YAML parse error.
+     *
+     * The `yaml` package attaches a `linePos` array to its parse errors.
+     * As a fallback, common "(line X, col Y)" and "X:Y" patterns in
+     * the error message are also checked.
+     *
+     * Only called internally for `parse_error` scenarios.
+     *
+     * @param error - Error object from the YAML / JSON parser
+     * @returns `{ line, col }` if found, empty object otherwise
+     * @private
+     */
+    private static extractYAMLPosition(
+        error: Error
+    ): { line?: number; col?: number } {
+        // The `yaml` library attaches linePos to parse errors
+        const yamlErr = error as any;
+        if (Array.isArray(yamlErr.linePos) && yamlErr.linePos.length > 0) {
+            const pos = yamlErr.linePos[0] as { line?: number; col?: number };
+            if (typeof pos.line === 'number') {
+                return { line: pos.line, col: typeof pos.col === 'number' ? pos.col : undefined };
+            }
+        }
+
+        const msg = error.message;
+
+        // "at line 5, column 3" / "line 5, col 3"
+        const longMatch = msg.match(/line\s+(\d+)[,\s]+col(?:umn)?\s+(\d+)/i);
+        if (longMatch) {
+            return { line: parseInt(longMatch[1], 10), col: parseInt(longMatch[2], 10) };
+        }
+
+        // "(5:3)" compact form
+        const compactMatch = msg.match(/\((\d+):(\d+)\)/);
+        if (compactMatch) {
+            return { line: parseInt(compactMatch[1], 10), col: parseInt(compactMatch[2], 10) };
+        }
+
+        // Just a line reference "at line 5"
+        const lineOnly = msg.match(/(?:at )?line\s+(\d+)/i);
+        if (lineOnly) {
+            return { line: parseInt(lineOnly[1], 10) };
+        }
+
+        return {};
+    }
 
     /**
      * Check if field is reserved by engine
@@ -346,48 +484,40 @@ export class ErrorDetector {
         const field = context.field || 'unknown';
         const location = context.location || 'unknown';
 
-        // Get valid fields based on location
+        // Look up valid fields for this path via FieldRegistry (covers all sections:
+        // metadata, context, defaults, policies, retry, usage, workflow.steps[N], …)
         const validFields = this.getValidFieldsForLocation(location);
 
-        // Use TypoDetector to find closest match
-        const suggestion = findClosestMatch(field, validFields, 0.6);
+        // Best single match — drives the hint text in the error message
+        const bestMatch = findClosestMatch(field, validFields, 0.6);
 
-        return SchemaError.unknownField(field, location, suggestion);
+        // Top-3 close matches — stored in diagnostic.context so ErrorDebugger
+        // can present them as concrete alternatives instead of static strings.
+        const suggestions = findMatches(field, validFields, 3, 0.5);
+
+        const error = SchemaError.unknownField(field, location, bestMatch);
+
+        // Enrich diagnostic context with the full suggestion list.
+        // diagnostic.context is a plain object so mutation is safe here.
+        if (error.diagnostic.context && suggestions.length > 0) {
+            (error.diagnostic.context as Record<string, unknown>).suggestions = suggestions;
+        }
+
+        return error;
     }
 
     /**
-     * Get valid field names based on location in workflow
+     * Get valid field names for a workflow path location.
+     *
+     * Delegates to {@link getValidFields} from FieldRegistry which uses the
+     * `FIELD_REGISTRY` map and regex matching — covering `metadata`, `context`,
+     * `defaults`, `policies`, `permissions`, `retry`, `usage`, `secrets`,
+     * `workflow.steps`, `workflow.steps[N]`, and every other registered section.
+     *
+     * Falls back to ROOT_FIELDS for any unrecognised path.
      */
     private static getValidFieldsForLocation(location: string): string[] {
-        const locationLower = location.toLowerCase();
-
-        // Root level fields
-        if (locationLower === 'workflow' || locationLower.startsWith('workflow.')) {
-            if (locationLower.includes('steps[') || locationLower.includes('.step')) {
-                return [...STEP_FIELDS];
-            }
-            if (locationLower.includes('context')) {
-                return [...CONTEXT_FIELDS];
-            }
-            if (locationLower.includes('metadata')) {
-                return [...METADATA_FIELDS];
-            }
-            return [...ROOT_FIELDS, ...WORKFLOW_FIELDS];
-        }
-
-        // Step fields
-        if (locationLower.includes('step')) {
-            return [...STEP_FIELDS];
-        }
-
-        // Default: return all common fields
-        return [
-            ...ROOT_FIELDS,
-            ...WORKFLOW_FIELDS,
-            ...STEP_FIELDS,
-            ...CONTEXT_FIELDS,
-            ...METADATA_FIELDS
-        ];
+        return [...getValidFields(location)];
     }
 
     private static handleReservedField(context: ErrorContext): SecurityError {
@@ -427,10 +557,13 @@ export class ErrorDetector {
     }
 
     private static handleParseError(context: ErrorContext): SchemaError {
+        // Accept both `column` (caller-supplied) and `col` (extracted by
+        // extractYAMLPosition from the yaml library's linePos property).
+        const col = context.data?.column ?? context.data?.col;
         return SchemaError.parseError(
             context.location || 'unknown',
             context.data?.line,
-            context.data?.column,
+            col,
             context.rawMessage
         );
     }
@@ -538,13 +671,14 @@ export class ErrorDetector {
     }
 
     private static handleUnknown(context: ErrorContext): OrbytError {
-        // Create generic schema error for unknown cases
-        return SchemaError.parseError(
-            context.location || 'unknown',
-            undefined,
-            undefined,
-            context.rawMessage || 'Unknown error occurred'
-        );
+        // Use RUNTIME_INTERNAL_ERROR — an unknown error type is not a parse
+        // error; it indicates an unclassified internal condition.
+        return new OrbytError({
+            code: OrbytErrorCode.RUNTIME_INTERNAL_ERROR,
+            message: context.rawMessage || 'An unexpected error occurred',
+            path: context.location,
+            severity: ErrorSeverity.ERROR,
+        });
     }
 
     /**
@@ -558,10 +692,62 @@ export class ErrorDetector {
      * @private
      */
     private static enrichWithDebugInfo(error: OrbytError): OrbytError {
-        // Generate and store formatted debug output for console display
-        // This is done here so it's available when needed in WorkflowLoader
-        (error as any).__debugOutput = ErrorDebugger.format(error);
+        // Use context-aware format — automatically reads WorkflowContext from
+        // LoggerManager (set by WorkflowLoader after parsing) so the debug
+        // output references the actual file name and field locations.
+        // Falls back to generic format when no context is available.
+        (error as any).__debugOutput = ErrorDebugger.formatWithContext(error);
 
         return error;
+    }
+
+    // ==================== DEBUG PROXY METHODS ====================
+    // ErrorHandler must NOT import ErrorDebugger directly — it should always
+    // reach debug capabilities through ErrorDetector (the classification layer).
+    // These three methods are thin proxies; all logic stays in ErrorDebugger.
+
+    /**
+     * Analyze an error and return structured debug information.
+     *
+     * Proxies to `ErrorDebugger.analyzeWithContext()` — callers outside
+     * this module should use this instead of calling ErrorDebugger directly
+     * to respect the layer hierarchy.
+     *
+     * @param error       - OrbytError to analyze
+     * @param workflowCtx - Optional workflow context (auto-read from LoggerManager if omitted)
+     */
+    static analyzeDebugInfo(error: OrbytError, workflowCtx?: WorkflowContext): ErrorDebugInfo {
+        return ErrorDebugger.analyzeWithContext(error, workflowCtx);
+    }
+
+    /**
+     * Format debug information for terminal display.
+     *
+     * Proxies to `ErrorDebugger.formatWithContext()` — use this instead of
+     * importing ErrorDebugger in handler / formatter code.
+     *
+     * @param error       - OrbytError to format
+     * @param workflowCtx - Optional workflow context (auto-read from LoggerManager if omitted)
+     * @param useColors   - Whether to include ANSI color codes (default: true)
+     */
+    static formatDebugOutput(
+        error: OrbytError,
+        workflowCtx?: WorkflowContext,
+        useColors: boolean = true,
+    ): string {
+        return ErrorDebugger.formatWithContext(error, workflowCtx, useColors);
+    }
+
+    /**
+     * Return a one-line human-readable debug summary.
+     *
+     * Proxies to `ErrorDebugger.quickDebugWithContext()` — use this instead
+     * of importing ErrorDebugger in handler / formatter code.
+     *
+     * @param error       - OrbytError to summarize
+     * @param workflowCtx - Optional workflow context (auto-read from LoggerManager if omitted)
+     */
+    static quickDebugSummary(error: OrbytError, workflowCtx?: WorkflowContext): string {
+        return ErrorDebugger.quickDebugWithContext(error, workflowCtx);
     }
 }

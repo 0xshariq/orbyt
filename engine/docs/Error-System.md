@@ -1,6 +1,6 @@
 # Orbyt Error System
 
-Comprehensive error handling infrastructure with two-layer error architecture for detailed diagnostics and proper process exit codes.
+Comprehensive error handling infrastructure with a two-layer diagnostic architecture, a strict 5-layer module hierarchy, and automatic debug-info enrichment.
 
 ## Architecture
 
@@ -25,17 +25,56 @@ Comprehensive error handling infrastructure with two-layer error architecture fo
      - `ORB-E-NNN`: Execution errors
      - `ORB-R-NNN`: Runtime errors
 
+### 5-Layer Module Hierarchy
+
+The error files form a strict dependency graph. Lower layers MUST NOT import from higher ones.
+
+```
+L0  OrbytError.ts        ← base class + ErrorDebugInfo interface
+L1  ErrorCodes.ts        ← enums, helper functions (no local deps)
+    FieldRegistry.ts     ← reserved/valid field lists (no local deps)
+    TypoDetector.ts      ← fuzzy field-name matching (no local deps)
+L2  WorkflowError.ts     ← SchemaError, ValidationError  (L0 + L1 only)
+    StepError.ts         ← StepError                     (L0 + L1 only)
+    SecurityErrors.ts    ← SecurityError                 (L0 + L1 only)
+    SchedulerError.ts    ← SchedulerError                (L0 + L1 only)
+L3  ErrorDebugger.ts     ← debug analysis + formatting   (L0 + L1 + logger)
+    ErrorDetector.ts     ← auto-classification           (L0–L2 + L3 + FieldRegistry + TypoDetector)
+L4  ErrorFormatter.ts    ← CLI formatters                (L0 + L1 + logger)
+L5  ErrorHandler.ts      ← execution control             (L0 + L3(via proxy) + L4 only)
+```
+
+**Key rule**: `ErrorHandler` (L5) must not import `ErrorDebugger` (L3) directly.
+All debug access goes through the three proxy methods on `ErrorDetector`.
+
+### Workflow Loading Pipeline
+
+Every load path enforces this order:
+
+```
+1. Syntax parse    (YAML/JSON → plain object)
+2. SecurityCheck   (_validateSecurity — throws SecurityError immediately)
+3. Schema validate (WorkflowParser.parse — Zod schema + unknwon-field checks)
+4. ── WorkflowLoader returns ParsedWorkflow ──
+5. InternalContextBuilder.build()  ← OrbytEngine only, right before execution
+6. WorkflowExecutor.execute()
+```
+
+Users can never cause step 5 to be skipped or tampered with — internal fields
+(`_internal`, `_billing`, `_identity`, etc.) are injected by the engine into
+`execOptions.context`, not into the workflow object itself.
+
 ### Error Components
 
 Every error includes:
 - **code**: Structured error code (`ORB-XX-NNN`)
 - **exitCode**: Process exit code from ecosystem-core
 - **message**: Human-readable error message
-- **description**: Detailed explanation
+- **description**: Detailed explanation (computed from code)
 - **hint**: Suggested action to fix
 - **path**: Location in workflow where error occurred
 - **context**: Additional debugging data
-- **severity**: ERROR, WARNING, INFO
+- **severity**: CRITICAL | FATAL | ERROR | MEDIUM | LOW | WARNING | INFO
 
 ## Usage
 
@@ -123,14 +162,18 @@ throw StepError.duplicateId('step1', 'workflow.steps[2]');
 ```
 
 #### SecurityError (Security Violations)
+
+`SecurityError` accepts only an `OrbytErrorDiagnostic` — there is no legacy
+array constructor. Always use the factory methods:
+
 ```typescript
-// Reserved field override
+// Reserved field override (fieldType defaults to 'internal')
 throw SecurityError.reservedFieldOverride('_internal', 'workflow.context', 'internal');
 
-// Reserved annotation
+// Reserved annotation namespace
 throw SecurityError.reservedAnnotation('orbyt.internal', 'workflow.metadata');
 
-// Field manipulation detected
+// Multiple protected fields detected
 throw SecurityError.fieldManipulationDetected(
   [
     { field: '_billing', reason: 'Billing field is protected' },
@@ -139,9 +182,15 @@ throw SecurityError.fieldManipulationDetected(
   'workflow.context'
 );
 
-// Permission denied
+// Permission denied (requiredPermission is optional)
 throw SecurityError.permissionDenied('workflow-secret', 'workflow.steps[0]', 'read:secrets');
 ```
+
+Available `fieldType` values for `reservedFieldOverride`:
+`'billing' | 'execution' | 'identity' | 'ownership' | 'usage' | 'internal'`
+
+> **Note**: `SecurityViolationDetails[]` and `createSecurityError()` have been
+> removed. If you held references to these, migrate to the factory methods above.
 
 #### SchedulerError (Scheduler Problems)
 ```typescript
@@ -161,7 +210,15 @@ throw SchedulerError.maxRetriesExceeded('workflow1', 5);
 ### Formatting Errors
 
 ```typescript
-import { formatError, formatErrors, formatDetailedError, formatErrorSummary } from './errors';
+import {
+  formatError,
+  formatErrors,
+  formatDetailedError,
+  formatErrorSummary,
+  formatErrorWithLocation,
+  logErrorToEngine,
+  logErrorToEngineWithContext,
+} from './errors';
 
 // Format single error (standard)
 const formatted = formatError(error);
@@ -175,31 +232,132 @@ console.error(verbose);
 const multipleFormatted = formatErrors(errors, true, false);
 console.error(multipleFormatted);
 
-// Detailed diagnostic format
+// Detailed diagnostic format (box-drawing, all properties)
 const detailed = formatDetailedError(error);
 console.error(detailed);
 
 // One-line summary (for logs)
 const summary = formatErrorSummary(error);
 console.log(summary);
+
+// With file path and line information
+const located = formatErrorWithLocation(error, '/path/to/workflow.yaml');
+console.error(located);
+
+// Log directly to EngineLogger (uses workflow context automatically)
+logErrorToEngineWithContext(error, logger);
 ```
+
+### Debug Information (ErrorDetector / ErrorDebugger)
+
+`ErrorDebugInfo` (defined in `OrbytError.ts`) is automatically attached to every
+error produced by `ErrorDetector.detect()` as `error.__debugOutput` (a
+pre-formatted string for `console.error`).
+
+For structured access use the three proxy methods on `ErrorDetector`.
+Do **not** import `ErrorDebugger` directly in handler or formatter code:
+
+```typescript
+import { ErrorDetector } from './errors';
+
+// Structured debug object: explanation, cause, fixSteps, example, …
+const debugInfo = ErrorDetector.analyzeDebugInfo(error);
+console.log(debugInfo.explanation);
+console.log(debugInfo.fixSteps);
+
+// Pre-formatted terminal string (ANSI colours by default)
+const debugText = ErrorDetector.formatDebugOutput(error);
+console.error(debugText);
+
+// One-liner for CI/logs
+const summary = ErrorDetector.quickDebugSummary(error);
+console.log(summary);
+
+// All three accept an optional WorkflowContext to enrich the output:
+const ctx = { name: 'my-workflow', filePath: './workflow.yaml' };
+const rich = ErrorDetector.formatDebugOutput(error, ctx, /* useColors */ false);
+```
+
+### Auto-Detection
+
+`ErrorDetector.detect()` classifies errors from context rather than requiring
+manual error-code selection everywhere:
+
+```typescript
+import { ErrorDetector } from './errors';
+
+// Classify from context (preferred)
+const error = ErrorDetector.detect({
+  type: 'unknown_field',
+  field: 'metadta',
+  location: 'workflow root',
+});
+// → SchemaError ORB-S-001 with typo suggestion "metadata"
+
+// Classify from a raw exception (with line/col extraction)
+const error2 = ErrorDetector.detectFromExceptionEnhanced(
+  caughtError,
+  '/path/to/workflow.yaml'
+);
+// → Correct error type with line/column in diagnostic.context
+```
+
+Supported `type` values: `unknown_field` | `reserved_field` | `invalid_type` |
+`missing_field` | `invalid_enum` | `parse_error` | `invalid_adapter` |
+`duplicate_id` | `unknown_step` | `circular_dependency` | `forward_reference` |
+`empty_workflow` | `missing_input` | `invalid_condition` | `invalid_variable` |
+`step_not_found` | `step_timeout` | `step_failed` | `step_dependency_failed` |
+`step_invalid_config` | `permission_denied` | `unknown`
+
+### Execution Control (ErrorHandler)
+
+```typescript
+import { ErrorHandler } from './errors';
+
+try {
+  await executeStep(step);
+} catch (rawError) {
+  const result = await ErrorHandler.handle(rawError, {
+    location: `steps[${index}]`,
+    stepId: step.id,
+  });
+
+  if (result.shouldStopWorkflow) throw result.error;
+  if (result.shouldStopStep) continue; // skip to next step
+  // otherwise: log and continue
+}
+```
+
+Execution control is driven by severity:
+
+| Severity | Behaviour |
+|----------|-----------|
+| `CRITICAL` / `FATAL` | Stop entire workflow immediately |
+| `ERROR` | Stop entire workflow |
+| `MEDIUM` | Stop current step, continue to next |
+| `LOW` / `WARNING` / `INFO` | Log and continue |
 
 ## File Structure
 
 ```
 errors/
-├── ErrorCodes.ts          # Error code definitions and helper functions
-├── OrbytError.ts          # Base error class with diagnostics
-├── WorkflowError.ts       # Schema and validation errors
-├── StepError.ts           # Step execution errors
-├── SchedulerError.ts      # Scheduler and trigger errors
-├── SecurityErrors.ts      # Security violation errors
-├── ErrorFormatter.ts      # CLI formatting utilities
-├── FieldRegistry.ts       # Valid workflow field registry
-├── TypoDetector.ts        # Typo detection for field names
-├── index.ts               # Exports all error classes
-└── README.md              # This file
+├── OrbytError.ts          # L0 — base error class + ErrorDebugInfo interface
+├── ErrorCodes.ts          # L1 — error codes, severity enum, helper functions
+├── FieldRegistry.ts       # L1 — valid & reserved field registry  (internal, not exported)
+├── TypoDetector.ts        # L1 — fuzzy field-name matching
+├── WorkflowError.ts       # L2 — SchemaError, ValidationError
+├── StepError.ts           # L2 — StepError
+├── SecurityErrors.ts      # L2 — SecurityError
+├── SchedulerError.ts      # L2 — SchedulerError
+├── ErrorDebugger.ts       # L3 — structured debug analysis
+├── ErrorDetector.ts       # L3 — auto-classification + debug proxies
+├── ErrorFormatter.ts      # L4 — CLI / EngineLogger formatting utilities
+├── ErrorHandler.ts        # L5 — execution-control orchestration
+└── index.ts               # re-exports everything except FieldRegistry
 ```
+
+> `FieldRegistry` is **internal only** — not re-exported from `index.ts` to
+> avoid conflicts with `security/ReservedFields`.
 
 ## Adding New Errors
 
@@ -282,28 +440,40 @@ All errors extend `OrbytError` and have these properties:
 ## Helper Functions
 
 ### ErrorCodes.ts
-- `getErrorDescription(code)`: Get detailed error description
-- `getExitCodeForError(code)`: Map error code to exit code
-- `getSuggestedAction(code)`: Get fix suggestion
-- `getErrorCategory(code)`: Get error category
-- `isUserError(code)`: Check if user-fixable
-- `isRetryable(code)`: Check if retryable
+| Function | Description |
+|----------|-------------|
+| `getErrorDescription(code)` | Detailed human-readable description |
+| `getExitCodeForError(code)` | Map ORB-XX-NNN to process exit code |
+| `getSuggestedAction(code)` | Default fix suggestion |
+| `getErrorCategory(code)` | `"Schema Error"` / `"Validation Error"` / … |
+| `isUserError(code)` | `true` if the user can fix by editing the workflow |
+| `isRetryable(code)` | `true` if a retry might succeed |
+| `getExecutionControl(severity)` | Maps severity → `ExecutionControl` enum |
+| `shouldStopWorkflow(severity)` | `true` for CRITICAL / FATAL / ERROR |
+| `shouldStopStep(severity)` | `true` for CRITICAL through MEDIUM |
+
+### TypoDetector.ts
+| Function | Description |
+|----------|-------------|
+| `findClosestMatch(input, candidates, threshold?)` | Best single suggestion |
+| `findMatches(input, candidates, limit?, threshold?)` | Top-N suggestions |
 
 ## Best Practices
 
 ✅ **DO**:
 - Use factory methods for consistent error creation
-- Include path information when available
-- Provide actionable hints for fixing errors
-- Add context for debugging
-- Use appropriate exit codes
+- Include `path` information whenever it is available
+- Provide actionable `hint` values when you know the fix
+- Add `context` for debugging (field names, received/expected values, …)
+- Use `ErrorDetector.detect()` for auto-classification rather than picking codes manually
+- Reach debug capabilities through `ErrorDetector` proxy methods, not `ErrorDebugger` directly
 
 ❌ **DON'T**:
-- Create generic `Error` instances
-- Throw errors without context
-- Use wrong exit codes
-- Skip hints when you know the fix
-- Combine multiple error types in one
+- Throw plain `Error` instances — use structured factory methods
+- Throw errors without `path` or `context` when that information is available
+- Import `ErrorDebugger` in `ErrorHandler` or any L5+ code
+- Add reserved fields (`_internal`, `_billing`, etc.) anywhere except `OrbytEngine`
+- Mix the validate phase and the internal-field injection phase
 
 ## Examples
 
@@ -369,6 +539,39 @@ test('error has correct code', () => {
   expect(error.path).toBe('workflow.context');
 });
 ```
+
+## Error Code Reference
+
+| ORB Code | Meaning | Default exit code |
+|----------|---------|-------------------|
+| `ORB-S-001` | Unknown field | 103 INVALID_SCHEMA |
+| `ORB-S-002` | Invalid type | 103 INVALID_SCHEMA |
+| `ORB-S-003` | Missing required field | 103 INVALID_SCHEMA |
+| `ORB-S-004` | Invalid enum value | 103 INVALID_SCHEMA |
+| `ORB-S-005` | YAML/JSON parse error | 104 INVALID_FORMAT |
+| `ORB-S-006` | Invalid format/pattern | 103 INVALID_SCHEMA |
+| `ORB-S-007` | Reserved field detected | 406 SECURITY_VIOLATION |
+| `ORB-V-001` | Duplicate step ID | 105 VALIDATION_FAILED |
+| `ORB-V-002` | Unknown step reference | 105 VALIDATION_FAILED |
+| `ORB-V-003` | Circular dependency | 106 CIRCULAR_DEPENDENCY |
+| `ORB-V-004` | Invalid step order | 105 VALIDATION_FAILED |
+| `ORB-V-005` | Forward reference | 105 VALIDATION_FAILED |
+| `ORB-V-006` | Invalid variable | 105 VALIDATION_FAILED |
+| `ORB-V-007` | Missing required input | 107 MISSING_REQUIRED_INPUT |
+| `ORB-V-008` | Unknown adapter | 103 INVALID_SCHEMA |
+| `ORB-V-009` | Empty workflow | 105 VALIDATION_FAILED |
+| `ORB-V-010` | Invalid condition expression | 105 VALIDATION_FAILED |
+| `ORB-E-001` | Step execution failed | 301 STEP_FAILED |
+| `ORB-E-002` | Timeout exceeded | 302 TIMEOUT |
+| `ORB-E-003` | Adapter error | 304 ADAPTER_FAILED |
+| `ORB-E-004` | Workflow cancelled | 300 WORKFLOW_FAILED |
+| `ORB-E-005` | Step dependency failed | 303 DEPENDENCY_FAILED |
+| `ORB-E-006` | Condition check failed | 301 STEP_FAILED |
+| `ORB-R-001` | File not found | 500 INTERNAL_ERROR |
+| `ORB-R-002` | Permission denied / reserved field| 406 SECURITY_VIOLATION |
+| `ORB-R-003` | Internal engine error | 500 INTERNAL_ERROR |
+| `ORB-R-004` | Adapter not registered | 500 INTERNAL_ERROR |
+| `ORB-R-005` | Resource exhausted | 500 INTERNAL_ERROR |
 
 ## Exit Code Reference
 

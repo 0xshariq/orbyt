@@ -34,7 +34,9 @@
 import { OrbytError } from './OrbytError.js';
 import { ErrorSeverity } from './ErrorCodes.js';
 import type { EngineLogger } from '../logging/EngineLogger.js';
+import { LoggerManager } from '../logging/LoggerManager.js';
 import { LogLevel } from '@dev-ecosystem/core';
+import type { WorkflowContext } from '../types/log-types.js';
 
 /**
  * ANSI color codes for terminal output
@@ -325,6 +327,8 @@ export function errorSeverityToLogLevel(severity: ErrorSeverity): LogLevel {
  * @param error - Orbyt error to log
  * @param logger - EngineLogger instance
  * @param includeDebugInfo - Whether to include full diagnostic info (default: true)
+ * @deprecated Use {@link logErrorToEngineWithContext} which automatically attaches
+ *   workflow file path, name, and step count to the log entry.
  */
 export function logErrorToEngine(
   error: OrbytError,
@@ -428,4 +432,138 @@ export function formatAndLogError(
 
   // Return formatted string for console/CLI
   return formatError(error, useColors, verbose);
+}
+
+// ============================================================================
+// CONTEXT-AWARE FORMATTERS
+// These functions use WorkflowContext (file path, line numbers) to produce
+// output that points the user to the exact location in their workflow file.
+// Context is auto-read from LoggerManager if not provided.
+// ============================================================================
+
+/**
+ * Format error with a workflow file location header.
+ *
+ * Prepends a file/line block above the standard {@link formatError} output:
+ *
+ * ```
+ * File:   /path/to/my-workflow.yaml
+ * Line:   14:3          ← only present when error carries line/column info
+ * Field:  steps[0].adapter   ← shown instead of Line when no line info exists
+ * ✗ SchemaError [ORB-S-003]
+ * ...
+ * ```
+ *
+ * Line and column numbers come from `error.diagnostic.context.line`/`.column`,
+ * which are populated by the YAML parser for syntax errors and by schema
+ * validators for field-level errors.
+ *
+ * Workflow context is auto-read from {@link LoggerManager} when not provided.
+ *
+ * @param error       - Orbyt error to format
+ * @param workflowCtx - Workflow context (auto-read from LoggerManager if omitted)
+ * @param useColors   - Whether to use ANSI colors (default: true)
+ * @param verbose     - Show additional diagnostic info (default: false)
+ * @returns Formatted error string with location header
+ */
+export function formatErrorWithLocation(
+  error: OrbytError,
+  workflowCtx?: WorkflowContext,
+  useColors: boolean = true,
+  verbose: boolean = false
+): string {
+  const ctx = workflowCtx ?? LoggerManager.getWorkflowContext() ?? undefined;
+
+  const c = useColors ? colors : {
+    reset: '', bold: '', dim: '', red: '', yellow: '', blue: '', cyan: '', gray: '',
+  };
+
+  const locationLines: string[] = [];
+
+  // File path or workflow name
+  if (ctx?.filePath) {
+    locationLines.push(`${c.dim}File:   ${c.cyan}${ctx.filePath}${c.reset}`);
+  } else if (ctx?.name) {
+    locationLines.push(`${c.dim}Source: ${c.cyan}${ctx.name}${c.reset}`);
+  }
+
+  // Line and column — set by YAML parser (parse errors) or schema validator (field errors)
+  const diagCtx = error.diagnostic.context ?? {};
+  const line    = (diagCtx.line   ?? diagCtx.lineNumber)   as number | undefined;
+  const col     = (diagCtx.column ?? diagCtx.columnNumber) as number | undefined;
+
+  if (line) {
+    const lineRef = col ? `${line}:${col}` : String(line);
+    locationLines.push(`${c.dim}Line:   ${c.yellow}${lineRef}${c.reset}`);
+  } else if (error.path) {
+    // No line info — fall back to the field path for schema/validation errors
+    locationLines.push(`${c.dim}Field:  ${c.cyan}${error.path}${c.reset}`);
+  }
+
+  const base = formatError(error, useColors, verbose);
+  return locationLines.length > 0 ? locationLines.join('\n') + '\n' + base : base;
+}
+
+/**
+ * Log error to EngineLogger enriched with workflow file context.
+ *
+ * Same as {@link logErrorToEngine} but also attaches `sourceFile`,
+ * `workflowName`, `workflowKind`, and `stepCount` to the log entry
+ * when workflow context is available.
+ *
+ * Context is auto-read from {@link LoggerManager} — callers that load
+ * workflows via {@link WorkflowLoader} already have context set, so
+ * no extra wiring is needed:
+ *
+ * ```typescript
+ * logErrorToEngineWithContext(error, logger);
+ * // log entry carries: sourceFile, workflowName, stepCount automatically
+ * ```
+ *
+ * @param error         - Orbyt error to log
+ * @param logger        - EngineLogger instance
+ * @param workflowCtx   - Workflow context (auto-read from LoggerManager if omitted)
+ * @param includeDebugInfo - Whether to include full diagnostic info (default: true)
+ */
+export function logErrorToEngineWithContext(
+  error: OrbytError,
+  logger: EngineLogger,
+  workflowCtx?: WorkflowContext,
+  includeDebugInfo: boolean = true
+): void {
+  const ctx = workflowCtx ?? LoggerManager.getWorkflowContext() ?? undefined;
+
+  const logLevel = errorSeverityToLogLevel(error.severity);
+
+  const context: Record<string, unknown> = {
+    errorCode:  error.code,
+    exitCode:   error.exitCode,
+    category:   error.category,
+    severity:   error.severity,
+    userError:  error.isUserError,
+    retryable:  error.isRetryable,
+  };
+
+  if (error.path) context.path = error.path;
+  if (error.hint) context.hint = error.hint;
+
+  if (includeDebugInfo && error.diagnostic.context) {
+    context.diagnostic = error.diagnostic.context;
+  }
+
+  // Enrich with workflow file context
+  if (ctx) {
+    if (ctx.filePath)          context.sourceFile   = ctx.filePath;
+    if (ctx.name)              context.workflowName = ctx.name;
+    if (ctx.kind)              context.workflowKind = ctx.kind;
+    if (ctx.stepCount != null) context.stepCount    = ctx.stepCount;
+  }
+
+  switch (logLevel) {
+    case LogLevel.FATAL: logger.fatal(error.message, error, context); break;
+    case LogLevel.ERROR: logger.error(error.message, error, context); break;
+    case LogLevel.WARN:  logger.warn(error.message, context);         break;
+    case LogLevel.INFO:  logger.info(error.message, context);         break;
+    default:             logger.error(error.message, error, context);
+  }
 }

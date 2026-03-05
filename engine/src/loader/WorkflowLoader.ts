@@ -54,15 +54,54 @@ import { SecurityError } from '../errors/SecurityErrors.js';
 import { getAllReservedFieldViolations } from '../security/ReservedFields.js';
 import { ErrorDetector } from '../errors/ErrorDetector.js';
 import { OrbytError } from '../errors/OrbytError.js';
-import { logErrorToEngine } from '../errors/ErrorFormatter.js';
+import { logErrorToEngineWithContext } from '../errors/ErrorFormatter.js';
 import type { EngineLogger } from '../logging/EngineLogger.js';
+import { LoggerManager } from '../logging/index.js';
 import { ParsedWorkflow, SecurityErrorCode, WorkflowLoadOptions } from '../types/core-types.js';
 
 /**
  * Workflow Loader
  * 
- * Utility for loading and parsing workflows from various sources.
- * This is I/O-aware but execution-agnostic.
+ * ARCHITECTURAL ROLE:
+ * ===================
+ * This is a UTILITY layer, NOT part of the execution engine.
+ * 
+ * Responsibilities:
+ * - File I/O (reading workflow files from disk)
+ * - YAML/JSON parsing
+ * - Schema validation
+ * - Security validation
+ * - Return validated workflow objects
+ * 
+ * Does NOT:
+ * - Execute workflows (that's OrbytEngine)
+ * - Manage state
+ * - Handle billing
+ * - Know about execution context
+ * 
+ * USAGE:
+ * ======
+ * CLI/API/SDK uses this loader to convert files → validated objects.
+ * Then passes objects to engine for execution.
+ * 
+ * Example:
+ * ```ts
+ * // CLI
+ * const workflow = await WorkflowLoader.fromFile('./workflow.yaml');
+ * await engine.run(workflow);
+ * 
+ * // API
+ * const workflow = WorkflowLoader.fromYAML(requestBody);
+ * await engine.run(workflow);
+ * 
+ * // Test
+ * await engine.run(mockWorkflowObject);
+ * ```
+ * 
+ * This keeps:
+ * - Engine I/O-agnostic (testable, embeddable)
+ * - Loader focused on parsing
+ * - CLI/API deciding what to load
  */
 export class WorkflowLoader {
   /**
@@ -123,30 +162,7 @@ export class WorkflowLoader {
     }
 
     // Step 4: SECURITY - Check for internal/reserved fields before any validation
-    if (workflowObject && typeof workflowObject === 'object') {
-      // Use getAllReservedFieldViolations for detailed error reporting
-      const violations = getAllReservedFieldViolations(workflowObject);
-      if (violations.length > 0) {
-        // Use the first violation for error context, but attach all for diagnostics
-        const v = violations[0];
-        // Map SecurityErrorCode to the correct fieldType for SecurityError
-        let fieldType: 'billing' | 'execution' | 'identity' | 'ownership' | 'usage' | 'internal' = 'internal';
-        // Use enum values for type safety
-        const code = v.code;
-        if (code === SecurityErrorCode.BILLING_FIELD_OVERRIDE) fieldType = 'billing';
-        else if (code === SecurityErrorCode.IDENTITY_FIELD_OVERRIDE) fieldType = 'identity';
-        else if (code === SecurityErrorCode.OWNERSHIP_FIELD_OVERRIDE) fieldType = 'ownership';
-        else if (code === SecurityErrorCode.USAGE_COUNTER_OVERRIDE) fieldType = 'usage';
-        else if (code === SecurityErrorCode.INTERNAL_STATE_OVERRIDE) fieldType = 'internal';
-        else fieldType = 'internal';
-        const err = SecurityError.reservedFieldOverride(v.field, v.location, fieldType);
-        (err as any).reason = v.reason;
-        (err as any).allViolations = violations;
-        throw err;
-      }
-      // Also run strict validation for immediate throw (backward compatibility)
-      // validateWorkflowSecurity removed: all security validation now handled by getAllReservedFieldViolations
-    }
+    WorkflowLoader._validateSecurity(workflowObject);
 
     // Step 5: Validate and parse (schema, steps, etc)
     let parsed: ParsedWorkflow = this.validateAndParse(workflowObject, resolvedPath, options.logger);
@@ -159,6 +175,10 @@ export class WorkflowLoader {
     if (options.variables && parsed.inputs) {
       parsed.inputs = { ...parsed.inputs, ...options.variables };
     }
+
+    // Set workflow context so all downstream logs (runtime, analysis, security)
+    // are automatically enriched — cleared by OrbytEngine after the operation.
+    WorkflowLoader._setContext(parsed, resolvedPath);
 
     return parsed;
   }
@@ -179,20 +199,22 @@ export class WorkflowLoader {
    * @returns Parsed and validated workflow
    * @throws OrbytError with proper error code and debug info
    */
-  static fromYAML(
+  static async fromYAML(
     yamlContent: string,
     filePath?: string,
     logger?: EngineLogger
-  ): ParsedWorkflow {
+  ): Promise<ParsedWorkflow> {
     const location = filePath || 'YAML content';
 
     // PHASE 1: LOADING
     // Parse YAML syntax to plain object (no validation yet)
     const workflowObject = this.parseYAMLToObject(yamlContent, location);
 
-    // PHASE 2: VALIDATION
-    // Now that file is fully loaded, validate the object
-    return this.validateAndParse(workflowObject, location, logger);
+    // PHASE 2: VALIDATION — Security check first, then schema
+    WorkflowLoader._validateSecurity(workflowObject);
+    const parsed = this.validateAndParse(workflowObject, location, logger);
+    WorkflowLoader._setContext(parsed, filePath);
+    return parsed;
   }
 
   /**
@@ -208,20 +230,22 @@ export class WorkflowLoader {
    * @returns Parsed and validated workflow
    * @throws OrbytError with proper error code and debug info
    */
-  static fromJSON(
+  static async fromJSON(
     jsonContent: string,
     filePath?: string,
     logger?: EngineLogger
-  ): ParsedWorkflow {
+  ): Promise<ParsedWorkflow> {
     const location = filePath || 'JSON content';
 
     // PHASE 1: LOADING
     // Parse JSON syntax to plain object (no validation yet)
     const workflowObject = this.parseJSONToObject(jsonContent, location);
 
-    // PHASE 2: VALIDATION
-    // Now that file is fully loaded, validate the object
-    return this.validateAndParse(workflowObject, location, logger);
+    // PHASE 2: VALIDATION — Security check first, then schema
+    WorkflowLoader._validateSecurity(workflowObject);
+    const parsed = this.validateAndParse(workflowObject, location, logger);
+    WorkflowLoader._setContext(parsed, filePath);
+    return parsed;
   }
 
   /**
@@ -236,9 +260,12 @@ export class WorkflowLoader {
    * @returns Parsed and validated workflow
    * @throws OrbytError with proper error code and debug info
    */
-  static fromObject(workflowObject: unknown, logger?: EngineLogger): ParsedWorkflow {
-    // Object is already loaded, go directly to validation
-    return this.validateAndParse(workflowObject, 'workflow object', logger);
+  static async fromObject(workflowObject: unknown, logger?: EngineLogger): Promise<ParsedWorkflow> {
+    // Object is already loaded — run security check then schema validation
+    WorkflowLoader._validateSecurity(workflowObject);
+    const parsed = this.validateAndParse(workflowObject, 'workflow object', logger);
+    WorkflowLoader._setContext(parsed);
+    return parsed;
   }
 
   /**
@@ -317,12 +344,70 @@ export class WorkflowLoader {
     }
 
     // Otherwise parse as content
-    return this.fromYAML(source, 'inline YAML', options.logger);
+    return await this.fromYAML(source, 'inline YAML', options.logger);
   }
 
   // ============================================================================
   // PRIVATE HELPER METHODS
   // ============================================================================
+
+  /**
+   * Check a parsed workflow object for reserved/internal field violations.
+   *
+   * Called immediately after Phase 1 (syntax parse) and before Phase 2
+   * (schema validation) in every loading path.  Throws SecurityError on the
+   * first violation so execution never reaches the schema validator with
+   * tampered data.
+   *
+   * @param workflowObject - Plain object from the parser
+   * @throws SecurityError if any engine-reserved field is found
+   * @private
+   */
+  private static _validateSecurity(workflowObject: unknown): void {
+    if (!workflowObject || typeof workflowObject !== 'object') return;
+
+    const violations = getAllReservedFieldViolations(workflowObject);
+    if (violations.length === 0) return;
+
+    const v = violations[0];
+    let fieldType: 'billing' | 'execution' | 'identity' | 'ownership' | 'usage' | 'internal' = 'internal';
+    const code = v.code;
+    if (code === SecurityErrorCode.BILLING_FIELD_OVERRIDE)    fieldType = 'billing';
+    else if (code === SecurityErrorCode.IDENTITY_FIELD_OVERRIDE)   fieldType = 'identity';
+    else if (code === SecurityErrorCode.OWNERSHIP_FIELD_OVERRIDE)  fieldType = 'ownership';
+    else if (code === SecurityErrorCode.USAGE_COUNTER_OVERRIDE)    fieldType = 'usage';
+
+    const err = SecurityError.reservedFieldOverride(v.field, v.location, fieldType);
+    (err as any).reason = v.reason;
+    (err as any).allViolations = violations;
+    throw err;
+  }
+
+  /**
+   * Set workflow context on the LoggerManager after every successful parse.
+   *
+   * This ensures all subsequent logs (runtime, analysis, security categories)
+   * are automatically enriched with workflow metadata without the caller
+   * needing to set it manually.
+   *
+   * System logs do not need this context and are unaffected.
+   * Context is cleared by OrbytEngine after each operation.
+   *
+   * @param parsed - Successfully parsed workflow
+   * @param filePath - Resolved file path (only available for file-based loads)
+   * @private
+   */
+  private static _setContext(parsed: ParsedWorkflow, filePath?: string): void {
+    LoggerManager.setWorkflowContext({
+      name: parsed.name ?? parsed.metadata?.name,
+      version: parsed.version,
+      kind: parsed.kind,
+      description: parsed.description ?? parsed.metadata?.description,
+      stepCount: parsed.steps?.length,
+      tags: parsed.tags ?? parsed.metadata?.tags,
+      filePath,
+    });
+  }
 
   /**
    * Parse YAML content to plain object (Phase 1: Loading)
@@ -339,13 +424,19 @@ export class WorkflowLoader {
     try {
       return YAML.parse(yamlContent);
     } catch (error) {
-      // Detect parse error with proper error code
+      // Extract line/col from the yaml library's linePos property (if present)
+      // so formatters can point the user to the exact location in the file.
+      const yamlErr = error as any;
+      const linePos = Array.isArray(yamlErr.linePos) ? yamlErr.linePos[0] as { line?: number; col?: number } : undefined;
+
       const parseError = ErrorDetector.detect({
         type: 'parse_error',
         location,
         rawMessage: error instanceof Error ? error.message : String(error),
         data: {
           content: yamlContent.substring(0, 200), // First 200 chars for context
+          line: linePos?.line,
+          column: linePos?.col,
         },
       });
 
@@ -411,16 +502,17 @@ export class WorkflowLoader {
       if (error instanceof OrbytError) {
         orbytError = error;
       } else {
-        // Detect and classify the error (auto-enriches with debug info)
-        orbytError = ErrorDetector.detectFromException(
+        // Use enhanced detection so line/col are extracted for parse errors
+        orbytError = ErrorDetector.detectFromExceptionEnhanced(
           error instanceof Error ? error : new Error(String(error)),
           location
         );
       }
 
-      // 1. Log to EngineLogger for structured logs (if available)
+      // 1. Log to EngineLogger — use context-aware variant so sourceFile,
+      //    workflowName, and stepCount are attached to the log entry.
       if (logger) {
-        logErrorToEngine(orbytError, logger);
+        logErrorToEngineWithContext(orbytError, logger);
       }
 
       // 2. Display detailed debug info that was attached by ErrorDetector

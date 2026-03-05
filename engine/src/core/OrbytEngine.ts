@@ -70,7 +70,7 @@ import { WorkflowLoader } from '../loader/WorkflowLoader.js';
 import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
 import { createEngineContext } from './EngineContext.js';
 import { LoggerManager, type EngineLogger } from '../logging/index.js';
-import { LogCategoryEnum } from '../types/log-types.js';
+import { LogCategoryEnum, WorkflowContext } from '../types/log-types.js';
 import { LogLevel as CoreLogLevel } from '@dev-ecosystem/core';
 import { ExecutionEngine } from '../execution/ExecutionEngine.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
@@ -460,13 +460,13 @@ export class OrbytEngine {
         parsedWorkflow = await WorkflowLoader.fromFile(workflow);
       } else {
         try {
-          parsedWorkflow = WorkflowLoader.fromYAML(workflow);
+          parsedWorkflow = await WorkflowLoader.fromYAML(workflow);
         } catch {
-          parsedWorkflow = WorkflowLoader.fromJSON(workflow);
+          parsedWorkflow = await WorkflowLoader.fromJSON(workflow);
         }
       }
     } else if (typeof workflow === 'object' && workflow !== null) {
-      parsedWorkflow = WorkflowLoader.fromObject(workflow);
+      parsedWorkflow = await WorkflowLoader.fromObject(workflow);
     } else {
       throw new Error('Invalid workflow input: must be file path, YAML/JSON string, or object');
     }
@@ -487,7 +487,9 @@ export class OrbytEngine {
 
     // Handle dry-run mode
     if (options.dryRun || this.config.mode === 'dry-run') {
-      return this.dryRun(parsedWorkflow, options);
+      const dryResult = await this.dryRun(parsedWorkflow, options);
+      LoggerManager.clearWorkflowContext();
+      return dryResult;
     }
 
     // ============================================================================
@@ -527,6 +529,15 @@ export class OrbytEngine {
       reason: executionStrategy.reason,
       adjustments: executionStrategy.adjustments,
     });
+
+    // Enrich the active workflow context with the resolved execution strategy
+    // so all subsequent logs carry it without callers needing to pass it manually.
+    const strategyName = executionStrategy.strategy as string;
+    const mappedStrategy: WorkflowContext['executionStrategy'] =
+      strategyName === 'parallel' ? 'parallel'
+      : strategyName === 'mixed'  ? 'mixed'
+      : 'sequential'; // 'sequential' | 'conservative' | any unknown → sequential
+    LoggerManager.patchWorkflowContext({ executionStrategy: mappedStrategy });
 
     // 3. Safety Guard: Check if safe to execute
     const safetyCheck = ExecutionStrategyGuard.isSafeToExecute(strategyContext);
@@ -578,6 +589,9 @@ export class OrbytEngine {
 
     // Call billing lifecycle hook
     await this.onWorkflowBillingComplete(internalContext, result);
+
+    // Clear workflow context so it doesn't bleed into subsequent executions
+    LoggerManager.clearWorkflowContext();
 
     return result;
   }
@@ -637,6 +651,9 @@ export class OrbytEngine {
   ): Promise<boolean> {
     // Use WorkflowLoader.validate to check workflow validity, passing logger if present
     await WorkflowLoader.validate(workflow, options?.logger);
+
+    // Context was set in WorkflowLoader — clear it now that validation is done
+    LoggerManager.clearWorkflowContext();
     return true;
   }
 
@@ -670,6 +687,8 @@ export class OrbytEngine {
     const explanation = ExplanationGenerator.generate(parsedWorkflow);
     // Log explanation for CLI visibility
     ExplanationLogger.log(explanation, 'info');
+
+    LoggerManager.clearWorkflowContext();
     return explanation;
   }
 

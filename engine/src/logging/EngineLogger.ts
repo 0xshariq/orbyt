@@ -20,58 +20,182 @@
  * - Monitoring systems
  * - Audit trails
  * 
- * @module core
+ * @module logging
  */
 
 import {
-  LogLevel, LogLevelSeverity, formatLog, createLogEntry, shouldLog, formatTimestamp, type LogEntry, type LogFormatOptions,
+  LogLevel,
+  LogLevelSeverity,
+  formatLog,
+  createLogEntry,
+  shouldLog,
+  formatTimestamp,
+  type LogEntry,
+  type LogFormatOptions,
 } from '@dev-ecosystem/core';
 import {
-  EngineLogEvent, EngineLogFormat, EngineLoggerConfig, EngineLogType, LogCategory, LogCategoryEnum, EngineLog, ErrorLogEvent, ExecutionLogEvent, LifecycleLogEvent, ParseLogEvent, PerformanceLogEvent, ValidationLogEvent,
-  ExportedLogs
+  type EngineLoggerConfig,
+  type EngineLogFormat,
+  type EngineLogEvent,
+  type ExportedLogs,
+  type LogCategory,
+  type WorkflowContext,
+  EngineLogType,
+  LogCategoryEnum,
 } from '../types/log-types.js';
 
+// ─── Internal dispatch interface ──────────────────────────────────────────────
+
 /**
- * Re-export formatTimestamp for external use
- * Allows other parts of the system to format timestamps consistently
+ * Internal contract used by CategoryLogger to call back into EngineLogger
+ * without a circular reference.  Not part of the public API.
+ * @internal
  */
-export { formatTimestamp };
+interface LogDispatcher {
+  _logWithCategory(
+    level: LogLevel,
+    message: string,
+    context?: Record<string, unknown>,
+    error?: Error,
+    category?: LogCategory,
+    typeOverride?: EngineLogType,
+  ): void;
+}
+
+// ─── CategoryLogger ────────────────────────────────────────────────────────────
+
+/**
+ * A thin wrapper that pins every log call to a specific category.
+ *
+ * Obtain instances via `EngineLogger.runtime`, `.analysis`, `.system`, or `.security`.
+ *
+ * ```typescript
+ * const logger = LoggerManager.getLogger();
+ *
+ * // inside run() — runtime category
+ * logger.runtime.info('Step started', { stepId });
+ *
+ * // inside explain() / validate() — analysis category
+ * logger.analysis.debug('Building execution plan');
+ * ```
+ */
+export class CategoryLogger {
+  constructor(
+    private readonly parent: LogDispatcher,
+    private readonly category: LogCategory,
+  ) { }
+
+  debug(message: string, context?: Record<string, unknown>): void {
+    this.parent._logWithCategory(LogLevel.DEBUG, message, context, undefined, this.category);
+  }
+
+  info(message: string, context?: Record<string, unknown>): void {
+    this.parent._logWithCategory(LogLevel.INFO, message, context, undefined, this.category);
+  }
+
+  warn(message: string, context?: Record<string, unknown>): void {
+    this.parent._logWithCategory(LogLevel.WARN, message, context, undefined, this.category);
+  }
+
+  error(message: string, error?: Error, context?: Record<string, unknown>): void {
+    this.parent._logWithCategory(LogLevel.ERROR, message, context, error, this.category);
+  }
+
+  fatal(message: string, error?: Error, context?: Record<string, unknown>): void {
+    this.parent._logWithCategory(LogLevel.FATAL, message, context, error, this.category);
+  }
+
+  /**
+   * Measure execution time of `fn` and log the result under this category.
+   *
+   * ```typescript
+   * const result = await logger.runtime.measureExecution(
+   *   'step:http-request',
+   *   () => httpAdapter.run(step),
+   *   { warn: 3000, error: 10000 },
+   * );
+   * ```
+   */
+  async measureExecution<T>(
+    label: string,
+    fn: () => Promise<T>,
+    thresholds?: { warn?: number; error?: number },
+  ): Promise<T> {
+    const start = Date.now();
+    try {
+      const result = await fn();
+      const duration = Date.now() - start;
+      let level = LogLevel.INFO;
+      if (thresholds?.error && duration > thresholds.error) level = LogLevel.ERROR;
+      else if (thresholds?.warn && duration > thresholds.warn) level = LogLevel.WARN;
+      this.parent._logWithCategory(
+        level, `${label} completed`,
+        { duration: `${duration}ms` }, undefined, this.category,
+        EngineLogType.EXECUTION_TIME,
+      );
+      return result;
+    } catch (err) {
+      const duration = Date.now() - start;
+      this.parent._logWithCategory(
+        LogLevel.ERROR, `${label} failed`,
+        { duration: `${duration}ms` },
+        err instanceof Error ? err : new Error(String(err)),
+        this.category,
+        EngineLogType.ERROR_DETECTED,
+      );
+      throw err;
+    }
+  }
+}
+
+// ─── EngineLogger ──────────────────────────────────────────────────────────────
 
 /**
  * Engine Logger
- * 
+ *
  * Wraps ecosystem-core logging utilities with engine-specific configuration.
+ * Emits structured JSON logs and maintains a typed log history.
+ *
+ * ### Category sub-loggers
+ * Every log is tagged with a phase-based category so tooling / formatters can
+ * filter or colour-code entries without parsing the message text.
+ *
+ * | Sub-logger         | Category     | When to use                                       |
+ * |--------------------|--------------|---------------------------------------------------|
+ * | `logger.runtime`   | `runtime`    | `run()` — step start/complete/fail/retry          |
+ * | `logger.analysis`  | `analysis`   | `explain()` / `validate()` — plan & parse phase   |
+ * | `logger.system`    | `system`     | Engine init/shutdown, adapter registration        |
+ * | `logger.security`  | `security`   | Reserved-field violations, permission rejections  |
+ *
+ * Generic `logger.info(...)` etc. fall back to the category set at construction.
  */
-export class EngineLogger {
-  // Config may have optional category/source
-  private config: EngineLoggerConfig;
+export class EngineLogger implements LogDispatcher {
+  private config: Required<EngineLoggerConfig>;
   private formatOptions: LogFormatOptions;
-  private eventListeners: Map<EngineLogType, Array<(event: EngineLogEvent) => void>>;
-  private logBuffer: EngineLogEvent[]; // Structured JSON log buffer (strongly typed)
-  /**
-   * Default log source (component/module)
-   */
-  /**
-   * Default log source (component/module)
-   */
-  // defaultSource removed: source is always required and used directly
-  private maxBufferSize: number = 10000; // Prevent memory leaks
+  private logHistory: EngineLogEvent[] = [];
+  /** Workflow context set by the engine before run/explain/validate */
+  private workflowContext: WorkflowContext | null = null;
+
+  // ─── Category sub-loggers ────────────────────────────────────────────────
+  /** Use inside `run()` and step-execution paths. Category: `runtime` */
+  readonly runtime: CategoryLogger;
+  /** Use inside `explain()` and `validate()` paths. Category: `analysis` */
+  readonly analysis: CategoryLogger;
+  /** Use for engine init, shutdown, adapter registration. Category: `system` */
+  readonly system: CategoryLogger;
+  /** Use for reserved-field violations, permission rejections. Category: `security` */
+  readonly security: CategoryLogger;
 
   constructor(config: EngineLoggerConfig) {
-    if (!config.source) {
-      throw new Error('EngineLoggerConfig: source is required');
-    }
-    if (!config.category) {
-      throw new Error('EngineLoggerConfig: category is required');
-    }
     this.config = {
       level: config.level,
-      format: config.format || 'text',
+      format: config.format || 'json',
       colors: config.colors ?? true,
       timestamp: config.timestamp ?? true,
-      source: config.source,
+      source: config.source || 'Orbyt',
       structuredEvents: config.structuredEvents ?? true,
-      category: config.category,
+      category: config.category || LogCategoryEnum.SYSTEM,
+      maxHistorySize: config.maxHistorySize ?? 0,
     };
 
     this.formatOptions = {
@@ -81,718 +205,46 @@ export class EngineLogger {
       includeSource: true,
     };
 
-    this.eventListeners = new Map();
-    this.logBuffer = [];
+    // Bind category sub-loggers
+    this.runtime = new CategoryLogger(this, LogCategoryEnum.RUNTIME);
+    this.analysis = new CategoryLogger(this, LogCategoryEnum.ANALYSIS);
+    this.system = new CategoryLogger(this, LogCategoryEnum.SYSTEM);
+    this.security = new CategoryLogger(this, LogCategoryEnum.SECURITY);
   }
 
   /**
    * Log a debug message
    */
-  /**
-   * Log a debug message (category and source required)
-   */
-  debug(
-    message: string,
-    context?: Record<string, unknown>,
-    category?: LogCategory,
-    source?: string
-  ): void {
-    this.log(LogLevel.DEBUG, message, context, undefined, category, source);
+  debug(message: string, context?: Record<string, unknown>): void {
+    this.log(LogLevel.DEBUG, message, context);
   }
 
   /**
-   * Log an info message (category and source required)
+   * Log an info message
    */
-  info(
-    message: string,
-    context?: Record<string, unknown>,
-    category?: LogCategory,
-    source?: string
-  ): void {
-    this.log(LogLevel.INFO, message, context, undefined, category, source);
+  info(message: string, context?: Record<string, unknown>): void {
+    this.log(LogLevel.INFO, message, context);
   }
 
   /**
-   * Log a warning message (category and source required)
+   * Log a warning message
    */
-  warn(
-    message: string,
-    context?: Record<string, unknown>,
-    category?: LogCategory,
-    source?: string
-  ): void {
-    this.log(LogLevel.WARN, message, context, undefined, category, source);
+  warn(message: string, context?: Record<string, unknown>): void {
+    this.log(LogLevel.WARN, message, context);
   }
 
   /**
-   * Log an error message (category and source required)
+   * Log an error message
    */
-  error(
-    message: string,
-    error?: Error,
-    context?: Record<string, unknown>,
-    category?: LogCategory,
-    source?: string
-  ): void {
-    this.log(LogLevel.ERROR, message, context, error, category, source);
+  error(message: string, error?: Error, context?: Record<string, unknown>): void {
+    this.log(LogLevel.ERROR, message, context, error);
   }
 
   /**
-   * Log a fatal error message (category and source required)
+   * Log a fatal error message
    */
-  fatal(
-    message: string,
-    error?: Error,
-    context?: Record<string, unknown>,
-    category?: LogCategory,
-    source?: string
-  ): void {
-    this.log(LogLevel.FATAL, message, context, error, category, source);
-  }
-
-  // ============================================================================
-  // WORKFLOW LIFECYCLE LOGGING
-  // ============================================================================
-
-  /**
-   * Log workflow started event
-   */
-  /**
-   * Log workflow started event (runtime phase)
-   */
-  workflowStarted(workflowName: string, context?: Record<string, unknown>): void {
-    this.logEvent({
-      type: EngineLogType.WORKFLOW_STARTED,
-      timestamp: new Date(),
-      message: `Workflow "${workflowName}" started`,
-      context,
-      category: LogCategoryEnum.RUNTIME,
-      source: 'WorkflowExecutor',
-    });
-  }
-
-  /**
-   * Log workflow completed event
-   */
-  /**
-   * Log workflow completed event (runtime phase)
-   */
-  workflowCompleted(workflowName: string, duration: number, context?: Record<string, unknown>): void {
-    this.logEvent({
-      type: EngineLogType.WORKFLOW_COMPLETED,
-      timestamp: new Date(),
-      message: `Workflow "${workflowName}" completed successfully`,
-      context,
-      metrics: { duration },
-      category: LogCategoryEnum.RUNTIME,
-      source: 'WorkflowExecutor',
-    });
-  }
-
-  /**
-   * Log workflow failed event
-   */
-  /**
-   * Log workflow failed event (runtime phase)
-   */
-  workflowFailed(workflowName: string, error: Error, duration: number, context?: Record<string, unknown>): void {
-    this.logEvent({
-      type: EngineLogType.WORKFLOW_FAILED,
-      timestamp: new Date(),
-      message: `Workflow "${workflowName}" failed: ${error.message}`,
-      context,
-      error,
-      metrics: { duration },
-      category: LogCategoryEnum.RUNTIME,
-      source: 'WorkflowExecutor',
-    });
-  }
-
-  /**
-   * Log workflow validation event
-   */
-  /**
-   * Log workflow validation event (analysis phase)
-   */
-  workflowValidation(workflowName: string, isValid: boolean, errors?: string[]): void {
-    this.logEvent({
-      type: EngineLogType.WORKFLOW_VALIDATION,
-      timestamp: new Date(),
-      message: `Workflow "${workflowName}" validation: ${isValid ? 'PASSED' : 'FAILED'}`,
-      context: errors ? { errors } : undefined,
-      category: LogCategoryEnum.ANALYSIS,
-      source: 'WorkflowLoader',
-    });
-  }
-
-  // ============================================================================
-  // STEP LIFECYCLE LOGGING
-  // ============================================================================
-
-  /**
-   * Log step started event
-   */
-  /**
-   * Log step started event (runtime phase)
-   */
-  stepStarted(stepId: string, stepName: string, context?: Record<string, unknown>): void {
-    this.logEvent({
-      type: EngineLogType.STEP_STARTED,
-      timestamp: new Date(),
-      message: `Step "${stepName}" (${stepId}) started`,
-      context,
-      category: LogCategoryEnum.RUNTIME,
-      source: 'StepExecutor',
-    });
-  }
-
-  /**
-   * Log step completed event
-   */
-  /**
-   * Log step completed event (runtime phase)
-   */
-  stepCompleted(stepId: string, stepName: string, duration: number, context?: Record<string, unknown>): void {
-    this.logEvent({
-      type: EngineLogType.STEP_COMPLETED,
-      timestamp: new Date(),
-      message: `Step "${stepName}" (${stepId}) completed`,
-      context,
-      metrics: { duration },
-      category: LogCategoryEnum.RUNTIME,
-      source: 'StepExecutor',
-    });
-  }
-
-  /**
-   * Log step failed event
-   */
-  /**
-   * Log step failed event (runtime phase)
-   */
-  stepFailed(stepId: string, stepName: string, error: Error, context?: Record<string, unknown>): void {
-    this.logEvent({
-      type: EngineLogType.STEP_FAILED,
-      timestamp: new Date(),
-      message: `Step "${stepName}" (${stepId}) failed: ${error.message}`,
-      context,
-      error,
-      category: LogCategoryEnum.RUNTIME,
-      source: 'StepExecutor',
-    });
-  }
-
-  /**
-   * Log step retry event
-   */
-  /**
-   * Log step retry event (runtime phase)
-   */
-  stepRetry(stepId: string, stepName: string, attempt: number, maxAttempts: number): void {
-    this.logEvent({
-      type: EngineLogType.STEP_RETRY,
-      timestamp: new Date(),
-      message: `Step "${stepName}" (${stepId}) retry ${attempt}/${maxAttempts}`,
-      context: { attempt, maxAttempts },
-      category: LogCategoryEnum.RUNTIME,
-      source: 'StepExecutor',
-    });
-  }
-
-  /**
-   * Log step timeout event
-   */
-  /**
-   * Log step timeout event (runtime phase)
-   */
-  stepTimeout(stepId: string, stepName: string, timeout: number): void {
-    this.logEvent({
-      type: EngineLogType.STEP_TIMEOUT,
-      timestamp: new Date(),
-      message: `Step "${stepName}" (${stepId}) timed out after ${timeout}ms`,
-      context: { timeout },
-      category: LogCategoryEnum.RUNTIME,
-      source: 'StepExecutor',
-    });
-  }
-
-  // ============================================================================
-  // EXPLANATION LOGGING
-  // ============================================================================
-
-  /**
-   * Log explanation generated event
-   */
-  /**
-   * Log explanation generated event (analysis phase)
-   */
-  explanationGenerated(workflowName: string, stepCount: number, strategy: string): void {
-    this.logEvent({
-      type: EngineLogType.EXPLANATION_GENERATED,
-      timestamp: new Date(),
-      message: `Explanation generated for "${workflowName}" (${stepCount} steps, ${strategy} strategy)`,
-      context: { workflowName, stepCount, strategy },
-      category: LogCategoryEnum.ANALYSIS,
-      source: 'ExplanationGenerator',
-    });
-  }
-
-  /**
-   * Log circular dependencies detected
-   */
-  /**
-   * Log circular dependencies detected (analysis phase)
-   */
-  explanationCycles(workflowName: string, cycles: string[][]): void {
-    this.logEvent({
-      type: EngineLogType.EXPLANATION_CYCLES,
-      timestamp: new Date(),
-      message: `Circular dependencies detected in "${workflowName}"`,
-      context: { cycles },
-      category: LogCategoryEnum.ANALYSIS,
-      source: 'ExplanationGenerator',
-    });
-  }
-
-  // ============================================================================
-  // ADAPTER & PLUGIN LOGGING
-  // ============================================================================
-
-  /**
-   * Log adapter loaded event
-   */
-  /**
-   * Log adapter loaded event (system phase)
-   */
-  adapterLoaded(adapterName: string, version?: string): void {
-    this.logEvent({
-      type: EngineLogType.ADAPTER_LOADED,
-      timestamp: new Date(),
-      message: `Adapter "${adapterName}" loaded${version ? ` (v${version})` : ''}`,
-      context: { adapterName, version },
-      category: LogCategoryEnum.SYSTEM,
-      source: 'AdapterRegistry',
-    });
-  }
-
-  /**
-   * Log adapter failed event
-   */
-  /**
-   * Log adapter failed event (system phase)
-   */
-  adapterFailed(adapterName: string, error: Error): void {
-    this.logEvent({
-      type: EngineLogType.ADAPTER_FAILED,
-      timestamp: new Date(),
-      message: `Adapter "${adapterName}" failed: ${error.message}`,
-      context: { adapterName },
-      error,
-      category: LogCategoryEnum.SYSTEM,
-      source: 'AdapterRegistry',
-    });
-  }
-
-  /**
-   * Log plugin installed event
-   */
-  /**
-   * Log plugin installed event (system phase)
-   */
-  pluginInstalled(pluginName: string, source: string): void {
-    this.logEvent({
-      type: EngineLogType.PLUGIN_INSTALLED,
-      timestamp: new Date(),
-      message: `Plugin "${pluginName}" installed from ${source}`,
-      context: { pluginName, source },
-      category: LogCategoryEnum.SYSTEM,
-      source: 'AdapterRegistry',
-    });
-  }
-
-  /**
-   * Log plugin verified event
-   */
-  /**
-   * Log plugin verified event (system phase)
-   */
-  pluginVerified(pluginName: string, verified: boolean): void {
-    this.logEvent({
-      type: EngineLogType.PLUGIN_VERIFIED,
-      timestamp: new Date(),
-      message: `Plugin "${pluginName}" verification: ${verified ? 'PASSED' : 'FAILED'}`,
-      context: { pluginName, verified },
-      category: LogCategoryEnum.SYSTEM,
-      source: 'AdapterRegistry',
-    });
-  }
-
-  // ============================================================================
-  // ERROR & DEBUG LOGGING
-  // ============================================================================
-
-  /**
-   * Log error detected event
-   */
-  /**
-   * Log error detected event (security phase)
-   */
-  errorDetected(error: Error, context?: Record<string, unknown>): void {
-    this.logEvent({
-      type: EngineLogType.ERROR_DETECTED,
-      timestamp: new Date(),
-      message: `Error detected: ${error.message}`,
-      context,
-      error,
-      category: LogCategoryEnum.SECURITY,
-      source: 'SecurityError',
-    });
-  }
-
-  /**
-   * Log error debugged event (with debugging info)
-   */
-  /**
-   * Log error debugged event (security phase)
-   */
-  errorDebugged(error: Error, debugInfo: { explanation: string; fixSteps: string[] }): void {
-    this.logEvent({
-      type: EngineLogType.ERROR_DEBUGGED,
-      timestamp: new Date(),
-      message: `Error debugged: ${error.message}`,
-      context: debugInfo,
-      error,
-      category: LogCategoryEnum.SECURITY,
-      source: 'SecurityError',
-    });
-  }
-
-  /**
-   * Log validation error event
-   */
-  /**
-   * Log validation error event (analysis phase)
-   */
-  validationError(message: string, errors: string[]): void {
-    this.logEvent({
-      type: EngineLogType.VALIDATION_ERROR,
-      timestamp: new Date(),
-      message,
-      context: { errors },
-      category: LogCategoryEnum.ANALYSIS,
-      source: 'WorkflowLoader',
-    });
-  }
-
-  // ============================================================================
-  // PERFORMANCE LOGGING
-  // ============================================================================
-
-  /**
-   * Log performance metric
-   */
-  /**
-   * Log performance metric (system phase)
-   */
-  performanceMetric(label: string, metrics: { duration?: number; memory?: number; cpu?: number }): void {
-    this.logEvent({
-      type: EngineLogType.PERFORMANCE_METRIC,
-      timestamp: new Date(),
-      message: `Performance: ${label}`,
-      metrics,
-      category: LogCategoryEnum.SYSTEM,
-      source: 'EngineLogger',
-    });
-  }
-
-  /**
-   * Log execution time
-   */
-  /**
-   * Log execution time (runtime phase)
-   */
-  executionTime(label: string, duration: number, context?: Record<string, unknown>): void {
-    this.logEvent({
-      type: EngineLogType.EXECUTION_TIME,
-      timestamp: new Date(),
-      message: `${label}: ${duration}ms`,
-      context,
-      metrics: { duration },
-      category: LogCategoryEnum.RUNTIME,
-      source: 'WorkflowExecutor',
-    });
-  }
-
-  // ============================================================================
-  // FIELD-LEVEL EXECUTION LOGGING (Dynamic Explanation)
-  // ============================================================================
-
-  /**
-   * Log field execution - captures every field that gets executed
-   * This enables dynamic explanation generation from runtime logs
-   */
-  fieldExecution(type: string, field: string, value: any, context?: Record<string, unknown>): void {
-    // Filter out internal fields (starting with _)
-    if (field.startsWith('_')) return;
-
-    this.debug(`[Field] ${type}.${field} = ${this.formatValue(value)}`, {
-      fieldType: type,
-      fieldName: field,
-      value: this.sanitizeValue(value),
-      ...context,
-    });
-  }
-
-  /**
-   * Log input processing
-   */
-  inputProcessed(inputName: string, value: any, source: string): void {
-    this.debug(`[Input] ${inputName} received from ${source}`, {
-      input: inputName,
-      source,
-      value: this.sanitizeValue(value),
-    });
-  }
-
-  /**
-   * Log output generation
-   */
-  outputGenerated(outputName: string, value: any, step?: string): void {
-    this.debug(`[Output] ${outputName} generated${step ? ` by ${step}` : ''}`, {
-      output: outputName,
-      step,
-      value: this.sanitizeValue(value),
-    });
-  }
-
-  /**
-   * Log context variable access
-   */
-  contextAccessed(variable: string, value: any, step: string): void {
-    this.debug(`[Context] ${variable} accessed by ${step}`, {
-      variable,
-      step,
-      value: this.sanitizeValue(value),
-    });
-  }
-
-  /**
-   * Log secret access (without exposing values)
-   */
-  secretAccessed(secretKey: string, step: string): void {
-    this.debug(`[Secret] ${secretKey} accessed by ${step}`, {
-      secretKey,
-      step,
-      exposed: false, // Never log secret values
-    });
-  }
-
-  /**
-   * Log variable resolution
-   */
-  variableResolved(variable: string, resolvedValue: any, context: Record<string, unknown>): void {
-    this.debug(`[Variable] ${variable} resolved`, {
-      variable,
-      resolved: this.sanitizeValue(resolvedValue),
-      ...context,
-    });
-  }
-
-  /**
-   * Log adapter action execution
-   */
-  adapterActionExecuted(adapter: string, action: string, duration: number, success: boolean): void {
-    const message = `[Adapter] ${adapter}.${action} ${success ? 'completed' : 'failed'} in ${duration}ms`;
-    const context = { adapter, action, duration, success };
-
-    if (success) {
-      this.info(message, context);
-    } else {
-      this.error(message, undefined, context);
-    }
-  }
-
-  // ============================================================================
-  // PARSING & VALIDATION LOGGING
-  // ============================================================================
-
-  /**
-   * Log parsing start
-   */
-  parsingStarted(source: string, format: string): void {
-    this.debug(`[Parser] Parsing ${format} from ${source}`, {
-      source,
-      format,
-    });
-  }
-
-  /**
-   * Log parsing success
-   */
-  parsingCompleted(source: string, duration: number, stats?: Record<string, unknown>): void {
-    this.info(`[Parser] Parsed successfully in ${duration}ms`, {
-      source,
-      duration,
-      ...stats,
-    });
-  }
-
-  /**
-   * Log parsing error
-   */
-  parsingFailed(source: string, error: Error, context?: Record<string, unknown>): void {
-    this.error(`[Parser] Parsing failed: ${error.message}`, error, {
-      source,
-      ...context,
-    });
-  }
-
-  /**
-   * Log validation start
-   */
-  validationStarted(target: string, type: string): void {
-    this.debug(`[Validator] Validating ${type}: ${target}`, {
-      target,
-      type,
-    });
-  }
-
-  /**
-   * Log validation success
-   */
-  validationPassed(target: string, type: string, duration?: number): void {
-    this.info(`[Validator] Validation passed: ${target}`, {
-      target,
-      type,
-      duration,
-    });
-  }
-
-  /**
-   * Log validation failure
-   */
-  validationFailed(target: string, type: string, errors: string[]): void {
-    this.error(`[Validator] Validation failed: ${target}`, undefined, {
-      target,
-      type,
-      errors,
-      errorCount: errors.length,
-    });
-  }
-
-  // ============================================================================
-  // ERROR DETECTION & DEBUGGING LOGGING
-  // ============================================================================
-
-  /**
-   * Log error enrichment (when ErrorDetector adds debugging info)
-   */
-  errorEnriched(error: Error, debugInfo: Record<string, unknown>): void {
-    this.debug(`[ErrorDetector] Error enriched with debugging info`, {
-      errorType: error.name,
-      errorMessage: error.message,
-      ...debugInfo,
-    });
-  }
-
-  /**
-   * Log error debugging output
-   */
-  errorDebugOutput(error: Error, explanation: string, fixSteps: string[]): void {
-    this.info(`[ErrorDebugger] Generated debugging output for ${error.name}`, {
-      errorType: error.name,
-      explanation,
-      fixSteps,
-      stepCount: fixSteps.length,
-    });
-  }
-
-  // ============================================================================
-  // EXECUTION PHASE LOGGING
-  // ============================================================================
-
-  /**
-   * Log execution phase start
-   */
-  phaseStarted(phase: number, stepIds: string[]): void {
-    this.info(`[Execution] Phase ${phase} started with ${stepIds.length} step(s)`, {
-      phase,
-      stepIds,
-      stepCount: stepIds.length,
-    });
-  }
-
-  /**
-   * Log execution phase completion
-   */
-  phaseCompleted(phase: number, duration: number, successCount: number, failureCount: number): void {
-    this.info(`[Execution] Phase ${phase} completed in ${duration}ms`, {
-      phase,
-      duration,
-      successCount,
-      failureCount,
-      totalSteps: successCount + failureCount,
-    });
-  }
-
-  // ============================================================================
-  // UTILITY METHODS
-  // ============================================================================
-
-  /**
-   * Format value for logging (truncate large values)
-   */
-  private formatValue(value: any): string {
-    if (value === null) return 'null';
-    if (value === undefined) return 'undefined';
-    if (typeof value === 'string') {
-      return value.length > 100 ? `${value.substring(0, 97)}...` : value;
-    }
-    if (typeof value === 'object') {
-      const str = JSON.stringify(value);
-      return str.length > 200 ? `${str.substring(0, 197)}...` : str;
-    }
-    return String(value);
-  }
-
-  /**
-   * Sanitize value for logging (remove sensitive data)
-   */
-  private sanitizeValue(value: any): any {
-    if (value === null || value === undefined) return value;
-
-    // For objects, recursively sanitize
-    if (typeof value === 'object' && !Array.isArray(value)) {
-      const sanitized: Record<string, any> = {};
-      for (const [key, val] of Object.entries(value)) {
-        // Skip internal fields
-        if (key.startsWith('_')) continue;
-
-        // Mask sensitive fields
-        if (this.isSensitiveField(key)) {
-          sanitized[key] = '***REDACTED***';
-        } else if (typeof val === 'object') {
-          sanitized[key] = this.sanitizeValue(val);
-        } else {
-          sanitized[key] = val;
-        }
-      }
-      return sanitized;
-    }
-
-    return value;
-  }
-
-  /**
-   * Check if field name suggests sensitive data
-   */
-  private isSensitiveField(fieldName: string): boolean {
-    const sensitivePatterns = [
-      'password', 'secret', 'token', 'key', 'credential',
-      'apikey', 'api_key', 'auth', 'private',
-    ];
-    const lowerField = fieldName.toLowerCase();
-    return sensitivePatterns.some(pattern => lowerField.includes(pattern));
+  fatal(message: string, error?: Error, context?: Record<string, unknown>): void {
+    this.log(LogLevel.FATAL, message, context, error);
   }
 
   /**
@@ -817,19 +269,22 @@ export class EngineLogger {
   }
 
   /**
-   * Measure and log execution time with appropriate log level based on duration
+   * Measure and log execution time with appropriate log level based on duration.
+   *
+   * Pass `category` to override (`'runtime'` during `run()`, `'analysis'` during `explain()`).
+   * Prefer `logger.runtime.measureExecution(...)` or `logger.analysis.measureExecution(...)`.
    */
   async measureExecution<T>(
     label: string,
     fn: () => Promise<T>,
-    thresholds?: { warn?: number; error?: number }
+    thresholds?: { warn?: number; error?: number },
+    category?: LogCategory,
   ): Promise<T> {
     const start = Date.now();
     try {
       const result = await fn();
       const duration = Date.now() - start;
 
-      // Choose log level based on duration thresholds
       let level = LogLevel.DEBUG;
       if (thresholds?.error && duration > thresholds.error) {
         level = LogLevel.ERROR;
@@ -839,204 +294,535 @@ export class EngineLogger {
         level = LogLevel.INFO;
       }
 
-      this.log(level, `${label} completed`, { duration: `${duration}ms` });
+      this._logWithCategory(level, `${label} completed`, { duration: `${duration}ms` }, undefined, category, EngineLogType.EXECUTION_TIME);
       return result;
     } catch (error) {
       const duration = Date.now() - start;
-      this.log(
+      this._logWithCategory(
         LogLevel.ERROR,
         `${label} failed`,
         { duration: `${duration}ms` },
-        error instanceof Error ? error : new Error(String(error))
+        error instanceof Error ? error : new Error(String(error)),
+        category,
+        EngineLogType.ERROR_DETECTED,
       );
       throw error;
     }
   }
 
-
+  // ─── Core log dispatch ────────────────────────────────────────────────────
 
   /**
-   * Log a structured engine event (category and source required)
-   * Uses EngineLog interface for strong typing.
+   * Central log dispatcher — used directly by `CategoryLogger` sub-loggers
+   * and by the private `log()` helper below.
+   *
+   * @param level            - Severity level
+   * @param message          - Human-readable message
+   * @param context          - Optional key-value metadata (merged with workflow ctx)
+   * @param error            - Optional error object
+   * @param categoryOverride - Pin to a specific category (defaults to config category)
+   * @param typeOverride     - Explicit `EngineLogType`; inferred from level when omitted
+   *
+   * @internal  Called via sub-loggers (`runtime`, `analysis`, etc.) or internally.
    */
-  private logEvent(event: EngineLogEvent): void {
-    // Validate category and source
-    if (!event.category || !event.source) {
-      throw new Error('Log event must have a category and source');
-    }
-    // Add to JSON buffer (always, regardless of log level)
-    this.addToBuffer(event);
+  _logWithCategory(
+    level: LogLevel,
+    message: string,
+    context?: Record<string, unknown>,
+    error?: Error,
+    categoryOverride?: LogCategory,
+    typeOverride?: EngineLogType,
+  ): void {
+    if (!this.shouldLogLevel(level)) return;
 
-    // Emit event to listeners if structured events enabled
-    if (this.config.structuredEvents) {
-      this.emitEvent(event);
-    }
-
-    // Determine log level based on event type
-    const level = this.getLogLevelForEventType(event.type);
-
-    // Check if this level should be logged
-    if (!this.shouldLogLevel(level)) {
-      return;
-    }
-
-    // Build context with metrics if present
-    const fullContext = {
-      ...event.context,
-      ...(event.metrics && { metrics: event.metrics }),
+    // Map severity level → structured event type
+    const typeMap: Partial<Record<LogLevel, EngineLogType>> = {
+      [LogLevel.DEBUG]: EngineLogType.DEBUG,
+      [LogLevel.INFO]: EngineLogType.INFO,
+      [LogLevel.WARN]: EngineLogType.WARNING,
+      [LogLevel.ERROR]: EngineLogType.ERROR_DETECTED,
+      [LogLevel.FATAL]: EngineLogType.ERROR,
     };
+    const eventType = typeOverride ?? typeMap[level] ?? EngineLogType.INFO;
+    const category = categoryOverride ?? this.config.category;
 
-    // Log through standard log method
-    this.log(level, event.message, fullContext, event.error, event.category, event.source);
-  }
+    // Automatically merge workflow context so every log carries the active workflow
+    const enrichedContext: Record<string, unknown> = {};
+    if (this.workflowContext) {
+      enrichedContext['workflow'] = { ...this.workflowContext };
+    }
+    if (context) {
+      Object.assign(enrichedContext, context);
+    }
+    const finalContext = Object.keys(enrichedContext).length > 0 ? enrichedContext : undefined;
 
-  /**
-   * Get appropriate log level for event type
-   */
-  private getLogLevelForEventType(type: EngineLogType): LogLevel {
-    // Error events
-    if (type.includes('failed') || type.includes('error') || type.includes('timeout')) {
-      return LogLevel.ERROR;
-    }
-    // Warning events
-    if (type.includes('retry') || type.includes('cycles') || type === EngineLogType.WARNING) {
-      return LogLevel.WARN;
-    }
-    // Debug events
-    if (type === EngineLogType.DEBUG || type.includes('debug')) {
-      return LogLevel.DEBUG;
-    }
-    // Default to INFO
-    return LogLevel.INFO;
-  }
-
-  /**
-   * Emit event to registered listeners
-   */
-  private emitEvent(event: EngineLogEvent): void {
-    const listeners = this.eventListeners.get(event.type) || [];
-    for (const listener of listeners) {
-      try {
-        listener(event);
-      } catch (error) {
-        // Don't let listener errors crash the logger
-        console.error('Error in log event listener:', error);
-      }
-    }
-
-    // Also emit to wildcard listeners
-    const wildcardListeners = this.eventListeners.get(EngineLogType.INFO) || [];
-    for (const listener of wildcardListeners) {
-      try {
-        listener(event);
-      } catch (error) {
-        console.error('Error in wildcard log event listener:', error);
-      }
-    }
-  }
-
-  /**
-   * Subscribe to specific log event types
-   */
-  on(type: EngineLogType, listener: (event: EngineLogEvent) => void): () => void {
-    if (!this.eventListeners.has(type)) {
-      this.eventListeners.set(type, []);
-    }
-    this.eventListeners.get(type)!.push(listener);
-
-    // Return unsubscribe function
-    return () => {
-      const listeners = this.eventListeners.get(type);
-      if (listeners) {
-        const index = listeners.indexOf(listener);
-        if (index > -1) {
-          listeners.splice(index, 1);
-        }
-      }
+    // Record in history
+    const event: EngineLogEvent = {
+      type: eventType,
+      timestamp: new Date(),
+      message,
+      category,
+      source: this.config.source,
+      context: finalContext,
+      error,
     };
+    this.logHistory.push(event);
+
+    // Ring-buffer: drop the oldest entry when the limit is reached.
+    // A maxHistorySize of 0 means unbounded (no trimming).
+    if (this.config.maxHistorySize > 0 && this.logHistory.length > this.config.maxHistorySize) {
+      this.logHistory.shift();
+    }
+
+    // Build + emit formatted entry
+    const entry: LogEntry = createLogEntry(level, message, {
+      source: this.config.source,
+      context: finalContext,
+      error,
+    });
+    const formatted = formatLog(entry, this.formatOptions);
+    console.log(formatted);
   }
 
   /**
-   * Internal log method
-   */
-  /**
-   * Internal log method (category and source required)
-   */
-  /**
-   * Internal log method (category and source required)
-   * Uses EngineLog interface for strong typing.
+   * Private shorthand — uses the default category from config.
+   * Prefer the categorised sub-loggers (`runtime`, `analysis`, etc.) for new code.
    */
   private log(
     level: LogLevel,
     message: string,
     context?: Record<string, unknown>,
     error?: Error,
-    category: LogCategory = LogCategoryEnum.SYSTEM,
-    source?: string
   ): void {
-    // Check if this level should be logged (using severity for better performance)
-    if (!this.shouldLogLevel(level)) {
-      return;
+    this._logWithCategory(level, message, context, error);
+  }
+
+  // ─── Log History ────────────────────────────────────────────────────
+
+  /**
+   * Export collected logs as a structured ExportedLogs object.
+   * Includes `byCategory` statistics and the active `workflowContext` snapshot.
+   */
+  exportLogs(): ExportedLogs {
+    const grouped: Record<string, EngineLogEvent[]> = {};
+    let withErrors = 0;
+    let withMetrics = 0;
+    let first: Date | undefined;
+    let last: Date | undefined;
+    const byType: Record<string, number> = {};
+    const byCategory: Record<string, number> = {};
+
+    for (const event of this.logHistory) {
+      const typeKey = event.type as string;
+      grouped[typeKey] = grouped[typeKey] ? [...grouped[typeKey], event] : [event];
+      byType[typeKey] = (byType[typeKey] ?? 0) + 1;
+      byCategory[event.category] = (byCategory[event.category] ?? 0) + 1;
+      if (event.error) withErrors++;
+      if (event.metrics) withMetrics++;
+      if (!first || event.timestamp < first) first = event.timestamp;
+      if (!last || event.timestamp > last) last = event.timestamp;
     }
 
-    // Create log entry
-    const entry: LogEntry = createLogEntry(level, message, {
-      source: this.config.source,
-      context,
+    return {
+      raw: [...this.logHistory],
+      grouped,
+      workflowContext: this.workflowContext ?? undefined,
+      stats: {
+        total: this.logHistory.length,
+        byType,
+        byCategory,
+        withErrors,
+        withMetrics,
+        timeRange: { first, last },
+      },
+    };
+  }
+
+  /**
+   * Get all collected logs as a JSON string
+   */
+  getJSONLogs(): string {
+    return JSON.stringify(this.exportLogs(), null, 2);
+  }
+
+  /**
+   * Clear the log history (does NOT clear the workflow context)
+   */
+  clearHistory(): void {
+    this.logHistory = [];
+  }
+
+  // ─── Workflow Context ─────────────────────────────────────────────────────
+
+  /**
+   * Attach workflow context so every subsequent log entry automatically
+   * includes a `workflow` field.  Call this before `run()`, `explain()`,
+   * or `validate()` with the parsed workflow data.
+   *
+   * ```typescript
+   * logger.setWorkflowContext({
+   *   name:        workflow.name,
+   *   version:     workflow.version,
+   *   kind:        workflow.kind,
+   *   stepCount:   workflow.steps.length,
+   *   filePath:    resolvedPath,
+   * });
+   * ```
+   */
+  setWorkflowContext(ctx: WorkflowContext): void {
+    this.workflowContext = { ...ctx };
+  }
+
+  /**
+   * Detach the workflow context (e.g. after a run completes).
+   * Logs emitted after this call will no longer include the `workflow` field.
+   */
+  clearWorkflowContext(): void {
+    this.workflowContext = null;
+  }
+
+  /**
+   * Returns a read-only snapshot of the currently active workflow context,
+   * or `null` if none has been set.
+   */
+  getWorkflowContext(): Readonly<WorkflowContext> | null {
+    return this.workflowContext ? { ...this.workflowContext } : null;
+  }
+
+  /**
+   * Partially update the active workflow context without replacing it.
+   * Only the supplied fields are merged in; the rest are preserved.
+   *
+   * Useful for enriching the context mid-run (e.g. after the execution
+   * strategy is determined):
+   *
+   * ```typescript
+   * logger.patchWorkflowContext({ executionStrategy: 'parallel' });
+   * ```
+   *
+   * If no context has been set yet, the patch is applied as if it were
+   * a fresh `setWorkflowContext` call.
+   */
+  patchWorkflowContext(partial: Partial<WorkflowContext>): void {
+    this.workflowContext = { ...(this.workflowContext ?? {}), ...partial };
+  }
+
+  // ─── Dynamic Context Helpers ──────────────────────────────────────────────
+
+  /**
+   * Build a log-context object for a step event.
+   *
+   * Use this wherever you log step lifecycle events so context is consistent:
+   * ```typescript
+   * logger.runtime.info('Step started', logger.stepCtx({ id: step.id, adapter: step.adapter }));
+   * logger.runtime.error('Step failed', error, logger.stepCtx({ id: step.id, adapter: step.adapter }));
+   * ```
+   */
+  stepCtx(step: {
+    id: string;
+    adapter?: string;
+    name?: string;
+    [extra: string]: unknown;
+  }): Record<string, unknown> {
+    const ctx: Record<string, unknown> = { stepId: step.id };
+    if (step.adapter) ctx['adapter'] = step.adapter;
+    if (step.name) ctx['stepName'] = step.name;
+    // Forward any extra fields the caller added
+    for (const [k, v] of Object.entries(step)) {
+      if (k !== 'id' && k !== 'adapter' && k !== 'name') ctx[k] = v;
+    }
+    return ctx;
+  }
+
+  /**
+   * Build a log-context object for a workflow-level event.
+   *
+   * Returns a flat object suitable for passing as `context` to any log call.
+   * If no workflow context is set, returns `{}`.
+   *
+   * ```typescript
+   * logger.system.info('Workflow validated', logger.workflowCtx());
+   * ```
+   */
+  workflowCtx(): Record<string, unknown> {
+    return this.workflowContext ? { ...this.workflowContext } : {};
+  }
+
+  // ─── Dynamic Lifecycle Helpers ────────────────────────────────────────────
+
+  /**
+   * Log workflow execution started (runtime category).
+   * Called at the top of `WorkflowExecutor.execute()`.
+   */
+  workflowStarted(workflowName: string, context?: Record<string, unknown>): void {
+    this.runtime.info(`Workflow "${workflowName}" started`, { workflowName, ...context });
+  }
+
+  /**
+   * Log a workflow input field that was resolved (runtime category).
+   */
+  inputProcessed(key: string, value: unknown, source: string): void {
+    this.runtime.debug(`Input resolved: ${key}`, { key, value, source });
+  }
+
+  /**
+   * Log a context field used during execution (runtime category).
+   */
+  fieldExecution(fieldType: string, key: string, value: unknown): void {
+    this.runtime.debug(`Context field accessed: ${fieldType}.${key}`, { fieldType, key, value });
+  }
+
+  /**
+   * Log step execution started (runtime category).
+   * ```typescript
+   * logger.stepStarted(step.id, step.name, { adapter: step.adapter });
+   * ```
+   */
+  stepStarted(stepId: string, stepName: string, context?: Record<string, unknown>): void {
+    this._logWithCategory(
+      LogLevel.INFO,
+      `Step "${stepName}" (${stepId}) started`,
+      { stepId, stepName, ...context },
+      undefined,
+      LogCategoryEnum.RUNTIME,
+      EngineLogType.STEP_STARTED,
+    );
+  }
+
+  /**
+   * Log step execution completed (runtime category).
+   */
+  stepCompleted(stepId: string, stepName: string, duration: number, context?: Record<string, unknown>): void {
+    this._logWithCategory(
+      LogLevel.INFO,
+      `Step "${stepName}" (${stepId}) completed in ${duration}ms`,
+      { stepId, stepName, duration, ...context },
+      undefined,
+      LogCategoryEnum.RUNTIME,
+      EngineLogType.STEP_COMPLETED,
+    );
+  }
+
+  /**
+   * Log step timeout (runtime category).
+   */
+  stepTimeout(stepId: string, stepName: string, timeoutMs: number): void {
+    this._logWithCategory(
+      LogLevel.WARN,
+      `Step "${stepName}" (${stepId}) timed out after ${timeoutMs}ms`,
+      { stepId, stepName, timeoutMs },
+      undefined,
+      LogCategoryEnum.RUNTIME,
+      EngineLogType.STEP_TIMEOUT,
+    );
+  }
+
+  /**
+   * Log step retry attempt (runtime category).
+   */
+  stepRetry(stepId: string, stepName: string, attempt: number, maxAttempts: number): void {
+    this._logWithCategory(
+      LogLevel.WARN,
+      `Step "${stepName}" (${stepId}) retrying — attempt ${attempt}/${maxAttempts}`,
+      { stepId, stepName, attempt, maxAttempts },
+      undefined,
+      LogCategoryEnum.RUNTIME,
+      EngineLogType.STEP_RETRY,
+    );
+  }
+
+  /**
+   * Log step failure after all attempts (runtime category).
+   */
+  stepFailed(stepId: string, stepName: string, error: Error, context?: Record<string, unknown>): void {
+    this._logWithCategory(
+      LogLevel.ERROR,
+      `Step "${stepName}" (${stepId}) failed: ${error.message}`,
+      { stepId, stepName, ...context },
       error,
+      LogCategoryEnum.RUNTIME,
+      EngineLogType.STEP_FAILED,
+    );
+  }
+
+  /**
+   * Log adapter action execution result (runtime category).
+   */
+  adapterActionExecuted(adapter: string, action: string, duration: number, success: boolean): void {
+    const level = success ? LogLevel.DEBUG : LogLevel.WARN;
+    this._logWithCategory(
+      level,
+      `Adapter "${adapter}" action "${action}" ${success ? 'succeeded' : 'failed'} in ${duration}ms`,
+      { adapter, action, duration, success },
+      undefined,
+      LogCategoryEnum.RUNTIME,
+      EngineLogType.EXECUTION_TIME,
+    );
+  }
+
+  /**
+   * Log validation phase started (analysis category).
+   */
+  validationStarted(type: string, schema: string): void {
+    this._logWithCategory(
+      LogLevel.DEBUG,
+      `Validation started: ${type} against ${schema} schema`,
+      { type, schema },
+      undefined,
+      LogCategoryEnum.ANALYSIS,
+      EngineLogType.WORKFLOW_VALIDATION,
+    );
+  }
+
+  /**
+   * Log validation passed (analysis category).
+   */
+  validationPassed(type: string, schema: string): void {
+    this._logWithCategory(
+      LogLevel.INFO,
+      `Validation passed: ${type} (${schema})`,
+      { type, schema },
+      undefined,
+      LogCategoryEnum.ANALYSIS,
+      EngineLogType.WORKFLOW_VALIDATION,
+    );
+  }
+
+  /**
+   * Log validation failure (analysis category).
+   */
+  validationFailed(type: string, schema: string, errors: string[]): void {
+    this._logWithCategory(
+      LogLevel.ERROR,
+      `Validation failed: ${type} (${schema}) — ${errors.length} error(s)`,
+      { type, schema, errors },
+      undefined,
+      LogCategoryEnum.ANALYSIS,
+      EngineLogType.VALIDATION_ERROR,
+    );
+  }
+
+  /**
+   * Log parsing started (analysis category).
+   */
+  parsingStarted(format: string, source: string): void {
+    this._logWithCategory(
+      LogLevel.DEBUG,
+      `Parsing started: ${format} from ${source}`,
+      { format, source },
+      undefined,
+      LogCategoryEnum.ANALYSIS,
+      EngineLogType.INFO,
+    );
+  }
+
+  /**
+   * Log parsing completed (analysis category).
+   */
+  parsingCompleted(format: string, duration: number, context?: Record<string, unknown>): void {
+    this._logWithCategory(
+      LogLevel.INFO,
+      `Parsing completed: ${format} in ${duration}ms`,
+      { format, duration, ...context },
+      undefined,
+      LogCategoryEnum.ANALYSIS,
+      EngineLogType.INFO,
+    );
+  }
+
+  /**
+   * Log parsing failure (analysis category).
+   */
+  parsingFailed(format: string, error: Error, context?: Record<string, unknown>): void {
+    this._logWithCategory(
+      LogLevel.ERROR,
+      `Parsing failed: ${format} — ${error.message}`,
+      { format, ...context },
+      error,
+      LogCategoryEnum.ANALYSIS,
+      EngineLogType.ERROR_DETECTED,
+    );
+  }
+
+  // ─── Typed Event Logger ───────────────────────────────────────────────────
+
+  /**
+   * Emit a log with an explicit `EngineLogType`.
+   *
+   * Useful when you want the structured event type to be distinct from the
+   * generic level-based inference — e.g. to mark a `STEP_RETRY` event:
+   *
+   * ```typescript
+   * logger.logEvent(EngineLogType.STEP_RETRY, LogLevel.WARN, 'Retrying step', {
+   *   stepId: 'http-request',
+   *   attempt: 2,
+   * }, 'runtime');
+   * ```
+   */
+  logEvent(
+    type: EngineLogType,
+    level: LogLevel,
+    message: string,
+    context?: Record<string, unknown>,
+    category?: LogCategory,
+  ): void {
+    this._logWithCategory(level, message, context, undefined, category, type);
+  }
+
+  // ─── History Queries ──────────────────────────────────────────────────────
+
+  /**
+   * Return log events that match every supplied filter field.
+   * Omit a field to skip that filter.
+   *
+   * ```typescript
+   * // All runtime errors for the current workflow
+   * logger.filterHistory({ category: 'runtime', withErrors: true });
+   *
+   * // All analysis events since the explain started
+   * const since = new Date();
+   * logger.filterHistory({ category: 'analysis', since });
+   * ```
+   */
+  filterHistory(filter: {
+    category?: LogCategory;
+    type?: EngineLogType;
+    since?: Date;
+    until?: Date;
+    source?: string;
+    /** Filter to logs that contain a specific workflow name */
+    workflowName?: string;
+    /** Only return events that have an error attached */
+    withErrors?: boolean;
+  } = {}): EngineLogEvent[] {
+    return this.logHistory.filter(event => {
+      if (filter.category && event.category !== filter.category) return false;
+      if (filter.type && event.type !== filter.type) return false;
+      if (filter.since && event.timestamp < filter.since) return false;
+      if (filter.until && event.timestamp > filter.until) return false;
+      if (filter.source && event.source !== filter.source) return false;
+      if (filter.withErrors && !event.error) return false;
+      if (filter.workflowName) {
+        const wf = event.context?.['workflow'] as Record<string, unknown> | undefined;
+        if (!wf || wf['name'] !== filter.workflowName) return false;
+      }
+      return true;
     });
-
-    // Add basic logs to buffer as well (for comprehensive JSON output)
-    // Use EngineLog type for legacy compatibility
-    const logLegacy: EngineLog = {
-      timestamp: Date.now(),
-      level: this.mapLogLevelToString(level),
-      category: category || this.config.category,
-      source: source || this.config.source,
-      message,
-      context,
-    };
-    // Actually use logLegacy: output to console for legacy consumers
-    console.debug('Legacy log:', logLegacy);
-    // Also create EngineLogEvent for event system
-    const logEvent: EngineLogEvent = {
-      type: EngineLogType.INFO,
-      timestamp: new Date(),
-      message,
-      category: category || this.config.category,
-      source: source || this.config.source,
-      context,
-      ...(error ? { error } : {}),
-    };
-    this.addToBuffer(logEvent);
-    // Optionally: expose legacy log for debugging
-    // console.debug('Legacy log:', logLegacy);
-
-    // Format and output
-    const formatted = formatLog(entry, this.formatOptions);
-    console.log(formatted);
   }
 
   /**
-   * Map LogLevel to EngineLogType
+   * Return all history entries grouped by category.
+   * Convenience wrapper around `filterHistory`.
    */
-  /**
-   * Map LogLevel to string for EngineLog.level
-   */
-  private mapLogLevelToString(level: LogLevel): 'info' | 'warn' | 'error' {
-    switch (level) {
-      case LogLevel.DEBUG:
-      case LogLevel.INFO:
-        return 'info';
-      case LogLevel.WARN:
-        return 'warn';
-      case LogLevel.ERROR:
-      case LogLevel.FATAL:
-        return 'error';
-      default:
-        return 'info';
+  getHistoryByCategory(): Record<LogCategory, EngineLogEvent[]> {
+    const result: Record<string, EngineLogEvent[]> = {};
+    for (const event of this.logHistory) {
+      result[event.category] = result[event.category] ?? [];
+      result[event.category].push(event);
     }
+    return result as Record<LogCategory, EngineLogEvent[]>;
   }
+
 
   /**
    * Check if a level should be logged using severity comparison
@@ -1181,357 +967,47 @@ export class EngineLogger {
   isErrorEnabled(): boolean {
     return this.willLog(LogLevel.ERROR);
   }
-
-  // ============================================================================
-  // JSON LOG BUFFER MANAGEMENT
-  // ============================================================================
-
-  /**
-   * Add event to JSON log buffer
-   */
-  private addToBuffer(event: EngineLogEvent): void {
-    // Add to buffer
-    this.logBuffer.push(event);
-
-    // Prevent buffer overflow
-    if (this.logBuffer.length > this.maxBufferSize) {
-      this.logBuffer.shift(); // Remove oldest log
-    }
-  }
-
-  /**
-   * Get all logs as JSON array
-   * This is what CLI, API, dashboards, and explanation system will consume
-   */
-  getJSONLogs(): EngineLogEvent[] {
-    return [...this.logBuffer]; // Return copy to prevent external mutations
-  }
-
-  /**
-   * Get logs filtered by type
-   */
-  getLogsByType(type: EngineLogType): EngineLogEvent[] {
-    return this.logBuffer.filter(log => log.type === type);
-  }
-
-  /**
-   * Get logs filtered by time range
-   */
-  getLogsByTimeRange(startTime: Date, endTime: Date): EngineLogEvent[] {
-    return this.logBuffer.filter(
-      log => log.timestamp >= startTime && log.timestamp <= endTime
-    );
-  }
-
-  /**
-   * Get logs filtered by multiple criteria
-   */
-  getLogsFiltered(filter: {
-    types?: EngineLogType[];
-    startTime?: Date;
-    endTime?: Date;
-    hasError?: boolean;
-    searchText?: string;
-  }): EngineLogEvent[] {
-    let filtered = this.logBuffer;
-
-    if (filter.types) {
-      filtered = filtered.filter(log => filter.types!.includes(log.type));
-    }
-
-    if (filter.startTime) {
-      filtered = filtered.filter(log => log.timestamp >= filter.startTime!);
-    }
-
-    if (filter.endTime) {
-      filtered = filtered.filter(log => log.timestamp <= filter.endTime!);
-    }
-
-    if (filter.hasError !== undefined) {
-      filtered = filtered.filter(log => filter.hasError ? !!log.error : !log.error);
-    }
-
-    if (filter.searchText) {
-      const searchLower = filter.searchText.toLowerCase();
-      filtered = filtered.filter(log =>
-        log.message.toLowerCase().includes(searchLower)
-      );
-    }
-
-    return filtered;
-  }
-
-  /**
-   * Get logs by category: Parse events
-   */
-  getParseLogEvents(): ParseLogEvent[] {
-    return this.logBuffer.filter(log =>
-      log.type === EngineLogType.WORKFLOW_VALIDATION
-    ) as ParseLogEvent[];
-  }
-
-  /**
-   * Get logs by category: Validation events
-   */
-  getValidationLogEvents(): ValidationLogEvent[] {
-    return this.logBuffer.filter(log =>
-      log.type === EngineLogType.WORKFLOW_VALIDATION ||
-      log.type === EngineLogType.VALIDATION_ERROR
-    ) as ValidationLogEvent[];
-  }
-
-  /**
-   * Get logs by category: Execution events
-   */
-  getExecutionLogEvents(): ExecutionLogEvent[] {
-    return this.logBuffer.filter(log =>
-      log.type === EngineLogType.WORKFLOW_STARTED ||
-      log.type === EngineLogType.WORKFLOW_COMPLETED ||
-      log.type === EngineLogType.WORKFLOW_FAILED ||
-      log.type === EngineLogType.STEP_STARTED ||
-      log.type === EngineLogType.STEP_COMPLETED ||
-      log.type === EngineLogType.STEP_FAILED ||
-      log.type === EngineLogType.STEP_RETRY ||
-      log.type === EngineLogType.STEP_TIMEOUT ||
-      log.type === EngineLogType.EXECUTION_TIME ||
-      log.type === EngineLogType.QUEUE_PROCESSING
-    ) as ExecutionLogEvent[];
-  }
-
-  /**
-   * Get logs by category: Error events
-   */
-  getErrorLogEvents(): ErrorLogEvent[] {
-    return this.logBuffer.filter(log =>
-      log.type === EngineLogType.ERROR_DETECTED ||
-      log.type === EngineLogType.ERROR_DEBUGGED ||
-      log.type === EngineLogType.VALIDATION_ERROR ||
-      log.type === EngineLogType.WORKFLOW_FAILED ||
-      log.type === EngineLogType.STEP_FAILED ||
-      log.type === EngineLogType.ADAPTER_FAILED ||
-      log.type === EngineLogType.ERROR
-    ) as ErrorLogEvent[];
-  }
-
-  /**
-   * Get logs by category: Lifecycle events
-   */
-  getLifecycleLogEvents(): LifecycleLogEvent[] {
-    return this.logBuffer.filter(log =>
-      log.type === EngineLogType.ENGINE_STARTED ||
-      log.type === EngineLogType.ENGINE_STOPPED ||
-      log.type === EngineLogType.ADAPTER_LOADED ||
-      log.type === EngineLogType.PLUGIN_INSTALLED ||
-      log.type === EngineLogType.PLUGIN_VERIFIED
-    ) as LifecycleLogEvent[];
-  }
-
-  /**
-   * Get logs by category: Performance events
-   */
-  getPerformanceLogEvents(): PerformanceLogEvent[] {
-    return this.logBuffer.filter(log =>
-      log.type === EngineLogType.PERFORMANCE_METRIC ||
-      log.type === EngineLogType.EXECUTION_TIME
-    ) as PerformanceLogEvent[];
-  }
-
-  /**
-   * Export logs as formatted JSON string
-   */
-  exportLogsAsJSON(pretty: boolean = true): string {
-    return JSON.stringify(this.logBuffer, null, pretty ? 2 : 0);
-  }
-
-  /**
-   * Export logs grouped by type
-   */
-  exportLogsGrouped(): Record<string, EngineLogEvent[]> {
-    const grouped: Record<string, EngineLogEvent[]> = {};
-
-    for (const log of this.logBuffer) {
-      const type = log.category;
-      if (!grouped[type]) {
-        grouped[type] = [];
-      }
-      grouped[type].push(log);
-    }
-
-    return grouped;
-  }
-
-  /**
-   * Get log statistics
-   */
-  getLogStats(): {
-    total: number;
-    byType: Record<string, number>;
-    withErrors: number;
-    withMetrics: number;
-    timeRange: { first?: Date; last?: Date };
-  } {
-    const stats = {
-      total: this.logBuffer.length,
-      byType: {} as Record<string, number>,
-      withErrors: 0,
-      withMetrics: 0,
-      timeRange: {
-        first: this.logBuffer[0]?.timestamp,
-        last: this.logBuffer[this.logBuffer.length - 1]?.timestamp,
-      },
-    };
-
-    for (const log of this.logBuffer) {
-      // Count by type
-      stats.byType[log.type] = (stats.byType[log.type] || 0) + 1;
-
-      // Count errors and metrics
-      if (log.error) stats.withErrors++;
-      if (log.metrics) stats.withMetrics++;
-    }
-
-    return stats;
-  }
-
-  /**
-   * Clear log buffer
-   */
-  clearLogs(): void {
-    this.logBuffer = [];
-  }
-
-  /**
-   * Set maximum buffer size
-   */
-  setMaxBufferSize(size: number): void {
-    this.maxBufferSize = size;
-    // Trim buffer if needed
-    while (this.logBuffer.length > this.maxBufferSize) {
-      this.logBuffer.shift();
-    }
-  }
-
-  /**
-   * Get current buffer size
-   */
-  getBufferSize(): number {
-    return this.logBuffer.length;
-  }
-
-  /**
-   * Export logs in a comprehensive format for consumers (CLI, API, dashboards)
-   */
-  exportLogs(): ExportedLogs {
-    const stats = this.getLogStats();
-    const grouped = this.exportLogsGrouped();
-
-    // Build execution summary from logs
-    const execution = this.buildExecutionSummary();
-
-    return {
-      raw: this.getJSONLogs(),
-      grouped,
-      stats,
-      execution,
-    };
-  }
-
-  /**
-   * Build execution summary from collected logs
-   * This powers dynamic explanation generation
-   */
-  private buildExecutionSummary(): ExportedLogs['execution'] {
-    const workflowLogs = this.logBuffer.filter(log =>
-      log.type === EngineLogType.WORKFLOW_STARTED ||
-      log.type === EngineLogType.WORKFLOW_COMPLETED ||
-      log.type === EngineLogType.WORKFLOW_FAILED
-    );
-
-    const stepLogs = this.logBuffer.filter(log =>
-      log.type === EngineLogType.STEP_STARTED ||
-      log.type === EngineLogType.STEP_COMPLETED ||
-      log.type === EngineLogType.STEP_FAILED
-    );
-
-    const errorLogs = this.logBuffer.filter(log =>
-      log.error !== undefined ||
-      log.type === EngineLogType.ERROR_DETECTED ||
-      log.type === EngineLogType.VALIDATION_ERROR
-    );
-
-    const metricLogs = this.logBuffer.filter(log =>
-      log.type === EngineLogType.PERFORMANCE_METRIC ||
-      log.type === EngineLogType.EXECUTION_TIME
-    );
-
-    // Extract workflow info
-    let workflow: { name: string; status: string; duration?: number } | undefined;
-    const workflowStarted = workflowLogs.find(log => log.type === EngineLogType.WORKFLOW_STARTED);
-    const workflowEnded = workflowLogs.find(log =>
-      log.type === EngineLogType.WORKFLOW_COMPLETED ||
-      log.type === EngineLogType.WORKFLOW_FAILED
-    );
-
-    if (workflowStarted && workflowEnded) {
-      workflow = {
-        name: workflowStarted.context?.workflowName as string || 'Unknown',
-        status: workflowEnded.type === EngineLogType.WORKFLOW_COMPLETED ? 'completed' : 'failed',
-        duration: workflowEnded.metrics?.duration,
-      };
-    }
-
-    // Extract step info
-    const steps: Array<{ id: string; name: string; status: string; duration?: number }> = [];
-    const stepMap = new Map<string, any>();
-
-    for (const log of stepLogs) {
-      const stepId = log.context?.stepId as string || '';
-      const stepName = log.context?.stepName as string || '';
-
-      if (!stepMap.has(stepId)) {
-        stepMap.set(stepId, { id: stepId, name: stepName });
-      }
-
-      const step = stepMap.get(stepId);
-
-      if (log.type === EngineLogType.STEP_COMPLETED) {
-        step.status = 'completed';
-        step.duration = log.metrics?.duration;
-      } else if (log.type === EngineLogType.STEP_FAILED) {
-        step.status = 'failed';
-      } else {
-        step.status = 'started';
-      }
-    }
-
-    steps.push(...stepMap.values());
-
-    // Extract error info
-    const errors = errorLogs.map(log => ({
-      step: log.context?.stepId as string || log.context?.stepName as string,
-      message: log.message,
-      error: log.error,
-    }));
-
-    // Extract metrics
-    const metrics = metricLogs.map(log => ({
-      label: log.context?.label as string || 'Unknown',
-      duration: log.metrics?.duration,
-      memory: log.metrics?.memory,
-    }));
-
-    return {
-      workflow,
-      steps,
-      errors,
-      metrics,
-    };
-  }
 }
 
 /**
  * Create a logger instance from engine config
  */
-export function createEngineLogger(config: EngineLoggerConfig): EngineLogger {
-  return new EngineLogger(config);
+export function createEngineLogger(
+  logLevel: 'debug' | 'info' | 'warn' | 'error' | 'silent',
+  verbose: boolean = false
+): EngineLogger | null {
+  // Silent mode - no logger
+  if (logLevel === 'silent') {
+    return null;
+  }
+
+  // Map engine log level to ecosystem LogLevel
+  const levelMap: Record<string, LogLevel> = {
+    debug: LogLevel.DEBUG,
+    info: LogLevel.INFO,
+    warn: LogLevel.WARN,
+    error: LogLevel.ERROR,
+    fatal: LogLevel.FATAL,
+  };
+
+  const level = levelMap[logLevel] || LogLevel.INFO;
+
+  return new EngineLogger({
+    level,
+    format: verbose ? 'pretty' : 'json',
+    colors: true,
+    timestamp: true,
+    source: 'Orbyt',
+    category: LogCategoryEnum.SYSTEM,
+    structuredEvents: true,
+  });
 }
+
+// Re-export types consumed by other engine modules
+export type { EngineLoggerConfig, EngineLogFormat };
+
+/**
+ * Re-export formatTimestamp for external use
+ * Allows other parts of the system to format timestamps consistently
+ */
+export { formatTimestamp };

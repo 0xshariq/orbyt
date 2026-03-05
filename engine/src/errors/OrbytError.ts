@@ -26,6 +26,40 @@ import {
 } from './ErrorCodes.js';
 import { OrbytErrorDiagnostic } from '../types/core-types.js';
 
+// ─── Shared debug-info type ───────────────────────────────────────────────────
+// Lives at Layer 0 (OrbytError) so typed error constructors (Layer 2) can
+// reference it without importing from ErrorDebugger (Layer 3), which would
+// create an upward dependency across layers.
+
+/**
+ * Structured debug information produced by ErrorDebugger and stored on
+ * WorkflowError factory classes.
+ *
+ * Consumers should obtain instances via ErrorDetector (which calls
+ * ErrorDebugger internally) rather than building them manually.
+ */
+export interface ErrorDebugInfo {
+  /** Plain English explanation of what went wrong */
+  explanation: string;
+  /** Why this error occurred (root cause) */
+  cause: string;
+  /** Step-by-step fix instructions */
+  fixSteps: string[];
+  /** Common mistakes that lead to this error */
+  commonMistakes?: string[];
+  /** Related documentation links */
+  docsLinks?: string[];
+  /** Example of correct usage */
+  example?: {
+    description: string;
+    code: string;
+  };
+  /** Whether this requires immediate action */
+  urgent: boolean;
+  /** Estimated time to fix */
+  estimatedFixTime?: string;
+}
+
 /**
  * Base error class for all Orbyt errors
  * 

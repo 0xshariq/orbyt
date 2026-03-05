@@ -1,2 +1,2 @@
-export * from './EngineLogger.js'
-export * from './LoggerManager.js'
+export * from './EngineLogger.js';
+export * from './LoggerManager.js';

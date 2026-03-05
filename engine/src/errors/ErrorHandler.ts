@@ -54,8 +54,7 @@
 
 import { OrbytError } from './OrbytError.js';
 import { ErrorDetector, type ErrorContext } from './ErrorDetector.js';
-import { ErrorDebugger } from './ErrorDebugger.js';
-import { formatDetailedError } from './ErrorFormatter.js';
+import { formatDetailedError, formatErrorWithLocation } from './ErrorFormatter.js';
 import {
     ErrorSeverity,
     ExecutionControl,
@@ -65,8 +64,55 @@ import {
 } from './ErrorCodes.js';
 
 /**
- * Error handling result
- * Contains all information needed to make execution decisions
+ * Error Handler (Automatic Error Management)
+ * 
+ * Central error handling system that orchestrates detection, logging, and execution control.
+ * Designed to work automatically without manual error handling in engine.
+ * 
+ * ARCHITECTURE:
+ * =============
+ * - AUTOMATIC in Engine: Errors are auto-detected and classified
+ * - MANUAL in CLI/API/SDK: Use ErrorHandler explicitly for custom handling
+ * - INTEGRATED with WorkflowLoader: Validates and detects errors on load
+ * 
+ * EXECUTION CONTROL:
+ * ==================
+ * Based on severity, automatically determines what to do:
+ * - CRITICAL/FATAL → Stop entire workflow immediately
+ * - ERROR → Stop entire workflow
+ * - MEDIUM → Stop current step, try next step
+ * - LOW/WARNING/INFO → Log and continue
+ * 
+ * USAGE:
+ * ======
+ * ```typescript
+ * // In Engine (automatic):
+ * try {
+ *   await executeStep(step);
+ * } catch (error) {
+ *   const result = await ErrorHandler.handle(error, {
+ *     location: `steps[${index}]`,
+ *     stepId: step.id
+ *   });
+ *   
+ *   if (result.shouldStopWorkflow) {
+ *     throw result.error;
+ *   }
+ *   if (result.shouldStopStep) {
+ *     continue; // Skip to next step
+ *   }
+ *   // Continue current step
+ * }
+ * 
+ * // In CLI/API (manual):
+ * try {
+ *   const workflow = await WorkflowLoader.fromFile(path);
+ * } catch (error) {
+ *   const result = await ErrorHandler.handle(error, { location: path });
+ *   console.error(result.debug?.formatted);
+ *   process.exit(result.error.exitCode);
+ * }
+ * ```
  */
 export interface ErrorHandlingResult {
     /** The detected and classified OrbytError */
@@ -221,7 +267,11 @@ export class ErrorHandler {
     /**
      * Handle error from WorkflowLoader
      * Special handling for load-time errors with file path context
-     * 
+     *
+     * @deprecated Use {@link handleLoaderErrorEnhanced} directly. This wrapper
+     * now delegates to it so behaviour is identical, but the enhanced variant
+     * is preferred for clarity in new call sites.
+     *
      * @param error - Error from loader
      * @param filePath - Path to workflow file being loaded
      * @param options - Handler options
@@ -232,13 +282,7 @@ export class ErrorHandler {
         filePath: string,
         options: ErrorHandlerOptions = {}
     ): Promise<ErrorHandlingResult> {
-        return this.handle(error, {
-            location: filePath,
-            type: this.detectLoaderErrorType(error),
-        }, {
-            ...options,
-            enableDebug: true, // Always enable debug for loader errors
-        });
+        return this.handleLoaderErrorEnhanced(error, filePath, options);
     }
 
     /**
@@ -359,9 +403,10 @@ export class ErrorHandler {
             return error;
         }
 
-        // Standard Error - try to classify
+        // Standard Error — use the enhanced variant so YAML parse errors carry
+        // line/column numbers in their diagnostic context and fix steps.
         if (error instanceof Error) {
-            return ErrorDetector.detectFromException(error, context?.location);
+            return ErrorDetector.detectFromExceptionEnhanced(error, context?.location);
         }
 
         // Error context object - detect from context
@@ -384,41 +429,6 @@ export class ErrorHandler {
             rawMessage: String(error),
             location: context?.location,
         });
-    }
-
-    /**
-     * Detect error type from WorkflowLoader errors
-     */
-    private static detectLoaderErrorType(error: unknown): ErrorContext['type'] {
-        if (!(error instanceof Error)) return 'unknown';
-
-        const message = error.message.toLowerCase();
-
-        if (message.includes('file not found') || message.includes('enoent')) {
-            return 'unknown'; // Will be classified as RUNTIME_FILE_NOT_FOUND
-        }
-
-        if (message.includes('yaml') || message.includes('syntax')) {
-            return 'parse_error';
-        }
-
-        if (message.includes('json')) {
-            return 'parse_error';
-        }
-
-        if (message.includes('reserved field')) {
-            return 'reserved_field';
-        }
-
-        if (message.includes('unknown field')) {
-            return 'unknown_field';
-        }
-
-        if (message.includes('missing') || message.includes('required')) {
-            return 'missing_field';
-        }
-
-        return 'unknown';
     }
 
     /**
@@ -470,16 +480,21 @@ export class ErrorHandler {
     }
 
     /**
-     * Generate complete debug information
+     * Generate complete debug information.
+     *
+     * Uses context-aware variants so fix steps and formatted output reference
+     * the actual workflow file path / field name when WorkflowContext is set
+     * on LoggerManager (populated automatically by WorkflowLoader after parsing).
+     * Falls back to generic output when no context is available.
      */
     private static generateDebugInfo(
         error: OrbytError,
         useColors: boolean
     ): ErrorHandlingResult['debug'] {
-        const debugInfo = ErrorDebugger.analyze(error);
-        const formatted = ErrorDebugger.format(error, useColors);
+        const debugInfo = ErrorDetector.analyzeDebugInfo(error);
+        const formatted = ErrorDetector.formatDebugOutput(error, undefined, useColors);
         const detailed = formatDetailedError(error, useColors);
-        const quickFix = ErrorDebugger.quickDebug(error);
+        const quickFix = ErrorDetector.quickDebugSummary(error);
 
         return {
             explanation: debugInfo.explanation,
@@ -490,6 +505,97 @@ export class ErrorHandler {
             detailed,
             commonMistakes: debugInfo.commonMistakes,
             estimatedFixTime: debugInfo.estimatedFixTime,
+        };
+    }
+
+    /**
+     * Generate debug information enriched with workflow file context.
+     *
+     * Uses {@link ErrorDebugger.formatWithContext} so the "How to fix" section
+     * references the actual file path + line number when available.
+     * Uses {@link formatErrorWithLocation} for the `detailed` field so the
+     * location header (File / Line / Field) is present in verbose output.
+     *
+     * @param error     - Detected OrbytError
+     * @param useColors - Whether to use ANSI colors
+     * @returns Debug info with context-aware fix steps
+     * @since 0.5.0
+     */
+    private static generateDebugInfoWithContext(
+        error: OrbytError,
+        useColors: boolean
+    ): ErrorHandlingResult['debug'] {
+        const debugInfo = ErrorDetector.analyzeDebugInfo(error);
+        // formatDebugOutput gives file-aware "How to fix" content
+        const formatted = ErrorDetector.formatDebugOutput(error, undefined, useColors);
+        // formatErrorWithLocation prepends File: / Line: / Field: header
+        const detailed = formatErrorWithLocation(error, undefined, useColors, true);
+        const quickFix = ErrorDetector.quickDebugSummary(error);
+
+        return {
+            explanation: debugInfo.explanation,
+            cause: debugInfo.cause,
+            fixSteps: debugInfo.fixSteps,
+            quickFix,
+            formatted,
+            detailed,
+            commonMistakes: debugInfo.commonMistakes,
+            estimatedFixTime: debugInfo.estimatedFixTime,
+        };
+    }
+
+    /**
+     * Handle a WorkflowLoader error with full workflow-context enrichment.
+     *
+     * Enhancement of {@link handleLoaderError} that:
+     * - Uses {@link ErrorDetector.detectFromExceptionEnhanced} to extract
+     *   line/column numbers from YAML parse errors.
+     * - Generates debug info via {@link ErrorDebugger.analyzeWithContext} so
+     *   fix steps reference the actual file path and line number.
+     * - Formats detailed output with {@link formatErrorWithLocation} for a
+     *   File: / Line: / Field: location header.
+     *
+     * Debug is always enabled for loader errors — no option needed.
+     *
+     * @param error    - Error thrown by WorkflowLoader
+     * @param filePath - Path to the workflow file being loaded
+     * @param options  - Handler options
+     * @returns Error handling result with file-aware debug info
+     * @since 0.5.0
+     */
+    static async handleLoaderErrorEnhanced(
+        error: unknown,
+        filePath: string,
+        options: ErrorHandlerOptions = {}
+    ): Promise<ErrorHandlingResult> {
+        const { useColors = true, logger = console, context = {} } = options;
+
+        // Use enhanced detection so line/col are extracted from YAML errors
+        const orbytError: OrbytError = error instanceof OrbytError
+            ? error
+            : ErrorDetector.detectFromExceptionEnhanced(
+                error instanceof Error ? error : new Error(String(error)),
+                filePath
+            );
+
+        const control = getExecutionControl(orbytError.severity);
+        const stopWorkflow = shouldStopWorkflow(orbytError.severity);
+        const stopStep = shouldStopStep(orbytError.severity);
+
+        // Always log loader errors
+        const logEntry = this.logError(orbytError, logger, { filePath, ...context });
+
+        // Always generate context-aware debug info for loader errors
+        const debug = this.generateDebugInfoWithContext(orbytError, useColors);
+
+        return {
+            error: orbytError,
+            control,
+            shouldStopWorkflow: stopWorkflow,
+            shouldStopStep: stopStep,
+            shouldContinue: control === ExecutionControl.CONTINUE,
+            debug,
+            logEntry,
         };
     }
 }

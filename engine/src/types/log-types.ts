@@ -41,19 +41,6 @@ export interface EngineLog {
 }
 
 /**
- * Engine log structure (every log must have category and source)
- */
-export interface EngineLog {
-  timestamp: number;
-  level: 'info' | 'warn' | 'error';
-  category: LogCategory;
-  source: string; // e.g. 'WorkflowExecutor', 'WorkflowLoader', etc.
-  message: string;
-  context?: Record<string, unknown>;
-}
-
-
-/**
  * Engine-specific log format type
  */
 export type EngineLogFormat = 'pretty' | 'text' | 'json' | 'structured';
@@ -217,6 +204,53 @@ export interface EngineLoggerConfig {
   structuredEvents?: boolean;
   /** Log category */
   category: LogCategory;
+  /**
+   * Maximum number of log events to keep in the in-memory history ring-buffer.
+   * Older entries are silently dropped once the limit is reached. A value of
+   * `0` (the default) disables the limit so all events are retained.
+   */
+  maxHistorySize?: number;
+}
+
+/**
+ * Workflow context — attached to the logger for the duration of a
+ * run / explain / validate session.
+ *
+ * When set via `EngineLogger.setWorkflowContext()`, every subsequent log
+ * entry automatically includes this under the `workflow` key so that log
+ * consumers can filter, group and display logs per workflow file without
+ * parsing the message text.
+ *
+ * Build it from a `ParsedWorkflow`:
+ * ```typescript
+ * logger.setWorkflowContext({
+ *   name:              workflow.name,
+ *   version:           workflow.version,
+ *   kind:              workflow.kind,
+ *   description:       workflow.description,
+ *   stepCount:         workflow.steps.length,
+ *   filePath:          '/user/project/deploy.yaml',
+ *   tags:              workflow.tags,
+ * });
+ * ```
+ */
+export interface WorkflowContext {
+  /** Workflow name from the YAML file (e.g. "deploy-api") */
+  name?: string;
+  /** Semantic version string (e.g. "1.2.0") */
+  version?: string;
+  /** Document kind (e.g. "workflow", "pipeline") */
+  kind?: string;
+  /** Human-readable description from the file */
+  description?: string;
+  /** Total number of declared steps */
+  stepCount?: number;
+  /** Absolute path to the source YAML/JSON file */
+  filePath?: string;
+  /** Tags from workflow metadata */
+  tags?: string[];
+  /** Inferred execution strategy */
+  executionStrategy?: 'sequential' | 'parallel' | 'mixed';
 }
 
 /**
@@ -227,10 +261,14 @@ export interface ExportedLogs {
   raw: EngineLogEvent[];
   /** Logs grouped by type */
   grouped: Record<string, EngineLogEvent[]>;
+  /** Workflow context snapshot at the time of export (if set) */
+  workflowContext?: WorkflowContext;
   /** Statistics */
   stats: {
     total: number;
     byType: Record<string, number>;
+    /** Count per phase category (`system`, `runtime`, `analysis`, `security`) */
+    byCategory: Record<string, number>;
     withErrors: number;
     withMetrics: number;
     timeRange: { first?: Date; last?: Date };

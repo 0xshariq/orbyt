@@ -54,7 +54,7 @@ function levenshteinDistance(a: string, b: string): number {
 function similarityScore(a: string, b: string): number {
   const maxLength = Math.max(a.length, b.length);
   if (maxLength === 0) return 1;
-  
+
   const distance = levenshteinDistance(a.toLowerCase(), b.toLowerCase());
   return 1 - distance / maxLength;
 }
