@@ -271,7 +271,11 @@ export class CliLogger {
    * Get all JSON logs from LoggerManager
    */
   getJsonLogs(): any[] {
-    return LoggerManager.getJSONLogs();
+    const ndjsonString = LoggerManager.getJSONLogs();
+    return ndjsonString
+      .split('\n')
+      .filter(line => line.trim().length > 0)
+      .map(line => JSON.parse(line));
   }
 
   /**

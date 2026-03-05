@@ -1,150 +1,138 @@
-
 import chalk from 'chalk';
-import { divider, LogLevel } from '@dev-ecosystem/core';
+import { LogLevel } from '@dev-ecosystem/core';
 import type { ExecutionExplanation, WorkflowResult } from '@orbytautomation/engine';
-import type { Formatter, FormatterOptions } from '../Formatter.js';
+import type { ExplainFormatter, FormatterOptions } from '../Formatter.js';
 import type { CliEvent } from '../../types/CliEvent.js';
 import { createCliLogger, type CliLogger } from '../../utils/logger.js';
 
-// Use FormatterOptions for compatibility
 export type ExplainFormatterOptions = FormatterOptions;
 
-export class ExplainHumanFormatter implements Formatter {
-  private logger: CliLogger;
+const LINE = '━'.repeat(60);
+
+// Output directly to stdout — no logger metadata, no timestamps
+function print(line = ''): void {
+  process.stdout.write(line + '\n');
+}
+
+export class ExplainHumanFormatter implements ExplainFormatter {
+  public logger: CliLogger;
   private options: FormatterOptions;
 
   constructor(options: FormatterOptions = {}) {
     this.options = options;
     if (options.noColor) chalk.level = 0;
-    this.logger = createCliLogger({
-      level: options.verbose ? LogLevel.DEBUG : LogLevel.INFO,
+    // Logger level is set to FATAL so engine-internal INFO/DEBUG messages from
+    // WorkflowLoader and OrbytEngine don't leak to the terminal during explain.
+    // All formatter output (showExplanation, showError, showWarning, showInfo)
+    // writes directly to process.stdout/stderr and is unaffected by this level.
+    this.logger = options.logger ?? createCliLogger({
+      level: LogLevel.FATAL,
       colors: !options.noColor,
-      timestamp: true,
+      timestamp: false,
     });
   }
 
-  // For explain, onEvent is a no-op
-  onEvent(_event: CliEvent): void {
-    // Not supported for explain formatters
-  }
-
-  // For explain, showResult is a no-op
-  showResult(_result: WorkflowResult): void {
-    // Not supported for explain formatters
-  }
+  onEvent(_event: CliEvent): void {}
+  showResult(_result: WorkflowResult): void {}
 
   showExplanation(explanation: ExecutionExplanation): void {
-    // Header
-    const headerDivider = chalk.cyan(divider(60, '━'));
-    console.log(headerDivider);
-    this.logger.info(chalk.bold(`▶ Workflow: ${explanation.workflowName || 'unnamed'}`));
-    if (explanation.description) {
-      this.logger.info(chalk.italic(`  ${explanation.description}`));
+    const { complexity } = explanation;
+
+    print(chalk.cyan(LINE));
+    print(chalk.bold.white('WORKFLOW PLAN'));
+    print(chalk.cyan(LINE));
+    print();
+
+    // Identity
+    if (explanation.workflowName) print(`Name:        ${chalk.bold(explanation.workflowName)}`);
+    if (explanation.description)  print(`Description: ${explanation.description}`);
+    print(`Version:     ${explanation.version}`);
+    print(`Kind:        ${explanation.kind}`);
+    print();
+
+    // Strategy
+    const strategy = explanation.executionStrategy.toUpperCase();
+    print(`Execution Strategy: ${chalk.cyan(strategy)}`);
+    print(`Total Steps:        ${explanation.stepCount}`);
+    if (complexity) {
+      print(`Max Depth:          ${complexity.maxDepth}`);
+      print(`Parallelizable:     ${complexity.parallelizableSteps}`);
     }
-    this.logger.info(`▶ Version: ${chalk.gray(explanation.version)}`);
-    this.logger.info(`▶ Kind: ${chalk.gray(explanation.kind)}`);
-    this.logger.info(`▶ Steps: ${chalk.yellow(explanation.stepCount)}`);
-    this.logger.info(`▶ Execution Mode: ${chalk.magenta(explanation.executionStrategy)}`);
+    print();
+
+    // Adapters
     if (explanation.adaptersUsed && explanation.adaptersUsed.length > 0) {
-      this.logger.info(chalk.magentaBright(`▶ Adapters Used: ${explanation.adaptersUsed.join(', ')}`));
-    }
-    if (explanation.tags && explanation.tags.length > 0) {
-      this.logger.info(chalk.gray(`▶ Tags: ${explanation.tags.join(', ')}`));
-    }
-    if (explanation.owner) {
-      this.logger.info(chalk.gray(`▶ Owner: ${explanation.owner}`));
+      print('Adapters Used:');
+      explanation.adaptersUsed.forEach(a => print(`  - ${a}`));
+      print();
     }
 
     // Inputs
     if (explanation.inputs && Object.keys(explanation.inputs).length > 0) {
-      this.logger.info(chalk.bold('\nInputs:'));
-      for (const [key, value] of Object.entries(explanation.inputs)) {
-        let typeOrDefault = '';
-        if (typeof value === 'object' && value !== null) {
-          typeOrDefault = `${value.type || 'any'}${value.required ? ' (required)' : ''}${value.default !== undefined ? ` = ${JSON.stringify(value.default)}` : ''}`;
+      print('Inputs:');
+      for (const [key, val] of Object.entries(explanation.inputs)) {
+        if (typeof val === 'object' && val !== null) {
+          const type = val.type || 'any';
+          const req  = val.required ? ' (required)' : '';
+          const def  = val.default !== undefined ? ` = ${JSON.stringify(val.default)}` : '';
+          print(`  ${chalk.yellow(key)}: ${type}${req}${def}`);
         } else {
-          typeOrDefault = JSON.stringify(value);
-        }
-        this.logger.info(`  ${chalk.yellow(key)}: ${typeOrDefault}`);
-        if (this.options.verbose && typeof value === 'object' && value.description) {
-          this.logger.info(chalk.gray(`    → ${value.description}`));
+          print(`  ${chalk.yellow(key)}: ${JSON.stringify(val)}`);
         }
       }
-    } else {
-      this.logger.info(chalk.gray('\nNo inputs defined.'));
+      print();
     }
 
     // Steps
-    this.logger.info(chalk.bold('\nExecution Plan:'));
-    if (explanation.steps && explanation.steps.length > 0) {
-      explanation.steps.forEach((step, i) => {
-        this.logger.info(chalk.greenBright(`${i + 1}. ${step.name || step.id}`));
-        this.logger.info(`   uses: ${chalk.cyan(step.uses)}`);
-        if (step.needs && step.needs.length > 0) {
-          this.logger.info(`   needs: [${step.needs.join(', ')}]`);
-        }
-        if (step.when) {
-          this.logger.info(`   when: ${chalk.yellow(step.when)}`);
-        }
-        if (step.env && Object.keys(step.env).length > 0) {
-          this.logger.info('   env:');
-          Object.entries(step.env).forEach(([ekey, evalue]) => {
-            this.logger.info(`     ${chalk.yellow(ekey)}: ${JSON.stringify(evalue)}`);
-          });
-        }
-        if (this.options.verbose) {
-          if (step.timeout) {
-            this.logger.info(`   timeout: ${chalk.yellow(step.timeout)}`);
-          }
-          if (step.retry) {
-            let retryStr = `max: ${step.retry.max || 1}`;
-            if (step.retry.backoff) retryStr += `, backoff: ${step.retry.backoff}`;
-            if (step.retry.delay) retryStr += `, delay: ${step.retry.delay}ms`;
-            this.logger.info(`   retry: ${chalk.yellow(retryStr)}`);
-          }
-          if (step.continueOnError) {
-            this.logger.info(chalk.yellow('   continueOnError: true'));
-          }
-          if (step.with && Object.keys(step.with).length > 0) {
-            this.logger.info('   with:');
-            Object.entries(step.with).forEach(([key, value]) => {
-              this.logger.info(`     ${chalk.yellow(key)}: ${JSON.stringify(value)}`);
-            });
-          }
-        }
-        this.logger.info('');
-      });
-    } else {
-      this.logger.info(chalk.gray('No steps defined.'));
-    }
+    print('Execution Steps:');
+    print();
+    explanation.steps.forEach((step, i) => {
+      print(`${i + 1}. ${chalk.bold(step.name || step.id)}`);
+      print(`   id:             ${chalk.dim(step.id)}`);
+      print(`   uses:           ${chalk.cyan(step.uses)}`);
+      print(`   continueOnError: ${step.continueOnError ?? false}`);
+      if (step.needs && step.needs.length > 0) {
+        print(`   needs:          [${step.needs.join(', ')}]`);
+      }
+      if (step.when) {
+        print(`   when:           ${chalk.yellow(step.when)}`);
+      }
+      print();
+    });
 
     // Outputs
     if (explanation.outputs && Object.keys(explanation.outputs).length > 0) {
-      this.logger.info(chalk.bold('Outputs:'));
-      for (const [key, value] of Object.entries(explanation.outputs)) {
-        this.logger.info(`  ${chalk.green(key)}: ${JSON.stringify(value)}`);
+      print('Expected Outputs:');
+      for (const [key, val] of Object.entries(explanation.outputs)) {
+        print(`  ${chalk.green(key)}: ${val}`);
       }
-    } else {
-      this.logger.info(chalk.gray('No outputs defined.'));
+      print();
     }
-    console.log(headerDivider);
+
+    // Validation
+    if (explanation.hasCycles) {
+      print(chalk.red('Validation: ✖ Circular dependencies detected'));
+    } else {
+      print(chalk.green('Validation: ✔ No cycles detected'));
+    }
+    print(chalk.cyan(LINE));
   }
 
   showError(error: Error): void {
     if (!this.options.silent) {
-      this.logger.error(chalk.red('Error: ') + error.message);
+      process.stderr.write(chalk.red(`Error: ${error.message}`) + '\n');
     }
   }
 
   showWarning(message: string): void {
     if (!this.options.silent) {
-      this.logger.warn(chalk.yellow('Warning: ') + message);
+      process.stdout.write(chalk.yellow(`Warning: ${message}`) + '\n');
     }
   }
 
   showInfo(message: string): void {
     if (!this.options.silent) {
-      this.logger.info(chalk.cyan('Info: ') + message);
+      process.stdout.write(chalk.dim(message) + '\n');
     }
   }
 }

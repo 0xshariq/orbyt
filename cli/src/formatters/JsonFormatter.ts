@@ -1,93 +1,44 @@
-/**
- * JSON Formatter
- * 
- * Outputs structured JSON for:
- * - Machine parsing
- * - Log aggregation
- * - CI/CD integration
- * - Monitoring systems
- * 
- * Each event is a separate JSON line (JSONL/NDJSON format)
- * Final result is also JSON.
- * 
- * Uses logger for consistent output formatting.
- */
-
-import type { WorkflowResult } from '@orbytautomation/engine';
-import type { Formatter, FormatterOptions } from './Formatter.js';
 import type { CliEvent } from '../types/CliEvent.js';
-import { formatJsonEvent, formatJsonResult, formatJsonError } from '../utils/logger.js';
+import { CliLogger } from '../utils/logger.js';
+import type { Formatter, FormatterOptions } from './Formatter.js';
 
 /**
- * JSON output formatter
- * 
- * Outputs machine-readable JSON for CI/CD and log aggregation systems.
+ * JsonFormatter outputs all events and messages as JSON using the provided logger.
  */
 export class JsonFormatter implements Formatter {
-  private options: FormatterOptions;
+  public logger: CliLogger;
 
-  constructor(options: FormatterOptions = {}) {
-    this.options = options;
+  constructor(options: FormatterOptions) {
+    this.logger = options.logger ?? new CliLogger({});
   }
 
-  /**
-   * Handle CLI events - output as JSON line
-   */
-  onEvent(event: CliEvent): void {
-    if (this.options.silent) {
-      return;
+  onEvent(event: CliEvent) {
+    if (this.logger) {
+      this.logger.info(JSON.stringify(event));
     }
-
-    // Use logger to format and output event as JSON line (NDJSON format)
-    const output = formatJsonEvent(event, this.options.verbose);
-    console.log(output);
   }
 
-  /**
-   * Show final result as JSON
-   */
-  showResult(result: WorkflowResult): void {
-    if (this.options.silent) {
-      return;
+  showResult(result: any) {
+    if (this.logger) {
+      this.logger.info(JSON.stringify({ result }));
     }
-
-    // Use logger to format and output result as JSON
-    const output = formatJsonResult(result, this.options.verbose);
-    console.log(output);
   }
 
-  /**
-   * Display an error as JSON
-   */
-  showError(error: Error): void {
-    // Use logger to format and output error as JSON
-    const output = formatJsonError(error);
-    console.error(output);
+  showError(error: Error | string) {
+    if (this.logger) {
+      this.logger.error(JSON.stringify({ error: error instanceof Error ? error.message : error }));
+    }
   }
 
-  /**
-   * Display a warning as JSON
-   */
-  showWarning(message: string): void {
-    const jsonWarning = {
-      type: 'warning',
-      timestamp: new Date().toISOString(),
-      message,
-    };
-
-    console.log(JSON.stringify(jsonWarning));
+  showWarning(warning: string) {
+    if (this.logger) {
+      this.logger.warn(JSON.stringify({ warning }));
+    }
   }
 
-  /**
-   * Display an info message as JSON
-   */
-  showInfo(message: string): void {
-    const jsonInfo = {
-      type: 'info',
-      timestamp: new Date().toISOString(),
-      message,
-    };
-
-    console.log(JSON.stringify(jsonInfo));
+  showInfo(info: string) {
+    if (this.logger) {
+      this.logger.info(JSON.stringify({ info }));
+    }
   }
 }

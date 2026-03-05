@@ -22,8 +22,9 @@
  * - Library usage (null formatter for programmatic use)
  */
 
-import type { WorkflowResult } from '@orbytautomation/engine';
+import type { WorkflowResult, ExecutionExplanation } from '@orbytautomation/engine';
 import type { CliEvent } from '../types/CliEvent.js';
+import { CliLogger } from '../utils/logger.js';
 
 /**
  * Formatter options
@@ -33,12 +34,17 @@ import type { CliEvent } from '../types/CliEvent.js';
 export interface FormatterOptions {
   /** Enable verbose output (more details, context, timing) */
   verbose?: boolean;
-  
+
   /** Disable colors (for CI/CD or terminals without color support) */
   noColor?: boolean;
-  
+
   /** Silent mode (minimal output, only errors and final result) */
   silent?: boolean;
+
+  /**
+   * CLI Logger instance for output (formatters should use this for all output)
+   */
+  logger?: CliLogger;
 }
 
 /**
@@ -56,6 +62,11 @@ export interface FormatterOptions {
  */
 export interface Formatter {
   /**
+   * CLI Logger instance for output (should be used for all output)
+   */
+  logger?: CliLogger;
+
+  /**
    * Handle a CLI event (workflow/step started/completed/failed)
    * 
    * This is called for every workflow and step lifecycle event.
@@ -64,7 +75,7 @@ export interface Formatter {
    * @param event - The event to handle
    */
   onEvent(event: CliEvent): void;
-  
+
   /**
    * Display final workflow result
    * 
@@ -74,7 +85,7 @@ export interface Formatter {
    * @param result - The workflow execution result
    */
   showResult(result: WorkflowResult): void;
-  
+
   /**
    * Display an error
    * 
@@ -84,7 +95,7 @@ export interface Formatter {
    * @param error - The error to display
    */
   showError(error: Error): void;
-  
+
   /**
    * Display a warning
    * 
@@ -94,7 +105,7 @@ export interface Formatter {
    * @param message - Warning message
    */
   showWarning(message: string): void;
-  
+
   /**
    * Display an info message
    * 
@@ -104,4 +115,19 @@ export interface Formatter {
    * @param message - Info message
    */
   showInfo(message: string): void;
+}
+
+/**
+ * ExplainFormatter interface
+ * 
+ * Extends the base Formatter with explain-specific output.
+ * Only ExplainHumanFormatter and ExplainVerboseFormatter should implement this.
+ */
+export interface ExplainFormatter extends Formatter {
+  /**
+   * Display a full workflow execution explanation.
+   * 
+   * @param explanation - The execution explanation from the engine
+   */
+  showExplanation(explanation: ExecutionExplanation): void;
 }

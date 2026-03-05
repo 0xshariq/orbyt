@@ -15,6 +15,7 @@
 import type { WorkflowResult } from '@orbytautomation/engine';
 import type { Formatter, FormatterOptions } from './Formatter.js';
 import type { CliEvent } from '../types/CliEvent.js';
+import { CliLogger } from '../utils/logger.js';
 
 /**
  * Null formatter that produces no output
@@ -25,7 +26,7 @@ export class NullFormatter implements Formatter {
   constructor(_options: FormatterOptions = {}) {
     // No-op constructor - options are ignored
   }
-
+  logger: CliLogger = null as unknown as CliLogger; // Dummy logger to satisfy interface, will not be used
   /**
    * Handle CLI events (no-op)
    */

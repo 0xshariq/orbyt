@@ -12,17 +12,17 @@ export interface CliValidateOptions {
    * Output format
    */
   format?: 'human' | 'json' | 'verbose' | 'null';
-  
+
   /**
    * Verbose output (show more details like step count, capabilities)
    */
   verbose?: boolean;
-  
+
   /**
    * Silent mode (minimal output)
    */
   silent?: boolean;
-  
+
   /**
    * No color in output
    */

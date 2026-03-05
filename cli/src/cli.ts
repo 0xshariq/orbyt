@@ -13,6 +13,8 @@
  */
 
 import { Command } from 'commander';
+import { LoggerManager } from '@orbytautomation/engine';
+import { LogLevel } from '@dev-ecosystem/core';
 import { registerRunCommand } from './commands/run.js';
 import { registerValidateCommand } from './commands/validate.js';
 import { registerExplainCommand } from './commands/explain.js';
@@ -21,6 +23,19 @@ import { registerExplainCommand } from './commands/explain.js';
  * Main CLI function
  */
 async function main(): Promise<void> {
+  // Initialize LoggerManager early so CliLogger is usable before engine starts
+  if (!LoggerManager.isReady()) {
+    LoggerManager.initialize({
+      level: LogLevel.INFO,
+      format: 'text',
+      colors: true,
+      timestamp: true,
+      source: 'OrbytCLI',
+      structuredEvents: false,
+      category: 'system' as any,
+    });
+  }
+
   // Version is hardcoded for now (TODO: read from package.json)
   const version = '0.1.0';
   

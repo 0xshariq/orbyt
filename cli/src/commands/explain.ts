@@ -27,6 +27,7 @@ import type { Command } from 'commander';
 import { WorkflowLoader, type ExecutionExplanation } from '@orbytautomation/engine';
 import { OrbytEngine } from '@orbytautomation/engine';
 import { createExplainFormatter, type ExplainFormatterType } from '../formatters/explain/createExplainFormatter.js';
+import type { ExplainFormatter } from '../formatters/Formatter.js';
 import type { CliExplainOptions } from '../types/CliExplainOptions.js';
 
 /**
@@ -66,11 +67,13 @@ async function explainWorkflow(workflowPath: string, options: CliExplainOptions)
 
     // Load workflow and get explanation from engine
     const workflow = await WorkflowLoader.fromFile(resolvedPath);
-    
-    // Create engine instance
+
+    // Create engine instance — use 'silent' to suppress internal engine logs
+    // during explain so they don't leak into the formatted plan output.
+    // The formatter formats the structured ExecutionExplanation directly.
     const engine = new OrbytEngine({
-      logLevel: options.verbose ? 'debug' : 'info',
-      verbose: options.verbose || false,
+      logLevel: 'silent',
+      verbose: false,
     });
 
     // Get execution explanation from engine
@@ -79,14 +82,14 @@ async function explainWorkflow(workflowPath: string, options: CliExplainOptions)
     // Check for circular dependencies
     if (explanation.hasCycles) {
       formatter.showError(new Error(`✖ Circular dependencies detected!`));
-      
+
       if (explanation.cycles && explanation.cycles.length > 0) {
         formatter.showError(new Error(`\nCycles found:`));
         explanation.cycles.forEach((cycle, idx) => {
           formatter.showError(new Error(`  ${idx + 1}. ${cycle.join(' → ')}`));
         });
       }
-      
+
       process.exit(2); // Cycle detected
     }
 
@@ -114,15 +117,15 @@ async function explainWorkflow(workflowPath: string, options: CliExplainOptions)
   }
 }
 
-  
-  // Show tags and owner if present
+
+// Show tags and owner if present
 
 /**
  * Show ASCII dependency graph
  */
 function showGraph(
   explanation: ExecutionExplanation,
-  formatter: ReturnType<typeof createFormatter>
+  formatter: ExplainFormatter
 ): void {
   formatter.showInfo(`\n▶ Workflow: ${explanation.workflowName || 'unnamed'}\n`);
   formatter.showInfo(`Dependency Graph:\n`);
@@ -130,28 +133,28 @@ function showGraph(
   // Build a simple ASCII graph
   const stepMap = new Map(explanation.steps.map(s => [s.id, s]));
   const visited = new Set<string>();
-  
+
   // Find root nodes (steps with no dependencies)
   const roots = explanation.steps.filter(s => !s.needs || s.needs.length === 0);
-  
+
   function printNode(stepId: string, indent: string = '', isLast: boolean = true): void {
     if (visited.has(stepId)) return;
     visited.add(stepId);
-    
+
     const step = stepMap.get(stepId);
     if (!step) return;
-    
+
     const connector = isLast ? '└─' : '├─';
     const name = step.name || step.id;
     formatter.showInfo(`${indent}${connector} ${name}`);
-    
+
     // Find children (steps that depend on this step)
-    const children = explanation.steps.filter(s => 
+    const children = explanation.steps.filter(s =>
       s.needs && s.needs.includes(stepId)
     );
-    
+
     const childIndent = indent + (isLast ? '   ' : '│  ');
-    
+
     if (children.length > 0) {
       children.forEach((child, idx) => {
         const isLastChild = idx === children.length - 1;
@@ -160,11 +163,11 @@ function showGraph(
       });
     }
   }
-  
+
   // Print from each root
   roots.forEach((root, idx) => {
     printNode(root.id, '', idx === roots.length - 1);
   });
-  
+
   formatter.showInfo(`\n✔ Plan valid. No cycles detected.`);
 }

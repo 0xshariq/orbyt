@@ -12,32 +12,32 @@ export interface CliExplainOptions {
    * Output format
    */
   format?: 'human' | 'json' | 'verbose' | 'null';
-  
+
   /**
    * Show ASCII dependency graph
    */
   graph?: boolean;
-  
+
   /**
    * Verbose output (show detailed configuration,resolved adapters, defaults)
    */
   verbose?: boolean;
-  
+
   /**
    * Silent mode (minimal output)
    */
   silent?: boolean;
-  
+
   /**
    * No color in output
    */
   noColor?: boolean;
-  
+
   /**
    * Display structured JSON logs from explanation process
    */
   showLogs?: boolean;
-  
+
   /**
    * Generate human-readable sentences from logs
    */
