@@ -20,7 +20,9 @@
     "cron",
     "scheduler",
     "engine",
-    "automation-engine"
+    "automation-engine",
+    "framework",
+    "engine-framework"
   ],
   "author": {
     "name": "0xshariq",
