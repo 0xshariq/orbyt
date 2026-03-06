@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   // Initialize LoggerManager early so CliLogger is usable before engine starts
   if (!LoggerManager.isReady()) {
     LoggerManager.initialize({
-      level: LogLevel.INFO,
+      level: LogLevel.FATAL,
       format: 'text',
       colors: true,
       timestamp: true,

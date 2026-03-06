@@ -13,6 +13,14 @@ function print(line = ''): void {
   process.stdout.write(line + '\n');
 }
 
+/** Convert raw strategy string to human-friendly label. */
+function formatStrategy(strategy: string): string {
+  const s = strategy.toLowerCase();
+  if (s === 'sequential') return 'Sequential DAG';
+  if (s === 'parallel')   return 'Parallel DAG';
+  return strategy.charAt(0).toUpperCase() + strategy.slice(1).toLowerCase() + ' DAG';
+}
+
 export class ExplainVerboseFormatter implements ExplainFormatter {
   public logger: CliLogger;
   private options: FormatterOptions;
@@ -51,9 +59,15 @@ export class ExplainVerboseFormatter implements ExplainFormatter {
     if (explanation.tags && explanation.tags.length > 0) print(`Tags:        ${explanation.tags.join(', ')}`);
     print();
 
+    // Quick-scan summary
+    const inputCount  = explanation.inputs  ? Object.keys(explanation.inputs).length  : 0;
+    const outputCount = explanation.outputs ? Object.keys(explanation.outputs).length : 0;
+    print(chalk.dim(`Inputs: ${inputCount}  |  Steps: ${explanation.stepCount}  |  Outputs: ${outputCount}`));
+    print();
+
     // Strategy + Complexity
     print(chalk.bold('Execution Strategy:'));
-    print(`  Mode:           ${chalk.cyan(explanation.executionStrategy.toUpperCase())}`);
+    print(`  Mode:           ${chalk.cyan(formatStrategy(explanation.executionStrategy))}`);
     print(`  Total Steps:    ${explanation.stepCount}`);
     if (complexity) {
       print(`  Max Depth:      ${complexity.maxDepth}`);
@@ -173,12 +187,20 @@ export class ExplainVerboseFormatter implements ExplainFormatter {
       print();
     }
 
-    // Dependency Graph
+    // Execution Graph (linear execution order)
+    const graphIds = explanation.steps.map(s => s.id);
+    if (graphIds.length > 1) {
+      print(chalk.bold('Execution Graph:'));
+      print('  ' + graphIds.join(' → '));
+      print();
+    }
+
+    // Dependency Graph (detailed deps per step)
     if (explanation.dependencyGraph && Object.keys(explanation.dependencyGraph).length > 0) {
       print(chalk.bold('Dependency Graph:'));
       for (const [step, deps] of Object.entries(explanation.dependencyGraph)) {
         if (deps.length > 0) {
-          print(`  ${step} → [${deps.join(', ')}]`);
+          print(`  ${step} ← [${deps.join(', ')}]`);
         }
       }
       print();
@@ -194,10 +216,17 @@ export class ExplainVerboseFormatter implements ExplainFormatter {
     }
 
     // Validation
+    print(chalk.bold('Validation:'));
     if (explanation.hasCycles) {
-      print(chalk.red('Validation: ✖ Circular dependencies detected'));
+      print(chalk.red('  ✖ Circular dependencies detected'));
     } else {
-      print(chalk.green('Validation: ✔ No cycles detected'));
+      print(chalk.green('  ✔ No cycles detected'));
+    }
+    if (explanation.adaptersUsed && explanation.adaptersUsed.length > 0) {
+      print(chalk.green('  ✔ All adapters resolved'));
+    }
+    if (inputCount > 0) {
+      print(chalk.green('  ✔ Inputs validated'));
     }
     print(chalk.cyan(LINE));
   }

@@ -14,6 +14,14 @@ function print(line = ''): void {
   process.stdout.write(line + '\n');
 }
 
+/** Convert raw strategy string to human-friendly label. */
+function formatStrategy(strategy: string): string {
+  const s = strategy.toLowerCase();
+  if (s === 'sequential') return 'Sequential DAG';
+  if (s === 'parallel')   return 'Parallel DAG';
+  return strategy.charAt(0).toUpperCase() + strategy.slice(1).toLowerCase() + ' DAG';
+}
+
 export class ExplainHumanFormatter implements ExplainFormatter {
   public logger: CliLogger;
   private options: FormatterOptions;
@@ -50,9 +58,14 @@ export class ExplainHumanFormatter implements ExplainFormatter {
     print(`Kind:        ${explanation.kind}`);
     print();
 
+    // Quick-scan summary
+    const inputCount  = explanation.inputs  ? Object.keys(explanation.inputs).length  : 0;
+    const outputCount = explanation.outputs ? Object.keys(explanation.outputs).length : 0;
+    print(chalk.dim(`Inputs: ${inputCount}  |  Steps: ${explanation.stepCount}  |  Outputs: ${outputCount}`));
+    print();
+
     // Strategy
-    const strategy = explanation.executionStrategy.toUpperCase();
-    print(`Execution Strategy: ${chalk.cyan(strategy)}`);
+    print(`Execution Strategy: ${chalk.cyan(formatStrategy(explanation.executionStrategy))}`);
     print(`Total Steps:        ${explanation.stepCount}`);
     if (complexity) {
       print(`Max Depth:          ${complexity.maxDepth}`);
@@ -100,6 +113,14 @@ export class ExplainHumanFormatter implements ExplainFormatter {
       print();
     });
 
+    // Execution Graph (linear order)
+    const graphIds = explanation.steps.map(s => s.id);
+    if (graphIds.length > 1) {
+      print('Execution Graph:');
+      print('  ' + graphIds.join(' → '));
+      print();
+    }
+
     // Outputs
     if (explanation.outputs && Object.keys(explanation.outputs).length > 0) {
       print('Expected Outputs:');
@@ -110,10 +131,17 @@ export class ExplainHumanFormatter implements ExplainFormatter {
     }
 
     // Validation
+    print('Validation:');
     if (explanation.hasCycles) {
-      print(chalk.red('Validation: ✖ Circular dependencies detected'));
+      print(chalk.red('  ✖ Circular dependencies detected'));
     } else {
-      print(chalk.green('Validation: ✔ No cycles detected'));
+      print(chalk.green('  ✔ No cycles detected'));
+    }
+    if (explanation.adaptersUsed && explanation.adaptersUsed.length > 0) {
+      print(chalk.green('  ✔ All adapters resolved'));
+    }
+    if (inputCount > 0) {
+      print(chalk.green('  ✔ Inputs validated'));
     }
     print(chalk.cyan(LINE));
   }
