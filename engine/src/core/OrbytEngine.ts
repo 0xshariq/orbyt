@@ -89,6 +89,7 @@ import { EngineContext, EngineEventType, ExecutionExplanation, ExecutionOptions,
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { ExecutionStore } from '../storage/ExecutionStore.js';
 import { WorkflowStore } from '../storage/WorkflowStore.js';
 import { ScheduleStore } from '../storage/ScheduleStore.js';
@@ -284,7 +285,7 @@ export class OrbytEngine {
     this.setupComponents();
 
     // Initialise persistent stores (non-fatal — must never block engine startup)
-    const storeRoot = this.config.stateDir ?? join(process.cwd(), '.orbyt');
+    const storeRoot = this.config.stateDir ?? join(homedir(), '.orbyt');
     this.executionStore = new ExecutionStore(join(storeRoot, 'executions'));
     this.workflowStore = new WorkflowStore(join(storeRoot, 'workflows'));
     this.scheduleStore = new ScheduleStore(join(storeRoot, 'schedules'));

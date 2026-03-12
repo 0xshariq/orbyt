@@ -7,7 +7,12 @@
  * @module core
  */
 
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { OrbytEngineConfig } from "../types/core-types.js";
+
+/** Canonical root for all Orbyt data — cross-platform home directory */
+const ORBYT_HOME = join(homedir(), '.orbyt');
 
 /**
  * Apply default values to engine configuration
@@ -31,8 +36,8 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
     verbose: config.verbose ?? false,
     enableMetrics: config.enableMetrics ?? true,
     enableEvents: config.enableEvents ?? true,
-    stateDir: config.stateDir ?? '.orbyt/state',
-    logDir: config.logDir ?? '.orbyt/logs',
+    stateDir: config.stateDir ?? join(ORBYT_HOME, 'state'),
+    logDir: config.logDir ?? join(ORBYT_HOME, 'logs'),
     sandboxMode: config.sandboxMode ?? 'basic',
     workingDirectory: config.workingDirectory ?? process.cwd(),
     experimental: config.experimental ?? false,

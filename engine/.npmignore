@@ -7,3 +7,4 @@ tsconfig.json
 *.lock
 *.md
 docs/
+!README.md
