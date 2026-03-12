@@ -22,6 +22,9 @@ import { createEvent } from '../events/EngineEvents.js';
 import type { WorkflowHookContext } from '../hooks/LifecycleHooks.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
 import { EngineEventType, type ExecutionNode, type ExecutionOptions, type ExecutionPlan, type ParsedStep, type ParsedWorkflow, type ResolutionContext, type StepResult, type WorkflowResult } from '../types/core-types.js';
+import { performance } from 'node:perf_hooks';
+import { join } from 'node:path';
+import { ExecutionStore } from '../storage/ExecutionStore.js';
 
 /**
  * Workflow executor
@@ -32,24 +35,33 @@ export class WorkflowExecutor {
   private contextStore?: ContextStore;
   private eventBus?: EventBus;
   private hookManager?: HookManager;
+  private stateDir: string = join(process.cwd(), '.orbyt', 'executions');
 
   constructor(stepExecutor: StepExecutor) {
     this.stepExecutor = stepExecutor;
     this.executionId = this.generateExecutionId();
   }
-  
+
   /**
    * Set event bus for emitting workflow lifecycle events
    */
   setEventBus(eventBus: EventBus): void {
     this.eventBus = eventBus;
   }
-  
+
   /**
    * Set hook manager for calling lifecycle hooks
    */
   setHookManager(hookManager: HookManager): void {
     this.hookManager = hookManager;
+  }
+
+  /**
+   * Set the directory where execution state JSON files are written.
+   * Defaults to <cwd>/.orbyt/executions
+   */
+  setStateDir(dir: string): void {
+    this.stateDir = dir;
   }
 
   /**
@@ -63,9 +75,17 @@ export class WorkflowExecutor {
     workflow: ParsedWorkflow,
     options: ExecutionOptions = {}
   ): Promise<WorkflowResult> {
+    // Regenerate execution ID for each run so concurrent/sequential runs are distinct
+    this.executionId = this.generateExecutionId();
+
     const startedAt = new Date();
+    const workflowStart = performance.now();
     const stepResults = new Map<string, StepResult>();
     const workflowName = workflow.metadata?.name || workflow.name || 'unnamed';
+
+    // Initialise state store (best-effort — never throws)
+    const stateStore = new ExecutionStore(this.stateDir);
+    stateStore.begin(this.executionId, workflowName, startedAt);
 
     // Log workflow execution started
     LoggerManager.getLogger().workflowStarted(workflowName, {
@@ -80,7 +100,7 @@ export class WorkflowExecutor {
 
     // Create ContextStore for this execution
     this.contextStore = this.createContextStore(workflow, options);
-    
+
     // Log workflow inputs
     const logger = LoggerManager.getLogger();
     if (options.inputs) {
@@ -90,7 +110,7 @@ export class WorkflowExecutor {
         }
       }
     }
-    
+
     // Log workflow context
     if (options.context) {
       for (const [key, value] of Object.entries(options.context)) {
@@ -99,7 +119,7 @@ export class WorkflowExecutor {
         }
       }
     }
-    
+
     // Create hook context
     const hookContext: WorkflowHookContext = {
       workflowId: workflow.name || this.executionId,
@@ -111,7 +131,7 @@ export class WorkflowExecutor {
       metadata: workflow.metadata,
       startTime: startedAt.getTime(),
     };
-    
+
     // Emit workflow.started event
     if (this.eventBus) {
       await this.eventBus.emit(createEvent(
@@ -129,12 +149,12 @@ export class WorkflowExecutor {
         }
       ));
     }
-    
+
     // Call beforeWorkflow hook
     if (this.hookManager) {
       await this.hookManager.runBeforeWorkflow(hookContext);
     }
-    
+
     // Configure StepExecutor with ContextStore
     this.stepExecutor.setContextStore(this.contextStore);
 
@@ -146,7 +166,7 @@ export class WorkflowExecutor {
 
     // Create execution plan
     const plan = ExecutionPlanner.plan(executionNodes);
-    
+
     // Log execution plan details
     logger.info(`[Plan] Execution plan created with ${plan.phases.length} phase(s)`, {
       totalPhases: plan.phases.length,
@@ -160,7 +180,7 @@ export class WorkflowExecutor {
     // Execute with timeout if specified
     try {
       const timeout = options.timeout || (workflow.defaults?.timeout ? this.parseTimeoutString(workflow.defaults.timeout) : undefined);
-      
+
       if (timeout) {
         await this.executeWithTimeout(
           workflow,
@@ -189,9 +209,20 @@ export class WorkflowExecutor {
         'success',
         startedAt,
         completedAt,
-        plan
+        plan,
+        undefined,
+        Math.round(performance.now() - workflowStart)
       );
-      
+
+      // Persist final state
+      stateStore.finalize(
+        this.executionId,
+        'completed',
+        completedAt,
+        Array.from(stepResults.values()),
+        Math.round(performance.now() - workflowStart)
+      );
+
       // Emit workflow.completed event
       if (this.eventBus) {
         await this.eventBus.emit(createEvent(
@@ -209,21 +240,21 @@ export class WorkflowExecutor {
           }
         ));
       }
-      
+
       // Call afterWorkflow hook
       if (this.hookManager) {
         await this.hookManager.runAfterWorkflow(hookContext);
       }
-      
+
       return result;
     } catch (error) {
       const completedAt = new Date();
-      const status = error instanceof Error && error.message.includes('timeout') 
-        ? 'timeout' 
+      const status = error instanceof Error && error.message.includes('timeout')
+        ? 'timeout'
         : 'failure';
-      
+
       const workflowError = error instanceof Error ? error : new Error(String(error));
-      
+
       // Emit workflow.failed event
       if (this.eventBus) {
         await this.eventBus.emit(createEvent(
@@ -233,7 +264,7 @@ export class WorkflowExecutor {
             workflowName,
             runId: this.executionId,
             error: workflowError.message,
-            durationMs: completedAt.getTime() - startedAt.getTime(),
+            durationMs: Math.round(performance.now() - workflowStart),
           },
           {
             workflowId: workflow.name || this.executionId,
@@ -241,12 +272,22 @@ export class WorkflowExecutor {
           }
         ));
       }
-      
+
       // Call onError hook
       if (this.hookManager) {
         await this.hookManager.runOnError(hookContext, workflowError);
       }
-      
+
+      // Persist final state
+      stateStore.finalize(
+        this.executionId,
+        status === 'timeout' ? 'timeout' : 'failed',
+        completedAt,
+        Array.from(stepResults.values()),
+        Math.round(performance.now() - workflowStart),
+        workflowError
+      );
+
       return this.buildResult(
         workflow,
         stepResults,
@@ -254,7 +295,8 @@ export class WorkflowExecutor {
         startedAt,
         completedAt,
         plan,
-        workflowError
+        workflowError,
+        Math.round(performance.now() - workflowStart)
       );
     }
   }
@@ -328,8 +370,8 @@ export class WorkflowExecutor {
 
           // Check if step failed and we should stop
           if (
-            stepResult.status === 'failure' && 
-            !continueOnError && 
+            stepResult.status === 'failure' &&
+            !continueOnError &&
             !step.continueOnError
           ) {
             throw new Error(
@@ -408,7 +450,7 @@ export class WorkflowExecutor {
     const tags = workflow.metadata?.tags || workflow.tags;
     const owner = workflow.metadata?.owner || workflow.owner;
     const version = workflow.metadata?.version || workflow.version;
-    
+
     return new ContextStore({
       executionId: this.executionId,
       workflowId: name,
@@ -443,15 +485,17 @@ export class WorkflowExecutor {
     startedAt: Date,
     completedAt: Date,
     plan: ExecutionPlan,
-    error?: Error
+    error?: Error,
+    durationMs?: number
   ): WorkflowResult {
     const results = Array.from(stepResults.values());
-    
+
     return {
       workflowName: workflow.name || 'unnamed-workflow',
+      executionId: this.executionId,
       status,
       stepResults,
-      duration: completedAt.getTime() - startedAt.getTime(),
+      duration: durationMs ?? completedAt.getTime() - startedAt.getTime(),
       startedAt,
       completedAt,
       error,

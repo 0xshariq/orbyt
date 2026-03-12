@@ -67,7 +67,8 @@ export class AdapterRegistry {
     const logger = LoggerManager.getLogger();
     
     if (this.adapters.has(adapter.name)) {
-      throw new DuplicateAdapterError(adapter.name);
+      logger.debug(`[AdapterRegistry] Adapter '${adapter.name}' already registered, skipping`);
+      return;
     }
 
     this.adapters.set(adapter.name, adapter);

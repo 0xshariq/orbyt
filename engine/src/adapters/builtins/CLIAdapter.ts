@@ -12,6 +12,7 @@
  */
 
 import { spawn } from 'child_process';
+import { performance } from 'node:perf_hooks';
 import { BaseAdapter, type AdapterContext, AdapterResultBuilder, type AdapterResult } from '@dev-ecosystem/core';
 
 /**
@@ -63,7 +64,7 @@ export class CLIAdapter extends BaseAdapter {
 
     context.log(`Executing ${action}: ${command} ${args.join(' ')}`);
 
-    const startTime = Date.now();
+    const startTime = performance.now();
 
     try {
       const result = await this.executeCLI(
@@ -73,7 +74,7 @@ export class CLIAdapter extends BaseAdapter {
         context
       );
 
-      const duration = Date.now() - startTime;
+      const duration = Math.round(performance.now() - startTime);
 
       // Build result using new format
       const builder = new AdapterResultBuilder()
@@ -114,7 +115,7 @@ export class CLIAdapter extends BaseAdapter {
 
       return builder.build();
     } catch (error: any) {
-      const duration = Date.now() - startTime;
+      const duration = Math.round(performance.now() - startTime);
       return new AdapterResultBuilder()
         .duration(duration)
         .failure({
@@ -141,7 +142,7 @@ export class CLIAdapter extends BaseAdapter {
     context: AdapterContext
   ): Promise<CLIResult> {
     return new Promise((resolve, reject) => {
-      const startTime = Date.now();
+      const startTime = performance.now();
       let stdout = '';
       let stderr = '';
       let timedOut = false;
@@ -192,7 +193,7 @@ export class CLIAdapter extends BaseAdapter {
           clearTimeout(timeoutHandle);
         }
 
-        const duration = Date.now() - startTime;
+        const duration = Math.round(performance.now() - startTime);
         const exitCode = code ?? -1;
 
         const result: CLIResult = {

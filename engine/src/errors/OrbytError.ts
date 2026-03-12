@@ -13,7 +13,7 @@
  * @module errors
  */
 
-import { ExitCodes } from '@dev-ecosystem/core';
+import { ExitCodes, getExitCodeDescription } from '@dev-ecosystem/core';
 import { 
   OrbytErrorCode, 
   ErrorSeverity, 
@@ -251,7 +251,6 @@ export class OrbytError extends Error {
   getExitCodeDescription(): string {
     // Import at runtime to avoid circular dependencies
     try {
-      const { getExitCodeDescription } = require('@dev-ecosystem/core');
       return getExitCodeDescription(this.exitCode);
     } catch {
       return 'exit code';

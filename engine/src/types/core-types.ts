@@ -1006,6 +1006,9 @@ export interface WorkflowResult {
   /** Workflow name */
   workflowName: string;
 
+  /** Unique execution identifier */
+  executionId: string;
+
   /** Overall status */
   status: 'success' | 'failure' | 'partial' | 'timeout';
 

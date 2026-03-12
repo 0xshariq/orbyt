@@ -87,6 +87,11 @@ import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
 import { EngineContext, EngineEventType, ExecutionExplanation, ExecutionOptions, LogLevel, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { ExecutionStore } from '../storage/ExecutionStore.js';
+import { WorkflowStore } from '../storage/WorkflowStore.js';
+import { ScheduleStore } from '../storage/ScheduleStore.js';
 
 /**
  * OrbytEngine - Main public API
@@ -223,6 +228,9 @@ export class OrbytEngine {
   private logger: EngineLogger | null;
   private isStarted: boolean = false;
   private readonly version: string = '0.1.2';
+  private executionStore: ExecutionStore;
+  private workflowStore: WorkflowStore;
+  private scheduleStore: ScheduleStore;
 
   constructor(config: OrbytEngineConfig = {}) {
     // Validate and apply defaults
@@ -274,6 +282,13 @@ export class OrbytEngine {
 
     // Wire components together
     this.setupComponents();
+
+    // Initialise persistent stores (non-fatal — must never block engine startup)
+    const storeRoot = this.config.stateDir ?? join(process.cwd(), '.orbyt');
+    this.executionStore = new ExecutionStore(join(storeRoot, 'executions'));
+    this.workflowStore = new WorkflowStore(join(storeRoot, 'workflows'));
+    this.scheduleStore = new ScheduleStore(join(storeRoot, 'schedules'));
+    this.workflowExecutor.setStateDir(join(storeRoot, 'executions'));
 
     // Register built-in adapters
     this.registerBuiltinAdapters();
@@ -456,7 +471,7 @@ export class OrbytEngine {
     let parsedWorkflow: ParsedWorkflow;
     if (typeof workflow === 'string') {
       // Try file path first, then YAML/JSON content
-      if (WorkflowLoader.looksLikeFilePath(workflow) && require('fs').existsSync(workflow)) {
+      if (WorkflowLoader.looksLikeFilePath(workflow) && existsSync(workflow)) {
         parsedWorkflow = await WorkflowLoader.fromFile(workflow);
       } else {
         try {
@@ -566,6 +581,9 @@ export class OrbytEngine {
     };
 
     this.log('info', `Running workflow: ${parsedWorkflow.name || 'unnamed'}`);
+
+    // Persist workflow definition for replay before executing
+    this.workflowStore.save(parsedWorkflow);
 
     // Execute workflow with performance measurement
     const result = await this.measureWorkflowExecution(
@@ -735,6 +753,7 @@ export class OrbytEngine {
     // Return mock result showing what would happen
     return {
       workflowName: workflow.name || 'unnamed',
+      executionId: `dry-run-${Date.now()}`,
       status: 'success',
       stepResults: new Map(),
       duration: 0,
@@ -817,6 +836,28 @@ export class OrbytEngine {
    */
   getConfig(): OrbytEngineConfig {
     return this.config;
+  }
+
+  /**
+   * Get the execution state store for reading past execution records.
+   */
+  getExecutionStore(): ExecutionStore {
+    return this.executionStore;
+  }
+
+  /**
+   * Get the workflow store for loading saved (versioned) workflow definitions.
+   * Primarily used for replay: load the exact definition that produced a failed run.
+   */
+  getWorkflowStore(): WorkflowStore {
+    return this.workflowStore;
+  }
+
+  /**
+   * Get the schedule store for reading and managing persisted schedules.
+   */
+  getScheduleStore(): ScheduleStore {
+    return this.scheduleStore;
   }
 
   /**

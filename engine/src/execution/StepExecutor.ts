@@ -15,6 +15,7 @@ import { ContextStore } from '../context/ContextStore.js';
 import { RetryPolicy } from '../automation/RetryPolicy.js';
 import { BackoffStrategy } from '../automation/BackoffStrategy.js';
 import { TimeoutManager } from '../automation/TimeoutManager.js';
+import { performance } from 'node:perf_hooks';
 import { DriverResolver } from './drivers/DriverResolver.js';
 import { AdapterDriver } from './drivers/AdapterDriver.js';
 import { AdapterRegistry } from '../adapters/AdapterRegistry.js';
@@ -157,6 +158,7 @@ export class StepExecutor {
     providedContext?: ResolutionContext
   ): Promise<StepResult> {
     const startedAt = new Date();
+    const stepStart = performance.now();
     let attempts = 0;
     let lastError: Error | undefined;
 
@@ -315,7 +317,7 @@ export class StepExecutor {
         }
 
         const completedAt = new Date();
-        const duration = completedAt.getTime() - startedAt.getTime();
+        const duration = Math.round(performance.now() - stepStart);
 
         // Log step completion
         logger.stepCompleted(step.id, step.name || step.id, duration, {
@@ -417,7 +419,7 @@ export class StepExecutor {
             output: null,
             error: lastError,
             attempts,
-            duration: completedAt.getTime() - startedAt.getTime(),
+            duration: Math.round(performance.now() - stepStart),
             startedAt,
             completedAt,
           };
@@ -481,7 +483,7 @@ export class StepExecutor {
 
     // All attempts failed
     const completedAt = new Date();
-    const duration = completedAt.getTime() - startedAt.getTime();
+    const duration = Math.round(performance.now() - stepStart);
 
     // Log step failure
     if (lastError) {
@@ -568,7 +570,7 @@ export class StepExecutor {
     step: ParsedStep
   ): Promise<any> {
     const logger = LoggerManager.getLogger();
-    const startTime = Date.now();
+    const startTime = performance.now();
 
     try {
       const driver = this.driverResolver.resolve(driverStep);
@@ -600,13 +602,13 @@ export class StepExecutor {
       }
 
       // Log successful adapter action execution
-      const duration = Date.now() - startTime;
+      const duration = Math.round(performance.now() - startTime);
       logger.adapterActionExecuted(step.adapter, step.action, duration, true);
 
       return result;
     } catch (error) {
       // Log failed adapter action execution
-      const duration = Date.now() - startTime;
+      const duration = Math.round(performance.now() - startTime);
       logger.adapterActionExecuted(step.adapter, step.action, duration, false);
       throw error;
     }
@@ -621,7 +623,7 @@ export class StepExecutor {
     context: any
   ): Promise<any> {
     const logger = LoggerManager.getLogger();
-    const startTime = Date.now();
+    const startTime = performance.now();
 
     const adapter = this.adapters.get(step.adapter);
 
@@ -660,13 +662,13 @@ export class StepExecutor {
       }
 
       // Log successful adapter action execution
-      const duration = Date.now() - startTime;
+      const duration = Math.round(performance.now() - startTime);
       logger.adapterActionExecuted(step.adapter, step.action, duration, true);
 
       return result;
     } catch (error) {
       // Log failed adapter action execution
-      const duration = Date.now() - startTime;
+      const duration = Math.round(performance.now() - startTime);
       logger.adapterActionExecuted(step.adapter, step.action, duration, false);
       throw error;
     }
