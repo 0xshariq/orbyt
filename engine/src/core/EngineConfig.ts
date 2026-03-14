@@ -38,6 +38,8 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
     enableEvents: config.enableEvents ?? true,
     stateDir: config.stateDir ?? join(ORBYT_HOME, 'state'),
     logDir: config.logDir ?? join(ORBYT_HOME, 'logs'),
+    cacheDir: config.cacheDir ?? join(ORBYT_HOME, 'cache'),
+    runtimeDir: config.runtimeDir ?? join(ORBYT_HOME, 'runtime'),
     sandboxMode: config.sandboxMode ?? 'basic',
     workingDirectory: config.workingDirectory ?? process.cwd(),
     experimental: config.experimental ?? false,

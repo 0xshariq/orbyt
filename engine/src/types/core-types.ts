@@ -1758,6 +1758,18 @@ export interface OrbytEngineConfig {
    */
   logDir?: string;
 
+  /**
+   * Directory for storing cache artifacts (parsed workflows, adapter metadata)
+   * @default '.orbyt/cache'
+   */
+  cacheDir?: string;
+
+  /**
+   * Directory for runtime artifacts (dag snapshots, context, locks)
+   * @default '.orbyt/runtime'
+   */
+  runtimeDir?: string;
+
   // === Security ===
 
   /**

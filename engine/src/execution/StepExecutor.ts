@@ -26,6 +26,8 @@ import { createEvent } from '../events/EngineEvents.js';
 import type { StepHookContext } from '../hooks/LifecycleHooks.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
 import { DriverContext, DriverStep, EngineEventType, ParsedStep, ResolutionContext, StepAdapter, StepResult } from '../types/core-types.js';
+import { ResourceValidator } from '../security/ResourceValidator.js';
+import { StepError, StepErrorCode } from '../errors/StepError.js';
 
 /**
  * Step executor with retry and timeout logic
@@ -43,6 +45,7 @@ export class StepExecutor {
   private adapterDriver?: AdapterDriver;
 
   private resolver = new VariableResolver();
+  private resourceValidator = new ResourceValidator();
   private contextStore?: ContextStore;
   private retryPolicy?: RetryPolicy;
   private timeoutManager?: TimeoutManager;
@@ -314,6 +317,8 @@ export class StepExecutor {
         }
 
         // Execute with timeout
+        this.resourceValidator.validate(step, resolvedInput, context);
+
         let output = await this.executeWithTimeout(
           step,
           resolvedInput,
@@ -440,6 +445,11 @@ export class StepExecutor {
         }
 
         // Check if should retry using policy
+        if (lastError instanceof StepError && lastError.code === (StepErrorCode.STEP_CONFIG_INVALID as any)) {
+          // Deterministic configuration/path guardrail failure: do not retry.
+          break;
+        }
+
         if (this.retryPolicy && attempts < maxAttempts) {
           const shouldRetry = this.retryPolicy.shouldRetry(lastError, attempts);
 

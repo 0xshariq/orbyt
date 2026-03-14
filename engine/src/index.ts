@@ -59,6 +59,10 @@ export * from './automation/index.js';
 export * from './queue/index.js';
 export * from './scheduling/index.js';
 
+// Cache and runtime artifacts
+export * from './cache/index.js';
+export * from './runtime/index.js';
+
 // Errors (for error handling)
 export * from './errors/index.js';
 

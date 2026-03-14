@@ -87,12 +87,14 @@ import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
 import { EngineContext, EngineEventType, ExecutionExplanation, ExecutionOptions, LogLevel, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { ExecutionStore } from '../storage/ExecutionStore.js';
 import { WorkflowStore } from '../storage/WorkflowStore.js';
 import { ScheduleStore } from '../storage/ScheduleStore.js';
+import { WorkflowParseCache, AdapterMetadataCache } from '../cache/index.js';
+import { RuntimeArtifactStore } from '../runtime/index.js';
 
 /**
  * OrbytEngine - Main public API
@@ -232,6 +234,9 @@ export class OrbytEngine {
   private executionStore: ExecutionStore;
   private workflowStore: WorkflowStore;
   private scheduleStore: ScheduleStore;
+  private workflowParseCache: WorkflowParseCache;
+  private adapterMetadataCache: AdapterMetadataCache;
+  private runtimeArtifactStore: RuntimeArtifactStore;
 
   constructor(config: OrbytEngineConfig = {}) {
     // Validate and apply defaults
@@ -287,11 +292,18 @@ export class OrbytEngine {
     // Wire components together
     this.setupComponents();
 
+    // Ensure infrastructure directories exist before any persistence/caching.
+    this.bootstrapRuntimeDirectories();
+
     // Initialise persistent stores (non-fatal — must never block engine startup)
     const storeRoot = this.config.stateDir ?? join(homedir(), '.orbyt');
     this.executionStore = new ExecutionStore(join(storeRoot, 'executions'));
     this.workflowStore = new WorkflowStore(join(storeRoot, 'workflows'));
     this.scheduleStore = new ScheduleStore(join(storeRoot, 'schedules'));
+    this.workflowParseCache = new WorkflowParseCache(join(this.config.cacheDir, 'workflows'));
+    this.adapterMetadataCache = new AdapterMetadataCache(join(this.config.cacheDir, 'adapters'));
+    this.runtimeArtifactStore = new RuntimeArtifactStore(this.config.runtimeDir);
+    this.runtimeArtifactStore.ensureDirs();
     this.workflowExecutor.setStateDir(join(storeRoot, 'executions'));
 
     // Register built-in adapters
@@ -355,6 +367,42 @@ export class OrbytEngine {
     }
     if (this.config.timeoutManager) {
       this.stepExecutor.setTimeoutManager(this.config.timeoutManager);
+    }
+  }
+
+  /**
+   * Create all required engine directories under ~/.orbyt (or custom overrides).
+   * This keeps later store/cache writes simple and predictable.
+   */
+  private bootstrapRuntimeDirectories(): void {
+    const orbytHome = join(homedir(), '.orbyt');
+    const requiredDirs = [
+      orbytHome,
+      this.config.stateDir,
+      join(this.config.stateDir, 'executions'),
+      join(this.config.stateDir, 'workflows'),
+      join(this.config.stateDir, 'schedules'),
+      this.config.logDir,
+      this.config.cacheDir,
+      join(this.config.cacheDir, 'workflows'),
+      join(this.config.cacheDir, 'adapters'),
+      this.config.runtimeDir,
+      join(this.config.runtimeDir, 'dag'),
+      join(this.config.runtimeDir, 'context'),
+      join(this.config.runtimeDir, 'locks'),
+      join(orbytHome, 'plugins'),
+      join(orbytHome, 'metrics'),
+      join(orbytHome, 'config'),
+      join(orbytHome, 'tmp'),
+      join(orbytHome, 'cloud-sync'),
+    ];
+
+    for (const dir of requiredDirs) {
+      try {
+        mkdirSync(dir, { recursive: true });
+      } catch {
+        // Non-fatal bootstrap: individual stores also guard their own writes.
+      }
     }
   }
 
@@ -862,6 +910,50 @@ export class OrbytEngine {
    */
   getScheduleStore(): ScheduleStore {
     return this.scheduleStore;
+  }
+
+  /**
+   * Get parsed workflow cache for diagnostics and tooling integration.
+   */
+  getWorkflowParseCache(): WorkflowParseCache {
+    return this.workflowParseCache;
+  }
+
+  /**
+   * Get adapter metadata cache for diagnostics and tooling integration.
+   */
+  getAdapterMetadataCache(): AdapterMetadataCache {
+    return this.adapterMetadataCache;
+  }
+
+  /**
+   * Get runtime artifact store (dag/context/locks) for diagnostics and tooling.
+   */
+  getRuntimeArtifactStore(): RuntimeArtifactStore {
+    return this.runtimeArtifactStore;
+  }
+
+  /**
+   * Get adapter registry statistics for diagnostics and CLI health checks.
+   */
+  getAdapterStats(): {
+    total: number;
+    initialized: number;
+    adapters: Array<{
+      name: string;
+      version: string;
+      supportedActions: string[];
+      isInitialized: boolean;
+    }>;
+  } {
+    return this.adapterRegistry.getStats();
+  }
+
+  /**
+   * Get engine runtime version.
+   */
+  getVersion(): string {
+    return this.version;
   }
 
   /**
