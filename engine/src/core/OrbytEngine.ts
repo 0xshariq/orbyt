@@ -269,6 +269,9 @@ export class OrbytEngine {
 
     // Initialize executors
     this.stepExecutor = new StepExecutor();
+    // Share OrbytEngine's AdapterRegistry with StepExecutor so there is a
+    // single registry instance — preventing duplicate INFO logs on registration.
+    this.stepExecutor.setAdapterRegistry(this.adapterRegistry);
     this.workflowExecutor = new WorkflowExecutor(this.stepExecutor);
 
     // Initialize execution engine
@@ -551,8 +554,8 @@ export class OrbytEngine {
     const strategyName = executionStrategy.strategy as string;
     const mappedStrategy: WorkflowContext['executionStrategy'] =
       strategyName === 'parallel' ? 'parallel'
-      : strategyName === 'mixed'  ? 'mixed'
-      : 'sequential'; // 'sequential' | 'conservative' | any unknown → sequential
+        : strategyName === 'mixed' ? 'mixed'
+          : 'sequential'; // 'sequential' | 'conservative' | any unknown → sequential
     LoggerManager.patchWorkflowContext({ executionStrategy: mappedStrategy });
 
     // 3. Safety Guard: Check if safe to execute
@@ -599,7 +602,7 @@ export class OrbytEngine {
     internalContext._usage.weightedStepCount = result.metadata.totalSteps;
 
     this.log('info', `Workflow completed: ${result.status}`, {
-      duration: result.duration,
+      durationMs: result.duration,
       steps: result.metadata.totalSteps,
       billable: internalContext._billing.isBillable,
       automationCount: internalContext._usage.automationCount,
@@ -776,7 +779,7 @@ export class OrbytEngine {
    * @param adapter - Adapter to register
    */
   registerAdapter(adapter: Adapter): void {
-    this.adapterRegistry.register(adapter);
+    // adapterRegistry is shared with stepExecutor — one registration, one log.
     this.stepExecutor.registerModernAdapter(adapter);
     this.log('debug', `Registered adapter: ${adapter.name}`);
   }

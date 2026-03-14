@@ -129,12 +129,15 @@ export class Scheduler {
    */
   async start(): Promise<void> {
     const logger = LoggerManager.getLogger();
-    logger.info('[Scheduler] Starting schedulers');
+    const hasSchedules = this.schedules.size > 0;
+    (hasSchedules ? logger.info : logger.debug).call(logger,
+      `[Scheduler] Starting schedulers${hasSchedules ? ` (${this.schedules.size} registered)` : ' (none registered)'}`);
     
     await this.cronScheduler.start();
     await this.jobScheduler.start();
     
-    logger.info('[Scheduler] All schedulers started successfully');
+    (hasSchedules ? logger.info : logger.debug).call(logger,
+      `[Scheduler] All schedulers started${hasSchedules ? '' : ' (idle — no schedules registered)'}`);
   }
 
   /**
@@ -142,12 +145,13 @@ export class Scheduler {
    */
   async stop(): Promise<void> {
     const logger = LoggerManager.getLogger();
-    logger.info('[Scheduler] Stopping schedulers');
+    const hasSchedules = this.schedules.size > 0;
+    (hasSchedules ? logger.info : logger.debug).call(logger, '[Scheduler] Stopping schedulers');
     
     await this.cronScheduler.stop();
     await this.jobScheduler.stop();
     
-    logger.info('[Scheduler] All schedulers stopped');
+    (hasSchedules ? logger.info : logger.debug).call(logger, '[Scheduler] All schedulers stopped');
   }
 
   /**

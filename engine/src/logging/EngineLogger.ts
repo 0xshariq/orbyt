@@ -130,7 +130,7 @@ export class CategoryLogger {
       else if (thresholds?.warn && duration > thresholds.warn) level = LogLevel.WARN;
       this.parent._logWithCategory(
         level, `${label} completed`,
-        { duration: `${duration}ms` }, undefined, this.category,
+        { durationMs: duration }, undefined, this.category,
         EngineLogType.EXECUTION_TIME,
       );
       return result;
@@ -138,7 +138,7 @@ export class CategoryLogger {
       const duration = Date.now() - start;
       this.parent._logWithCategory(
         LogLevel.ERROR, `${label} failed`,
-        { duration: `${duration}ms` },
+        { durationMs: duration },
         err instanceof Error ? err : new Error(String(err)),
         this.category,
         EngineLogType.ERROR_DETECTED,
@@ -294,14 +294,14 @@ export class EngineLogger implements LogDispatcher {
         level = LogLevel.INFO;
       }
 
-      this._logWithCategory(level, `${label} completed`, { duration: `${duration}ms` }, undefined, category, EngineLogType.EXECUTION_TIME);
+      this._logWithCategory(level, `${label} completed`, { durationMs: duration }, undefined, category, EngineLogType.EXECUTION_TIME);
       return result;
     } catch (error) {
       const duration = Date.now() - start;
       this._logWithCategory(
         LogLevel.ERROR,
         `${label} failed`,
-        { duration: `${duration}ms` },
+        { durationMs: duration },
         error instanceof Error ? error : new Error(String(error)),
         category,
         EngineLogType.ERROR_DETECTED,

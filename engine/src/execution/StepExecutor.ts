@@ -62,6 +62,20 @@ export class StepExecutor {
   }
 
   /**
+   * Replace the internal AdapterRegistry with a shared instance.
+   * Call this from OrbytEngine *before* any adapters are registered so
+   * both OrbytEngine and StepExecutor write to — and therefore log from —
+   * the same registry, preventing duplicate INFO logs.
+   */
+  setAdapterRegistry(registry: AdapterRegistry): void {
+    this.adapterRegistry = registry;
+    // Re-wire the AdapterDriver to the new registry if one already exists
+    if (this.adapterDriver) {
+      this.adapterDriver = new AdapterDriver(registry);
+    }
+  }
+
+  /**
    * Register a modern adapter with driver system
    * 
    * @param adapter - Adapter implementing @dev-ecosystem/core Adapter interface
@@ -319,9 +333,9 @@ export class StepExecutor {
         const completedAt = new Date();
         const duration = Math.round(performance.now() - stepStart);
 
-        // Log step completion
+        // Log step completion — omit raw stdout/stderr to keep logs readable
         logger.stepCompleted(step.id, step.name || step.id, duration, {
-          output,
+          exitCode: (output as any)?.exitCode,
           attempts,
         });
 
@@ -701,7 +715,11 @@ export class StepExecutor {
       executionId: resolutionContext.run?.id || 'unknown',
       workflowName: resolutionContext.workflow?.name || 'unknown',
       log: (message: string, level?: 'info' | 'warn' | 'error' | 'debug') => {
-        console.log(`[${level || 'info'}] ${message}`);
+        const l = LoggerManager.getLogger();
+        if (level === 'debug') l.debug(message);
+        else if (level === 'warn') l.warn(message);
+        else if (level === 'error') l.error(message);
+        else l.info(message);
       },
       timeout: step.timeout ? this.parseTimeoutString(step.timeout) : undefined,
       env: resolutionContext.env || {},
