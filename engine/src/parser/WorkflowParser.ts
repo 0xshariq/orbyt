@@ -56,6 +56,8 @@ export class WorkflowParser {
         permissions: validated.permissions,
         resources: validated.resources,
         outputs: validated.outputs,
+        strategy: (validated as any).strategy,
+        execution: (validated as any).execution,
       };
 
       const duration = Date.now() - startTime;

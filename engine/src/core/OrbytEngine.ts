@@ -85,7 +85,23 @@ import { CLIAdapter, ShellAdapter, HTTPAdapter, FSAdapter } from '../adapters/bu
 import { InternalContextBuilder } from '../execution/InternalExecutionContext.js';
 import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
-import { EngineContext, EngineEventType, ExecutionExplanation, ExecutionOptions, LogLevel, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
+import {
+  EngineContext,
+  EngineEventType,
+  ExecutionExplanation,
+  ExecutionOptions,
+  LoadedWorkflowItem,
+  LogLevel,
+  MultiWorkflowExecutionMode,
+  OrbytEngineConfig,
+  OwnershipContext,
+  ParsedWorkflow,
+  WorkflowBatchItemResult,
+  WorkflowBatchResult,
+  WorkflowBatchRunOptions,
+  WorkflowResult,
+  WorkflowRunOptions,
+} from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -220,6 +236,7 @@ import { RuntimeArtifactStore } from '../runtime/index.js';
  * ```
  */
 export class OrbytEngine {
+  private static readonly SUPPORTED_WORKFLOW_MAJOR = 1;
   private config: ReturnType<typeof applyConfigDefaults>;
   private executionEngine: ExecutionEngine;
   private stepExecutor: StepExecutor;
@@ -516,13 +533,161 @@ export class OrbytEngine {
     if (!this.isStarted && this.config.enableScheduler) {
       await this.start();
     }
+    const parsedWorkflow = await this.resolveWorkflowInput(workflow);
+    return this.executeParsedWorkflow(parsedWorkflow, options);
+  }
 
+  /**
+   * Execute multiple workflows using explicit execution mode.
+   *
+   * Flow:
+   * 1. Preload+validate all workflows first
+   * 2. Execute according to mode (sequential | parallel | mixed)
+   */
+  async runMany(
+    workflows: Array<string | ParsedWorkflow>,
+    options: WorkflowBatchRunOptions = {},
+  ): Promise<WorkflowBatchResult> {
+    if (!Array.isArray(workflows) || workflows.length === 0) {
+      throw new Error('runMany requires at least one workflow input');
+    }
 
+    if (!this.isStarted && this.config.enableScheduler) {
+      await this.start();
+    }
 
-    // Accept string (YAML/JSON), file path, or object. Always validate/parse via loader.
+    const startedAt = Date.now();
+    const failFast = options.failFast === true;
+
+    const loaded = await this.preloadWorkflows(workflows);
+    const mode: MultiWorkflowExecutionMode = this.resolveBatchExecutionMode(loaded, options.executionMode);
+    const maxParallel = Math.max(1, options.maxParallelWorkflows || this.config.maxConcurrentWorkflows || 1);
+    const inferredWaveSize = loaded.some((item) => item.workflow.strategy?.maxParallel)
+      ? Math.max(...loaded.map((item) => item.workflow.strategy?.maxParallel || 1))
+      : 2;
+    const waveSize = Math.max(1, options.mixedBatchSize || inferredWaveSize);
+
+    const results: WorkflowBatchItemResult[] = [];
+
+    if (mode === 'sequential') {
+      for (const item of loaded) {
+        const single = await this.executeLoadedItem(item, options, false);
+        results.push(single);
+        if (failFast && single.status === 'failed') break;
+      }
+    } else if (mode === 'parallel') {
+      const parallelResults = await this.mapWithConcurrency(loaded, maxParallel, (item) =>
+        this.executeLoadedItem(item, options, true)
+      );
+      results.push(...parallelResults);
+    } else {
+      for (let i = 0; i < loaded.length; i += waveSize) {
+        const wave = loaded.slice(i, i + waveSize);
+        const waveResults = await this.mapWithConcurrency(
+          wave,
+          Math.min(maxParallel, wave.length),
+          (item) => this.executeLoadedItem(item, options, true),
+        );
+        results.push(...waveResults);
+        if (failFast && waveResults.some((r) => r.status === 'failed')) break;
+      }
+    }
+
+    const successfulWorkflows = results.filter((r) => r.status === 'success').length;
+    const failedWorkflows = results.length - successfulWorkflows;
+
+    return {
+      mode,
+      totalWorkflows: results.length,
+      successfulWorkflows,
+      failedWorkflows,
+      durationMs: Date.now() - startedAt,
+      results,
+    };
+  }
+
+  /**
+   * Preload and validate all workflow inputs before execution starts.
+   */
+  private async preloadWorkflows(
+    workflows: Array<string | ParsedWorkflow>,
+  ): Promise<LoadedWorkflowItem[]> {
+    const loaded: LoadedWorkflowItem[] = [];
+    const loadErrors: string[] = [];
+
+    for (let i = 0; i < workflows.length; i++) {
+      const source = workflows[i];
+      const sourceLabel = typeof source === 'string' ? source : `workflow#${i + 1}`;
+      try {
+        const parsed = await this.resolveWorkflowInput(source);
+        loaded.push({
+          source: sourceLabel,
+          workflow: parsed,
+          declaredMode: this.extractDeclaredExecutionMode(parsed),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        loadErrors.push(`[${sourceLabel}] ${message}`);
+      }
+    }
+
+    if (loadErrors.length > 0) {
+      throw new Error(`WORKFLOW_PRELOAD_FAILED:\n${loadErrors.join('\n')}`);
+    }
+
+    return loaded;
+  }
+
+  /**
+   * Resolve batch execution mode with precedence:
+   * 1) Explicit API/CLI option
+   * 2) Declared workflow strategy modes from YAML
+   * 3) Default sequential
+   */
+  private resolveBatchExecutionMode(
+    loaded: LoadedWorkflowItem[],
+    explicitMode?: MultiWorkflowExecutionMode,
+  ): MultiWorkflowExecutionMode {
+    if (explicitMode) return explicitMode;
+
+    const declared = loaded
+      .map((item) => item.declaredMode)
+      .filter((mode): mode is MultiWorkflowExecutionMode => mode !== undefined);
+
+    if (declared.length === 0) return 'sequential';
+
+    const unique = Array.from(new Set(declared));
+    if (unique.length === 1) return unique[0];
+
+    // Different workflow-level declarations across batch: use mixed orchestration.
+    return 'mixed';
+  }
+
+  /**
+   * Extract multi-workflow orchestration intent from parsed workflow schema.
+   * Accepts strategy.type values in {'sequential','parallel','mixed'}.
+   */
+  private extractDeclaredExecutionMode(
+    workflow: ParsedWorkflow,
+  ): MultiWorkflowExecutionMode | undefined {
+    const raw = workflow.strategy?.type;
+    if (!raw) return undefined;
+
+    const normalized = String(raw).trim().toLowerCase();
+    if (normalized === 'sequential' || normalized === 'parallel' || normalized === 'mixed') {
+      return normalized;
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Resolve any accepted workflow input to a parsed workflow and run preflight checks.
+   */
+  private async resolveWorkflowInput(workflow: string | ParsedWorkflow): Promise<ParsedWorkflow> {
     let parsedWorkflow: ParsedWorkflow;
+
     if (typeof workflow === 'string') {
-      // Try file path first, then YAML/JSON content
       if (WorkflowLoader.looksLikeFilePath(workflow) && existsSync(workflow)) {
         parsedWorkflow = await WorkflowLoader.fromFile(workflow);
       } else {
@@ -533,11 +698,77 @@ export class OrbytEngine {
         }
       }
     } else if (typeof workflow === 'object' && workflow !== null) {
-      parsedWorkflow = await WorkflowLoader.fromObject(workflow);
+      parsedWorkflow = this.isParsedWorkflowInput(workflow)
+        ? (workflow as ParsedWorkflow)
+        : await WorkflowLoader.fromObject(workflow);
     } else {
       throw new Error('Invalid workflow input: must be file path, YAML/JSON string, or object');
     }
 
+    this.assertWorkflowVersionSupported(parsedWorkflow);
+    this.assertAdapterCapabilities(parsedWorkflow);
+    return parsedWorkflow;
+  }
+
+  /**
+   * Execute a loaded workflow item and capture per-item result envelope.
+   */
+  private async executeLoadedItem(
+    item: LoadedWorkflowItem,
+    options: WorkflowBatchRunOptions,
+    isolatedRuntime: boolean,
+  ): Promise<WorkflowBatchItemResult> {
+    const startedAt = Date.now();
+    try {
+      const result = await this.executeParsedWorkflow(
+        item.workflow,
+        this.asWorkflowRunOptions(options),
+        isolatedRuntime,
+      );
+      return {
+        source: item.source,
+        workflowName: result.workflowName,
+        status: 'success',
+        result,
+        durationMs: Date.now() - startedAt,
+      };
+    } catch (error) {
+      return {
+        source: item.source,
+        workflowName: item.workflow.name || item.workflow.metadata?.name,
+        status: 'failed',
+        error: error instanceof Error ? error : new Error(String(error)),
+        durationMs: Date.now() - startedAt,
+      };
+    }
+  }
+
+  /**
+   * Strip batch-only options to build a single-workflow run options object.
+   */
+  private asWorkflowRunOptions(options: WorkflowBatchRunOptions): WorkflowRunOptions {
+    return {
+      variables: options.variables,
+      env: options.env,
+      secrets: options.secrets,
+      context: options.context,
+      timeout: options.timeout,
+      continueOnError: options.continueOnError,
+      dryRun: options.dryRun,
+      triggeredBy: options.triggeredBy,
+      _ownershipContext: options._ownershipContext,
+      _permissionPolicy: options._permissionPolicy,
+    };
+  }
+
+  /**
+   * Core single-workflow execution logic used by run() and runMany().
+   */
+  private async executeParsedWorkflow(
+    parsedWorkflow: ParsedWorkflow,
+    options: WorkflowRunOptions,
+    isolatedRuntime = false,
+  ): Promise<WorkflowResult> {
     // Inject internal fields after validation
     const sanitizedOptions = options;
     const internalContext = InternalContextBuilder.build(
@@ -552,118 +783,176 @@ export class OrbytEngine {
       isBillable: internalContext._billing.isBillable,
     });
 
-    // Handle dry-run mode
-    if (options.dryRun || this.config.mode === 'dry-run') {
-      const dryResult = await this.dryRun(parsedWorkflow, options);
-      LoggerManager.clearWorkflowContext();
-      return dryResult;
-    }
+    try {
+      // Handle dry-run mode
+      if (options.dryRun || this.config.mode === 'dry-run') {
+        return await this.dryRun(parsedWorkflow, options);
+      }
 
-    // ============================================================================
-    // INTELLIGENCE LAYERS (Foundation - doesn't change execution yet)
-    // ============================================================================
+      // ============================================================================
+      // INTELLIGENCE LAYERS (Foundation - doesn't change execution yet)
+      // ============================================================================
 
-    // 1. Intent Layer: Understand what the workflow is trying to do
-    const classifiedIntent = IntentAnalyzer.classify(parsedWorkflow);
-    this.log('debug', `Workflow intent: ${classifiedIntent.intent}`, {
-      confidence: classifiedIntent.confidence,
-      patterns: classifiedIntent.patterns,
-      reasoning: classifiedIntent.reasoning,
-    });
-
-    // Log intent-based recommendations (for future optimization)
-    const recommendations = IntentAnalyzer.getRecommendations(classifiedIntent.intent);
-    if (recommendations.optimizations?.length) {
-      this.log('debug', 'Intent-based optimizations available', {
-        intent: classifiedIntent.intent,
-        tips: recommendations.optimizations,
+      // 1. Intent Layer: Understand what the workflow is trying to do
+      const classifiedIntent = IntentAnalyzer.classify(parsedWorkflow);
+      this.log('debug', `Workflow intent: ${classifiedIntent.intent}`, {
+        confidence: classifiedIntent.confidence,
+        patterns: classifiedIntent.patterns,
+        reasoning: classifiedIntent.reasoning,
       });
+
+      // Log intent-based recommendations (for future optimization)
+      const recommendations = IntentAnalyzer.getRecommendations(classifiedIntent.intent);
+      if (recommendations.optimizations?.length) {
+        this.log('debug', 'Intent-based optimizations available', {
+          intent: classifiedIntent.intent,
+          tips: recommendations.optimizations,
+        });
+      }
+
+      // 2. Execution Strategy Layer: Decide HOW to run safely
+      const strategyContext = {
+        workflow: parsedWorkflow,
+        intent: classifiedIntent.intent,
+        resourceLimits: {
+          maxConcurrentSteps: this.config.maxConcurrentSteps || 10,
+          maxMemory: 0,
+          timeout: sanitizedOptions.timeout || this.config.defaultTimeout || 300000,
+        },
+      };
+
+      const executionStrategy = ExecutionStrategyResolver.resolve(strategyContext);
+      this.log('debug', `Execution strategy: ${executionStrategy.strategy}`, {
+        reason: executionStrategy.reason,
+        adjustments: executionStrategy.adjustments,
+      });
+
+      const strategyName = executionStrategy.strategy as string;
+      const mappedStrategy: WorkflowContext['executionStrategy'] =
+        strategyName === 'parallel' ? 'parallel'
+          : strategyName === 'mixed' ? 'mixed'
+            : 'sequential';
+      LoggerManager.patchWorkflowContext({ executionStrategy: mappedStrategy });
+
+      // 3. Safety Guard: Check if safe to execute
+      const safetyCheck = ExecutionStrategyGuard.isSafeToExecute(strategyContext);
+      if (!safetyCheck.safe) {
+        this.log('warn', `Execution safety check failed: ${safetyCheck.reason}`);
+      }
+
+      // ============================================================================
+      // END INTELLIGENCE LAYERS
+      // ============================================================================
+
+      const execOptions: ExecutionOptions = {
+        timeout: sanitizedOptions.timeout || this.config.defaultTimeout,
+        env: sanitizedOptions.env,
+        inputs: sanitizedOptions.variables,
+        secrets: sanitizedOptions.secrets,
+        context: {
+          ...sanitizedOptions.context,
+          _internal: internalContext,
+        },
+        continueOnError: sanitizedOptions.continueOnError,
+        triggeredBy: sanitizedOptions.triggeredBy || 'manual',
+      };
+
+      this.log('info', `Running workflow: ${parsedWorkflow.name || 'unnamed'}`);
+      this.workflowStore.save(parsedWorkflow);
+
+      // Parallel/mixed mode can execute multiple workflows concurrently via runMany().
+      // In that case, use per-execution runtime instances to prevent shared mutable
+      // state collisions (executionId/context/step runtime).
+      const runtime = isolatedRuntime
+        ? this.createIsolatedExecutionRuntime()
+        : {
+            stepExecutor: this.stepExecutor,
+            workflowExecutor: this.workflowExecutor,
+          };
+
+      const result = await this.measureWorkflowExecution(
+        parsedWorkflow.name || 'unnamed',
+        () => runtime.workflowExecutor.execute(parsedWorkflow, execOptions)
+      );
+
+      internalContext._usage.stepCount = result.metadata.totalSteps;
+      internalContext._usage.durationSeconds = result.duration / 1000;
+      internalContext._usage.weightedStepCount = result.metadata.totalSteps;
+
+      this.log('info', `Workflow completed: ${result.status}`, {
+        durationMs: result.duration,
+        steps: result.metadata.totalSteps,
+        billable: internalContext._billing.isBillable,
+        automationCount: internalContext._usage.automationCount,
+        stepCount: internalContext._usage.stepCount,
+      });
+
+      await this.onWorkflowBillingComplete(internalContext, result);
+      return result;
+    } finally {
+      LoggerManager.clearWorkflowContext();
+    }
+  }
+
+  /**
+   * Create isolated per-workflow execution runtime.
+   *
+   * This is used by runMany parallel/mixed modes so each workflow run has its
+   * own mutable executor state while preserving shared adapter capabilities.
+   */
+  private createIsolatedExecutionRuntime(): {
+    stepExecutor: StepExecutor;
+    workflowExecutor: WorkflowExecutor;
+  } {
+    const stepExecutor = new StepExecutor();
+    const localRegistry = new AdapterRegistry();
+
+    for (const adapter of this.adapterRegistry.getAll()) {
+      localRegistry.register(adapter);
     }
 
-    // 2. Execution Strategy Layer: Decide HOW to run safely
-    const strategyContext = {
-      workflow: parsedWorkflow,
-      intent: classifiedIntent.intent,
-      resourceLimits: {
-        maxConcurrentSteps: this.config.maxConcurrentSteps || 10,
-        maxMemory: 0,
-        timeout: sanitizedOptions.timeout || this.config.defaultTimeout || 300000,
-      },
-    };
+    stepExecutor.setAdapterRegistry(localRegistry);
+    stepExecutor.setEventBus(this.eventBus);
+    stepExecutor.setHookManager(this.hookManager);
 
-    const executionStrategy = ExecutionStrategyResolver.resolve(strategyContext);
-    this.log('debug', `Execution strategy: ${executionStrategy.strategy}`, {
-      reason: executionStrategy.reason,
-      adjustments: executionStrategy.adjustments,
-    });
-
-    // Enrich the active workflow context with the resolved execution strategy
-    // so all subsequent logs carry it without callers needing to pass it manually.
-    const strategyName = executionStrategy.strategy as string;
-    const mappedStrategy: WorkflowContext['executionStrategy'] =
-      strategyName === 'parallel' ? 'parallel'
-        : strategyName === 'mixed' ? 'mixed'
-          : 'sequential'; // 'sequential' | 'conservative' | any unknown → sequential
-    LoggerManager.patchWorkflowContext({ executionStrategy: mappedStrategy });
-
-    // 3. Safety Guard: Check if safe to execute
-    const safetyCheck = ExecutionStrategyGuard.isSafeToExecute(strategyContext);
-    if (!safetyCheck.safe) {
-      this.log('warn', `Execution safety check failed: ${safetyCheck.reason}`);
-      // Foundation: Log only, don't block execution
-      // Future: Can block or delay execution based on policy
+    if (this.config.retryPolicy) {
+      stepExecutor.setRetryPolicy(this.config.retryPolicy);
+    }
+    if (this.config.timeoutManager) {
+      stepExecutor.setTimeoutManager(this.config.timeoutManager);
     }
 
-    // ============================================================================
-    // END INTELLIGENCE LAYERS
-    // ============================================================================
+    const workflowExecutor = new WorkflowExecutor(stepExecutor);
+    workflowExecutor.setEventBus(this.eventBus);
+    workflowExecutor.setHookManager(this.hookManager);
+    workflowExecutor.setStateDir(join(this.config.stateDir, 'executions'));
 
-    // Build execution options
-    const execOptions: ExecutionOptions = {
-      timeout: sanitizedOptions.timeout || this.config.defaultTimeout,
-      env: sanitizedOptions.env,
-      inputs: sanitizedOptions.variables,
-      secrets: sanitizedOptions.secrets,
-      context: {
-        ...sanitizedOptions.context,
-        _internal: internalContext, // Inject internal context (engine-only)
-      },
-      continueOnError: sanitizedOptions.continueOnError,
-      triggeredBy: sanitizedOptions.triggeredBy || 'manual',
+    return { stepExecutor, workflowExecutor };
+  }
+
+  /**
+   * Concurrency-limited mapper preserving input order.
+   */
+  private async mapWithConcurrency<TIn, TOut>(
+    items: TIn[],
+    concurrency: number,
+    mapper: (item: TIn, index: number) => Promise<TOut>,
+  ): Promise<TOut[]> {
+    const results = new Array<TOut>(items.length);
+    let nextIndex = 0;
+
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const current = nextIndex;
+        nextIndex += 1;
+        if (current >= items.length) return;
+        results[current] = await mapper(items[current], current);
+      }
     };
 
-    this.log('info', `Running workflow: ${parsedWorkflow.name || 'unnamed'}`);
-
-    // Persist workflow definition for replay before executing
-    this.workflowStore.save(parsedWorkflow);
-
-    // Execute workflow with performance measurement
-    const result = await this.measureWorkflowExecution(
-      parsedWorkflow.name || 'unnamed',
-      () => this.workflowExecutor.execute(parsedWorkflow, execOptions)
-    );
-
-    // Update usage counters after execution
-    internalContext._usage.stepCount = result.metadata.totalSteps;
-    internalContext._usage.durationSeconds = result.duration / 1000;
-    // Calculate weighted step count (future: based on actual step weights)
-    internalContext._usage.weightedStepCount = result.metadata.totalSteps;
-
-    this.log('info', `Workflow completed: ${result.status}`, {
-      durationMs: result.duration,
-      steps: result.metadata.totalSteps,
-      billable: internalContext._billing.isBillable,
-      automationCount: internalContext._usage.automationCount,
-      stepCount: internalContext._usage.stepCount,
-    });
-
-    // Call billing lifecycle hook
-    await this.onWorkflowBillingComplete(internalContext, result);
-
-    // Clear workflow context so it doesn't bleed into subsequent executions
-    LoggerManager.clearWorkflowContext();
-
-    return result;
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+    await Promise.all(workers);
+    return results;
   }
 
   /**
@@ -720,7 +1009,8 @@ export class OrbytEngine {
     options?: { _ownershipContext?: Partial<OwnershipContext>; logger?: EngineLogger }
   ): Promise<boolean> {
     // Use WorkflowLoader.validate to check workflow validity, passing logger if present
-    await WorkflowLoader.validate(workflow, options?.logger);
+    const parsed = await WorkflowLoader.validate(workflow, options?.logger);
+    this.assertWorkflowVersionSupported(parsed);
 
     // Context was set in WorkflowLoader — clear it now that validation is done
     LoggerManager.clearWorkflowContext();
@@ -753,6 +1043,8 @@ export class OrbytEngine {
     } else {
       parsedWorkflow = workflow;
     }
+
+    this.assertWorkflowVersionSupported(parsedWorkflow);
     // Generate explanation
     const explanation = ExplanationGenerator.generate(parsedWorkflow);
     // Log explanation for CLI visibility
@@ -1009,6 +1301,86 @@ export class OrbytEngine {
       `Workflow "${workflowName}"`,
       fn,
       { warn: 30000, error: 300000 }
+    );
+  }
+
+  /**
+   * Enforce runtime compatibility for workflow DSL version.
+   */
+  private assertWorkflowVersionSupported(workflow: ParsedWorkflow): void {
+    const raw = String(workflow.version || '').trim();
+    const match = raw.match(/^v?(\d+)(?:\.\d+){0,2}$/);
+
+    if (!match) {
+      throw new Error(
+        `UNSUPPORTED_WORKFLOW_VERSION: Invalid workflow version format "${raw}". ` +
+        'Expected semantic format like "1.0" or "1.0.0".'
+      );
+    }
+
+    const major = parseInt(match[1], 10);
+    if (major !== OrbytEngine.SUPPORTED_WORKFLOW_MAJOR) {
+      throw new Error(
+        `UNSUPPORTED_WORKFLOW_VERSION: Workflow version ${raw} is not supported. ` +
+        `Supported versions: ${OrbytEngine.SUPPORTED_WORKFLOW_MAJOR}.x`
+      );
+    }
+  }
+
+  /**
+   * Preflight adapter/action capability checks before execution.
+   */
+  private assertAdapterCapabilities(workflow: ParsedWorkflow): void {
+    const failures: string[] = [];
+
+    for (const step of workflow.steps) {
+      const action = String(step.action || '').trim();
+      const namespace = action.split('.')[0];
+
+      if (!action || !namespace) {
+        failures.push(
+          `step "${step.id}": invalid action "${action}" (expected namespace.action)`
+        );
+        continue;
+      }
+
+      const adapter = this.adapterRegistry.get(namespace);
+      if (!adapter) {
+        failures.push(
+          `step "${step.id}": adapter "${namespace}" is not registered (action: ${action})`
+        );
+        continue;
+      }
+
+      if (!adapter.supports(action)) {
+        failures.push(
+          `step "${step.id}": action "${action}" is not supported by adapter "${namespace}"`
+        );
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new Error(`ADAPTER_ACTION_NOT_FOUND:\n${failures.join('\n')}`);
+    }
+  }
+
+  /**
+   * Detect already-parsed workflow objects passed by trusted callers (CLI/API).
+   */
+  private isParsedWorkflowInput(value: unknown): value is ParsedWorkflow {
+    if (!value || typeof value !== 'object') return false;
+    const candidate = value as ParsedWorkflow;
+    return (
+      typeof candidate.version === 'string' &&
+      typeof candidate.kind === 'string' &&
+      Array.isArray(candidate.steps) &&
+      candidate.steps.every(
+        (step) =>
+          step &&
+          typeof step.id === 'string' &&
+          typeof step.action === 'string' &&
+          typeof step.adapter === 'string'
+      )
     );
   }
 }

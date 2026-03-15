@@ -16,9 +16,9 @@
  * @module storage
  */
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
-import { join, basename } from 'node:path';
+import { basename } from 'node:path';
 import type { StepResult } from '../types/core-types.js';
+import { FileStorageAdapter } from './FileStorageAdapter.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -79,12 +79,12 @@ export interface PersistedExecution {
  * An in-memory cache avoids re-reading the file on every step update.
  */
 export class ExecutionStore {
-  private readonly dir: string;
+  private readonly adapter: FileStorageAdapter;
   /** In-memory cache: executionId → current state */
   private readonly cache = new Map<string, PersistedExecution>();
 
   constructor(dir: string) {
-    this.dir = dir;
+    this.adapter = new FileStorageAdapter(dir);
   }
 
   // ─── Write API ─────────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ export class ExecutionStore {
    */
   begin(executionId: string, workflowName: string, startedAt: Date): void {
     try {
-      mkdirSync(this.dir, { recursive: true });
+      this.adapter.ensureDir();
       const state: PersistedExecution = {
         executionId,
         workflow: workflowName,
@@ -204,9 +204,7 @@ export class ExecutionStore {
       const cached = this.cache.get(executionId);
       if (cached) return { ...cached }; // Return a copy
 
-      const filePath = this._filePath(executionId);
-      if (!existsSync(filePath)) return null;
-      return JSON.parse(readFileSync(filePath, 'utf-8')) as PersistedExecution;
+      return this.adapter.readJson<PersistedExecution>(this._fileName(executionId));
     } catch {
       return null;
     }
@@ -217,9 +215,9 @@ export class ExecutionStore {
    */
   list(): string[] {
     try {
-      mkdirSync(this.dir, { recursive: true });
-      return readdirSync(this.dir)
-        .filter(f => f.endsWith('.json'))
+      this.adapter.ensureDir();
+      return this.adapter
+        .list('', { suffix: '.json', filesOnly: true })
         .map(f => basename(f, '.json'))
         .sort()
         .reverse();
@@ -234,22 +232,17 @@ export class ExecutionStore {
     const cached = this.cache.get(executionId);
     if (cached) return cached;
 
-    const filePath = this._filePath(executionId);
-    if (!existsSync(filePath)) return null;
-    try {
-      const state = JSON.parse(readFileSync(filePath, 'utf-8')) as PersistedExecution;
-      this.cache.set(executionId, state);
-      return state;
-    } catch {
-      return null;
-    }
+    const state = this.adapter.readJson<PersistedExecution>(this._fileName(executionId));
+    if (!state) return null;
+    this.cache.set(executionId, state);
+    return state;
   }
 
-  private _filePath(executionId: string): string {
-    return join(this.dir, `${executionId}.json`);
+  private _fileName(executionId: string): string {
+    return `${executionId}.json`;
   }
 
   private _write(executionId: string, state: PersistedExecution): void {
-    writeFileSync(this._filePath(executionId), JSON.stringify(state, null, 2), 'utf-8');
+    this.adapter.saveJson(this._fileName(executionId), state);
   }
 }

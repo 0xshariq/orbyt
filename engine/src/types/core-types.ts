@@ -70,6 +70,76 @@ export interface WorkflowRunOptions {
 }
 
 /**
+ * Multi-workflow execution mode.
+ */
+export type MultiWorkflowExecutionMode = 'sequential' | 'parallel' | 'mixed';
+
+/**
+ * Options for multi-workflow runs.
+ */
+export interface WorkflowBatchRunOptions extends WorkflowRunOptions {
+  /**
+   * How workflows should be executed.
+   * - sequential: one by one in input order
+   * - parallel: all concurrently (bounded by maxParallelWorkflows)
+   * - mixed: sequential waves, each wave runs in parallel
+   * @default 'sequential'
+   */
+  executionMode?: MultiWorkflowExecutionMode;
+
+  /**
+   * Maximum number of workflows to run concurrently in parallel mode.
+   * @default engine.maxConcurrentWorkflows
+   */
+  maxParallelWorkflows?: number;
+
+  /**
+   * Number of workflows per wave in mixed mode.
+   * @default 2
+   */
+  mixedBatchSize?: number;
+
+  /**
+   * Stop submitting more workflows after the first execution failure.
+   * @default false
+   */
+  failFast?: boolean;
+}
+
+/**
+ * A workflow loaded during preload phase.
+ */
+export interface LoadedWorkflowItem {
+  source: string;
+  workflow: ParsedWorkflow;
+  declaredMode?: MultiWorkflowExecutionMode;
+}
+
+/**
+ * Per-workflow result for multi-workflow runs.
+ */
+export interface WorkflowBatchItemResult {
+  source: string;
+  workflowName?: string;
+  status: 'success' | 'failed';
+  result?: WorkflowResult;
+  error?: Error;
+  durationMs: number;
+}
+
+/**
+ * Aggregated multi-workflow execution result.
+ */
+export interface WorkflowBatchResult {
+  mode: MultiWorkflowExecutionMode;
+  totalWorkflows: number;
+  successfulWorkflows: number;
+  failedWorkflows: number;
+  durationMs: number;
+  results: WorkflowBatchItemResult[];
+}
+
+/**
  * Workflow loading options
  */
 export interface WorkflowLoadOptions {
@@ -947,6 +1017,25 @@ export interface ParsedWorkflow {
 
   /** Outputs */
   outputs?: Record<string, string>;
+
+  /**
+   * Workflow execution strategy hints from schema `strategy` block.
+   * This is used for multi-workflow orchestration mode inference.
+   */
+  strategy?: {
+    type?: string;
+    maxParallel?: number;
+    matrix?: Record<string, any[]>;
+  };
+
+  /**
+   * Future execution/runtime metadata from schema `execution` block.
+   */
+  execution?: {
+    mode?: string;
+    isolation?: string;
+    priority?: string;
+  };
 }
 
 /**

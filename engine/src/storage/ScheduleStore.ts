@@ -19,16 +19,9 @@
  * @module storage
  */
 
-import {
-  mkdirSync,
-  writeFileSync,
-  readFileSync,
-  existsSync,
-  readdirSync,
-  rmSync,
-} from 'node:fs';
-import { join, basename } from 'node:path';
+import { basename } from 'node:path';
 import type { ScheduleStatus, ScheduleTriggerType } from '../types/core-types.js';
+import { FileStorageAdapter } from './FileStorageAdapter.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -130,12 +123,12 @@ export interface PersistedSchedule {
  * the file acts as the durable record for restarts.
  */
 export class ScheduleStore {
-  private readonly dir: string;
+  private readonly adapter: FileStorageAdapter;
   /** In-memory cache: scheduleId → current state */
   private readonly cache = new Map<string, PersistedSchedule>();
 
   constructor(dir: string) {
-    this.dir = dir;
+    this.adapter = new FileStorageAdapter(dir);
   }
 
   // ─── Write API ─────────────────────────────────────────────────────────────
@@ -147,7 +140,7 @@ export class ScheduleStore {
    */
   save(schedule: PersistedSchedule): void {
     try {
-      mkdirSync(this.dir, { recursive: true });
+      this.adapter.ensureDir();
       const updated: PersistedSchedule = {
         ...schedule,
         updatedAt: new Date().toISOString(),
@@ -222,8 +215,8 @@ export class ScheduleStore {
   delete(scheduleId: string): void {
     try {
       this.cache.delete(scheduleId);
-      const filePath = this._filePath(scheduleId);
-      if (existsSync(filePath)) rmSync(filePath);
+      const filePath = this._fileName(scheduleId);
+      if (this.adapter.exists(filePath)) this.adapter.delete(filePath);
     } catch {
       // Non-fatal
     }
@@ -240,9 +233,7 @@ export class ScheduleStore {
       const cached = this.cache.get(scheduleId);
       if (cached) return { ...cached };
 
-      const filePath = this._filePath(scheduleId);
-      if (!existsSync(filePath)) return null;
-      return JSON.parse(readFileSync(filePath, 'utf-8')) as PersistedSchedule;
+      return this.adapter.readJson<PersistedSchedule>(this._fileName(scheduleId));
     } catch {
       return null;
     }
@@ -253,8 +244,9 @@ export class ScheduleStore {
    */
   list(): PersistedSchedule[] {
     try {
-      mkdirSync(this.dir, { recursive: true });
-      return readdirSync(this.dir)
+      this.adapter.ensureDir();
+      return this.adapter
+        .list('', { suffix: '.json', filesOnly: true })
         .filter(f => f.endsWith('.json'))
         .flatMap(f => {
           try {
@@ -297,22 +289,17 @@ export class ScheduleStore {
     const cached = this.cache.get(scheduleId);
     if (cached) return cached;
 
-    const filePath = this._filePath(scheduleId);
-    if (!existsSync(filePath)) return null;
-    try {
-      const record = JSON.parse(readFileSync(filePath, 'utf-8')) as PersistedSchedule;
-      this.cache.set(scheduleId, record);
-      return record;
-    } catch {
-      return null;
-    }
+    const record = this.adapter.readJson<PersistedSchedule>(this._fileName(scheduleId));
+    if (!record) return null;
+    this.cache.set(scheduleId, record);
+    return record;
   }
 
-  private _filePath(scheduleId: string): string {
-    return join(this.dir, `${scheduleId}.json`);
+  private _fileName(scheduleId: string): string {
+    return `${scheduleId}.json`;
   }
 
   private _write(scheduleId: string, record: PersistedSchedule): void {
-    writeFileSync(this._filePath(scheduleId), JSON.stringify(record, null, 2), 'utf-8');
+    this.adapter.saveJson(this._fileName(scheduleId), record);
   }
 }

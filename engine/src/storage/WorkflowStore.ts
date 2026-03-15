@@ -18,16 +18,8 @@
  * @module storage
  */
 
-import {
-  mkdirSync,
-  writeFileSync,
-  readFileSync,
-  existsSync,
-  readdirSync,
-  rmSync,
-} from 'node:fs';
-import { join } from 'node:path';
 import type { ParsedWorkflow } from '../types/core-types.js';
+import { FileStorageAdapter } from './FileStorageAdapter.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -54,12 +46,12 @@ export interface PersistedWorkflow {
  * re-reading the file on every `save()` call.
  */
 export class WorkflowStore {
-  private readonly dir: string;
+  private readonly adapter: FileStorageAdapter;
   /** Cache: workflowId → latest saved version number */
   private readonly latestVersionCache = new Map<string, number>();
 
   constructor(dir: string) {
-    this.dir = dir;
+    this.adapter = new FileStorageAdapter(dir);
   }
 
   // ─── Write API ─────────────────────────────────────────────────────────────
@@ -72,10 +64,9 @@ export class WorkflowStore {
   save(workflow: ParsedWorkflow): void {
     try {
       const workflowId = this._resolveId(workflow);
-      const workflowDir = join(this.dir, workflowId);
-      mkdirSync(workflowDir, { recursive: true });
+      this.adapter.ensureDir(workflowId);
 
-      const nextVersion = this._nextVersion(workflowId, workflowDir);
+      const nextVersion = this._nextVersion(workflowId);
       const record: PersistedWorkflow = {
         workflowId,
         version: nextVersion,
@@ -83,11 +74,7 @@ export class WorkflowStore {
         definition: workflow,
       };
 
-      writeFileSync(
-        join(workflowDir, `v${nextVersion}.json`),
-        JSON.stringify(record, null, 2),
-        'utf-8',
-      );
+      this.adapter.saveJson(this._versionPath(workflowId, nextVersion), record);
       this.latestVersionCache.set(workflowId, nextVersion);
     } catch {
       // Non-fatal
@@ -128,9 +115,9 @@ export class WorkflowStore {
    */
   listVersions(workflowId: string): number[] {
     try {
-      const workflowDir = join(this.dir, workflowId);
-      if (!existsSync(workflowDir)) return [];
-      return readdirSync(workflowDir)
+      if (!this.adapter.exists(workflowId)) return [];
+      return this.adapter
+        .list(workflowId, { suffix: '.json', filesOnly: true })
         .filter(f => /^v\d+\.json$/.test(f))
         .map(f => parseInt(f.slice(1, -5), 10))
         .sort((a, b) => b - a); // newest first
@@ -144,10 +131,9 @@ export class WorkflowStore {
    */
   list(): string[] {
     try {
-      mkdirSync(this.dir, { recursive: true });
-      return readdirSync(this.dir, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => e.name)
+      this.adapter.ensureDir();
+      return this.adapter
+        .list('', { directoriesOnly: true })
         .sort();
     } catch {
       return [];
@@ -161,15 +147,14 @@ export class WorkflowStore {
   delete(workflowId: string, version?: number): void {
     try {
       if (version !== undefined) {
-        const filePath = join(this.dir, workflowId, `v${version}.json`);
-        if (existsSync(filePath)) rmSync(filePath);
+        const filePath = this._versionPath(workflowId, version);
+        if (this.adapter.exists(filePath)) this.adapter.delete(filePath);
         // Invalidate cache if we deleted the latest version
         if (this.latestVersionCache.get(workflowId) === version) {
           this.latestVersionCache.delete(workflowId);
         }
       } else {
-        const workflowDir = join(this.dir, workflowId);
-        if (existsSync(workflowDir)) rmSync(workflowDir, { recursive: true });
+        if (this.adapter.exists(workflowId)) this.adapter.delete(workflowId, { recursive: true });
         this.latestVersionCache.delete(workflowId);
       }
     } catch {
@@ -190,12 +175,13 @@ export class WorkflowStore {
    * Calculate the next version number.
    * Reads the cache first; if not cached, scans the directory.
    */
-  private _nextVersion(workflowId: string, workflowDir: string): number {
+  private _nextVersion(workflowId: string): number {
     const cached = this.latestVersionCache.get(workflowId);
     if (cached !== undefined) return cached + 1;
 
     try {
-      const existing = readdirSync(workflowDir)
+      const existing = this.adapter
+        .list(workflowId, { suffix: '.json', filesOnly: true })
         .filter(f => /^v\d+\.json$/.test(f))
         .map(f => parseInt(f.slice(1, -5), 10));
       return existing.length === 0 ? 1 : Math.max(...existing) + 1;
@@ -205,8 +191,10 @@ export class WorkflowStore {
   }
 
   private _readVersion(workflowId: string, version: number): PersistedWorkflow | null {
-    const filePath = join(this.dir, workflowId, `v${version}.json`);
-    if (!existsSync(filePath)) return null;
-    return JSON.parse(readFileSync(filePath, 'utf-8')) as PersistedWorkflow;
+    return this.adapter.readJson<PersistedWorkflow>(this._versionPath(workflowId, version));
+  }
+
+  private _versionPath(workflowId: string, version: number): string {
+    return `${workflowId}/v${version}.json`;
   }
 }
