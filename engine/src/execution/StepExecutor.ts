@@ -72,10 +72,13 @@ export class StepExecutor {
    */
   setAdapterRegistry(registry: AdapterRegistry): void {
     this.adapterRegistry = registry;
-    // Re-wire the AdapterDriver to the new registry if one already exists
+    // Always wire an AdapterDriver for the injected registry so isolated
+    // runtimes can execute modern adapters without relying on legacy maps.
     if (this.adapterDriver) {
-      this.adapterDriver = new AdapterDriver(registry);
+      this.driverResolver.unregister(this.adapterDriver.type);
     }
+    this.adapterDriver = new AdapterDriver(registry);
+    this.driverResolver.register(this.adapterDriver);
   }
 
   /**
