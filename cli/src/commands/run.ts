@@ -24,7 +24,14 @@ import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import type { Command } from 'commander';
-import { OrbytEngine, WorkflowLoader, type WorkflowResult } from '@orbytautomation/engine';
+import {
+  OrbytEngine,
+  WorkflowLoader,
+  type MultiWorkflowExecutionMode,
+  type ParsedWorkflow,
+  type WorkflowBatchResult,
+  type WorkflowResult,
+} from '@orbytautomation/engine';
 import { createFormatter, type FormatterType } from '../formatters/createFormatter.js';
 import type { CliRunOptions } from '../types/CliRunOptions.js';
 import { parseKeyValuePairs } from '../types/CliRunOptions.js';
@@ -62,6 +69,9 @@ export function registerRunCommand(program: Command): void {
     .option('-t, --timeout <seconds>', 'Workflow timeout in seconds', parseInt)
     .option('--continue-on-error', 'Continue execution even if steps fail')
     .option('--dry-run', 'Validate and plan without executing')
+    .option('--mode <mode>', 'Multi-workflow mode (sequential|parallel|mixed)')
+    .option('--max-concurrency <n>', 'Max concurrent workflows for parallel mode', parseInt)
+    .option('--mixed-batch-size <n>', 'Workflows per wave in mixed mode', parseInt)
     .option('-f, --format <format>', 'Output format (human|json|verbose|null)', 'human')
     .option('--verbose', 'Show detailed output')
     .option('--silent', 'Minimal output')
@@ -135,92 +145,66 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
       Object.assign(env, parseKeyValuePairs(options.env));
     }
 
-    // Track results for all workflows
-    const results: MultiWorkflowResult[] = [];
-
-    // Execute workflows sequentially
-    for (let i = 0; i < resolvedPaths.length; i++) {
-      const workflowPath = resolvedPaths[i];
-      const isMultiWorkflow = resolvedPaths.length > 1;
-
-      // Show workflow header for multi-workflow execution
-      if (isMultiWorkflow) {
-        formatter.showInfo(`\n${'='.repeat(60)}`);
-        formatter.showInfo(`Workflow ${i + 1}/${resolvedPaths.length}: ${workflowPaths[i]}`);
-        formatter.showInfo('='.repeat(60));
-      }
-
-      try {
-        // Initialize engine (new instance for each workflow - separate runId, state, billing)
-        const engine = new OrbytEngine({
-          logLevel: options.verbose ? 'debug' : 'info',
-          verbose: options.verbose || false,
-          mode: options.dryRun ? 'dry-run' : 'local',
-        });
-
-        // Wire up event bus to formatter
-        wireEngineEvents(engine, formatter);
-
-        // Load and validate workflow
-        formatter.showInfo('Loading workflow...');
-
-        const workflow = await WorkflowLoader.fromFile(workflowPath, {
-          variables,
-        });
-
-        formatter.showInfo('Workflow loaded and validated');
-
-        // Run workflow (Engine is I/O-agnostic, accepts only validated objects)
-        const result: WorkflowResult = await engine.run(workflow, {
-          variables,
-          env,
-          timeout: options.timeout ? options.timeout * 1000 : undefined,
-          continueOnError: options.continueOnError,
-          dryRun: options.dryRun,
-        });
-
-        // Show result
-        formatter.showResult(result);
-
-        // Track result
-        results.push({
-          workflowPath: workflowPaths[i],
-          result,
-          status: result.status === 'failure' ? 'failed' : result.status,
-        });
-
-      } catch (error) {
-        // Track error for this workflow
-        const err = error instanceof Error ? error : new Error(String(error));
-        formatter.showError(err);
-
-        results.push({
-          workflowPath: workflowPaths[i],
-          error: err,
-          status: 'failed',
-        });
-
-        // Check if it's a validation error
-        if (err.message.includes('validation') || err.message.includes('invalid')) {
-          // For validation errors, stop immediately
-          process.exit(1);
-        }
-
-        // For other errors, continue to next workflow if multi-workflow mode
-        if (!isMultiWorkflow) {
-          process.exit(4);
-        }
-      }
+    // Validate mode option early
+    const requestedMode = options.mode as MultiWorkflowExecutionMode | undefined;
+    if (requestedMode && !['sequential', 'parallel', 'mixed'].includes(requestedMode)) {
+      formatter.showError(new Error(`Invalid mode: ${requestedMode}. Use sequential|parallel|mixed.`));
+      process.exit(1);
     }
 
-    // Show overall summary for multi-workflow execution
+    // Initialize one engine for the entire invocation.
+    const engine = new OrbytEngine({
+      logLevel: options.verbose ? 'debug' : 'info',
+      verbose: options.verbose || false,
+      mode: options.dryRun ? 'dry-run' : 'local',
+    });
+    wireEngineEvents(engine, formatter);
+
+    // Preload phase: load and validate all workflows before execution starts.
+    formatter.showInfo('Loading workflows...');
+    const loadedWorkflows: ParsedWorkflow[] = [];
+    for (const workflowPath of resolvedPaths) {
+      const workflow = await WorkflowLoader.fromFile(workflowPath, { variables });
+      loadedWorkflows.push(workflow);
+    }
+    formatter.showInfo(`Loaded ${loadedWorkflows.length} workflow(s)`);
+
+    // Execute all workflows through engine batch API.
+    const batch: WorkflowBatchResult = await engine.runMany(loadedWorkflows, {
+      variables,
+      env,
+      timeout: options.timeout ? options.timeout * 1000 : undefined,
+      continueOnError: options.continueOnError,
+      dryRun: options.dryRun,
+      executionMode: requestedMode,
+      maxParallelWorkflows: options.maxConcurrency,
+      mixedBatchSize: options.mixedBatchSize,
+    });
+
+    formatter.showInfo(`Execution mode: ${batch.mode}`);
+
+    const results: MultiWorkflowResult[] = batch.results.map((item, index) => {
+      if (item.result) {
+        formatter.showResult(item.result);
+      } else if (item.error) {
+        formatter.showError(item.error);
+      }
+
+      return {
+        workflowPath: workflowPaths[index] || item.source,
+        result: item.result,
+        error: item.error,
+        status: item.result
+          ? (item.result.status === 'failure' ? 'failed' : item.result.status)
+          : 'failed',
+      };
+    });
+
     if (results.length > 1) {
       showMultiWorkflowSummary(results, formatter);
     }
 
-    // Exit with appropriate code based on overall results
-    const exitCode = determineExitCode(results);
-    process.exit(exitCode);
+    process.exit(determineExitCode(results));
 
   } catch (error) {
     // Handle top-level errors (file system, parsing, etc.)

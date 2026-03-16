@@ -63,6 +63,21 @@ export interface CliRunOptions {
    * No color in output
    */
   noColor?: boolean;
+
+  /**
+   * Multi-workflow execution mode
+   */
+  mode?: 'sequential' | 'parallel' | 'mixed';
+
+  /**
+   * Max concurrent workflows for parallel/mixed execution
+   */
+  maxConcurrency?: number;
+
+  /**
+   * Number of workflows per mixed-mode batch
+   */
+  mixedBatchSize?: number;
 }
 
 /**
