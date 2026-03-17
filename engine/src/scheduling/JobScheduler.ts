@@ -247,7 +247,7 @@ export class JobScheduler {
     }
 
     // Local development fallback: run the embedded Rust sidecar directly.
-    const cwdManifestPath = path.join(process.cwd(), 'rust', 'orbyt-tokio-worker', 'Cargo.toml');
+    const cwdManifestPath = path.join(process.cwd(), 'orbyt-tokio-worker', 'Cargo.toml');
     if (existsSync(cwdManifestPath)) {
       return {
         command: 'cargo',
