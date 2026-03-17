@@ -71,7 +71,7 @@ import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
 import { createEngineContext } from './EngineContext.js';
 import { LoggerManager, type EngineLogger } from '../logging/index.js';
 import { LogCategoryEnum, WorkflowContext } from '../types/log-types.js';
-import { LogLevel as CoreLogLevel } from '@dev-ecosystem/core';
+import { LogLevel as CoreLogLevel, type UsageCollector } from '@dev-ecosystem/core';
 import { ExecutionEngine } from '../execution/ExecutionEngine.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
 import { WorkflowExecutor } from '../execution/WorkflowExecutor.js';
@@ -85,25 +85,9 @@ import { CLIAdapter, ShellAdapter, HTTPAdapter, FSAdapter } from '../adapters/bu
 import { InternalContextBuilder } from '../execution/InternalExecutionContext.js';
 import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
-import {
-  EngineContext,
-  EngineEventType,
-  ExecutionExplanation,
-  ExecutionOptions,
-  LoadedWorkflowItem,
-  LogLevel,
-  MultiWorkflowExecutionMode,
-  OrbytEngineConfig,
-  OwnershipContext,
-  ParsedWorkflow,
-  WorkflowBatchItemResult,
-  WorkflowBatchResult,
-  WorkflowBatchRunOptions,
-  WorkflowResult,
-  WorkflowRunOptions,
-} from '../types/core-types.js';
+import { EngineContext, EngineEventType, ExecutionExplanation, ExecutionOptions, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { ExecutionStore } from '../storage/ExecutionStore.js';
@@ -111,6 +95,7 @@ import { WorkflowStore } from '../storage/WorkflowStore.js';
 import { ScheduleStore } from '../storage/ScheduleStore.js';
 import { WorkflowParseCache, AdapterMetadataCache } from '../cache/index.js';
 import { RuntimeArtifactStore } from '../runtime/index.js';
+import { NoOpUsageCollector } from '../usage/NoOpUsageCollector.js';
 
 /**
  * OrbytEngine - Main public API
@@ -254,6 +239,7 @@ export class OrbytEngine {
   private workflowParseCache: WorkflowParseCache;
   private adapterMetadataCache: AdapterMetadataCache;
   private runtimeArtifactStore: RuntimeArtifactStore;
+  private usageCollector: UsageCollector;
 
   constructor(config: OrbytEngineConfig = {}) {
     // Validate and apply defaults
@@ -309,8 +295,12 @@ export class OrbytEngine {
     // Wire components together
     this.setupComponents();
 
+    // Initialize usage collector (from config or use no-op default)
+    this.usageCollector = this.config.usageCollector ?? new NoOpUsageCollector();
+
     // Ensure infrastructure directories exist before any persistence/caching.
     this.bootstrapRuntimeDirectories();
+    this.ensureFirstRunConfigFile();
 
     // Initialise persistent stores (non-fatal — must never block engine startup)
     const storeRoot = this.config.stateDir ?? join(homedir(), '.orbyt');
@@ -420,6 +410,57 @@ export class OrbytEngine {
       } catch {
         // Non-fatal bootstrap: individual stores also guard their own writes.
       }
+    }
+  }
+
+  /**
+   * Ensure a first-run config file exists at ~/.orbyt/config/config.json.
+   *
+   * This file is created once and then preserved as the local runtime config
+   * snapshot for visibility and tooling introspection.
+   */
+  private ensureFirstRunConfigFile(): void {
+    const configDir = join(homedir(), '.orbyt', 'config');
+    const configPath = join(configDir, 'config.json');
+
+    if (existsSync(configPath)) {
+      return;
+    }
+
+    try {
+      mkdirSync(configDir, { recursive: true });
+
+      const payload = {
+        version: 1,
+        createdAt: new Date().toISOString(),
+        source: 'orbyt-engine',
+        engine: {
+          version: this.version,
+          mode: this.config.mode,
+          logLevel: this.config.logLevel,
+          maxConcurrentWorkflows: this.config.maxConcurrentWorkflows,
+          maxConcurrentSteps: this.config.maxConcurrentSteps,
+          defaultTimeout: this.config.defaultTimeout,
+          enableScheduler: this.config.enableScheduler,
+          enableMetrics: this.config.enableMetrics,
+          enableEvents: this.config.enableEvents,
+          sandboxMode: this.config.sandboxMode,
+        },
+        paths: {
+          stateDir: this.config.stateDir,
+          logDir: this.config.logDir,
+          cacheDir: this.config.cacheDir,
+          runtimeDir: this.config.runtimeDir,
+          workingDirectory: this.config.workingDirectory,
+        },
+      };
+
+      writeFileSync(configPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+      this.log('debug', 'Created first-run engine config file', { configPath });
+    } catch (error) {
+      this.log('warn', 'Failed to create first-run engine config file', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -783,7 +824,14 @@ export class OrbytEngine {
       isBillable: internalContext._billing.isBillable,
     });
 
-    try {
+    const result = await LoggerManager.runWithWorkflowContext({
+      name: parsedWorkflow.name ?? parsedWorkflow.metadata?.name,
+      version: parsedWorkflow.version,
+      kind: parsedWorkflow.kind,
+      description: parsedWorkflow.description ?? parsedWorkflow.metadata?.description,
+      stepCount: parsedWorkflow.steps?.length,
+      tags: parsedWorkflow.tags ?? parsedWorkflow.metadata?.tags,
+    }, async () => {
       // Handle dry-run mode
       if (options.dryRun || this.config.mode === 'dry-run') {
         return await this.dryRun(parsedWorkflow, options);
@@ -866,9 +914,9 @@ export class OrbytEngine {
       const runtime = isolatedRuntime
         ? this.createIsolatedExecutionRuntime()
         : {
-            stepExecutor: this.stepExecutor,
-            workflowExecutor: this.workflowExecutor,
-          };
+          stepExecutor: this.stepExecutor,
+          workflowExecutor: this.workflowExecutor,
+        };
 
       const result = await this.measureWorkflowExecution(
         parsedWorkflow.name || 'unnamed',
@@ -889,9 +937,11 @@ export class OrbytEngine {
 
       await this.onWorkflowBillingComplete(internalContext, result);
       return result;
-    } finally {
-      LoggerManager.clearWorkflowContext();
-    }
+    });
+
+    // Clear any non-scoped workflow context left by prior preload parsing.
+    LoggerManager.clearWorkflowContext();
+    return result;
   }
 
   /**
@@ -995,6 +1045,31 @@ export class OrbytEngine {
     //     status: result.status,
     //   });
     // }
+  }
+
+  /**
+   * Safe usage event recording
+   * 
+   * Records a usage event through the configured collector.
+   * Failures are logged but never propagate (non-fatal).
+   * Called asynchronously and does not block execution.
+   * 
+   * @param event - Usage event to record
+   */
+  private recordUsageEvent(event: any): void {
+    // Fire-and-forget: record usage asynchronously without blocking
+    process.nextTick(async () => {
+      try {
+        await this.usageCollector.record(event);
+      } catch (error) {
+        // Log but don't propagate - usage tracking must never fail execution
+        this.log('debug', 'Usage collection failed (non-fatal)', {
+          error: error instanceof Error ? error.message : String(error),
+          eventType: event.type,
+          executionId: event.executionId,
+        });
+      }
+    });
   }
 
   /**

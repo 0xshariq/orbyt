@@ -37,9 +37,17 @@ export class ResourceValidator {
       }
 
       if (OUTPUT_PATH_KEYS.has(key)) {
+        if (this.shouldBypassOutputValidation(step.action)) {
+          continue;
+        }
         this.validateOutputPath(step, key, value, workingDir, input);
       }
     }
+  }
+
+  private shouldBypassOutputValidation(action: string): boolean {
+    // MediaProc plugins perform their own path handling/creation.
+    return action.startsWith('mediaproc.');
   }
 
   private validateInputPath(step: ParsedStep, key: string, pathValue: string, workingDir: string): void {

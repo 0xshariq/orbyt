@@ -44,6 +44,7 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
     workingDirectory: config.workingDirectory ?? process.cwd(),
     experimental: config.experimental ?? false,
     metadata: config.metadata,
+    usageCollector: config.usageCollector
   };
 }
 

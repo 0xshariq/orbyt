@@ -1,4 +1,4 @@
-import { Adapter, AdapterResult, ExitCodes, TriggerType as TriggerEnums } from "@dev-ecosystem/core";
+import { Adapter, AdapterResult, ExitCodes, TriggerType as TriggerEnums, UsageCollector } from "@dev-ecosystem/core";
 import { TimeoutError, TimeoutManager } from "../automation/TimeoutManager.js";
 import { BackoffStrategy } from "../automation/BackoffStrategy.js";
 import { RetryPolicy } from "../automation/RetryPolicy.js";
@@ -1806,6 +1806,15 @@ export interface OrbytEngineConfig {
    * Hooks are called at key execution moments
    */
   hooks?: LifecycleHook[];
+
+  // === Usage Tracking & Billing ===
+
+  /**
+   * Optional usage event collector for billing/analytics
+   * If not provided, a no-op collector is used (usage events are silently dropped)
+   * Collector must be non-fatal and never block execution
+   */
+  usageCollector?: UsageCollector;
 
   // === Logging & Observability ===
 

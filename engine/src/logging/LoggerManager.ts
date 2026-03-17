@@ -203,6 +203,14 @@ export class LoggerManager {
     }
 
     /**
+     * Execute code with an execution-scoped workflow context.
+     * This isolates workflow metadata across concurrent runs.
+     */
+    static runWithWorkflowContext<T>(ctx: WorkflowContext, fn: () => T): T {
+        return this.getLogger().runWithWorkflowContext(ctx, fn);
+    }
+
+    /**
      * Query the log history with optional filters.
      *
      * ```typescript

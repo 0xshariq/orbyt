@@ -43,6 +43,7 @@ import {
   EngineLogType,
   LogCategoryEnum,
 } from '../types/log-types.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 // ─── Internal dispatch interface ──────────────────────────────────────────────
 
@@ -170,6 +171,7 @@ export class CategoryLogger {
  * Generic `logger.info(...)` etc. fall back to the category set at construction.
  */
 export class EngineLogger implements LogDispatcher {
+  private static workflowContextStorage = new AsyncLocalStorage<WorkflowContext>();
   private config: Required<EngineLoggerConfig>;
   private formatOptions: LogFormatOptions;
   private logHistory: EngineLogEvent[] = [];
@@ -195,7 +197,7 @@ export class EngineLogger implements LogDispatcher {
       source: config.source || 'Orbyt',
       structuredEvents: config.structuredEvents ?? true,
       category: config.category || LogCategoryEnum.SYSTEM,
-      maxHistorySize: config.maxHistorySize ?? 0,
+      maxHistorySize: config.maxHistorySize ?? 5000,
     };
 
     this.formatOptions = {
@@ -348,8 +350,9 @@ export class EngineLogger implements LogDispatcher {
 
     // Automatically merge workflow context so every log carries the active workflow
     const enrichedContext: Record<string, unknown> = {};
-    if (this.workflowContext) {
-      enrichedContext['workflow'] = { ...this.workflowContext };
+    const activeWorkflowContext = EngineLogger.workflowContextStorage.getStore() ?? this.workflowContext;
+    if (activeWorkflowContext && Object.keys(activeWorkflowContext).length > 0) {
+      enrichedContext['workflow'] = { ...activeWorkflowContext };
     }
     if (context) {
       Object.assign(enrichedContext, context);
@@ -369,7 +372,7 @@ export class EngineLogger implements LogDispatcher {
     this.logHistory.push(event);
 
     // Ring-buffer: drop the oldest entry when the limit is reached.
-    // A maxHistorySize of 0 means unbounded (no trimming).
+    // Set maxHistorySize=0 explicitly to disable trimming.
     if (this.config.maxHistorySize > 0 && this.logHistory.length > this.config.maxHistorySize) {
       this.logHistory.shift();
     }
@@ -470,6 +473,15 @@ export class EngineLogger implements LogDispatcher {
    * ```
    */
   setWorkflowContext(ctx: WorkflowContext): void {
+    const scoped = EngineLogger.workflowContextStorage.getStore();
+    if (scoped) {
+      for (const key of Object.keys(scoped)) {
+        delete (scoped as Record<string, unknown>)[key];
+      }
+      Object.assign(scoped, ctx);
+      return;
+    }
+
     this.workflowContext = { ...ctx };
   }
 
@@ -478,6 +490,14 @@ export class EngineLogger implements LogDispatcher {
    * Logs emitted after this call will no longer include the `workflow` field.
    */
   clearWorkflowContext(): void {
+    const scoped = EngineLogger.workflowContextStorage.getStore();
+    if (scoped) {
+      for (const key of Object.keys(scoped)) {
+        delete (scoped as Record<string, unknown>)[key];
+      }
+      return;
+    }
+
     this.workflowContext = null;
   }
 
@@ -486,6 +506,11 @@ export class EngineLogger implements LogDispatcher {
    * or `null` if none has been set.
    */
   getWorkflowContext(): Readonly<WorkflowContext> | null {
+    const scoped = EngineLogger.workflowContextStorage.getStore();
+    if (scoped) {
+      return Object.keys(scoped).length > 0 ? { ...scoped } : null;
+    }
+
     return this.workflowContext ? { ...this.workflowContext } : null;
   }
 
@@ -504,7 +529,17 @@ export class EngineLogger implements LogDispatcher {
    * a fresh `setWorkflowContext` call.
    */
   patchWorkflowContext(partial: Partial<WorkflowContext>): void {
+    const scoped = EngineLogger.workflowContextStorage.getStore();
+    if (scoped) {
+      Object.assign(scoped, partial);
+      return;
+    }
+
     this.workflowContext = { ...(this.workflowContext ?? {}), ...partial };
+  }
+
+  runWithWorkflowContext<T>(ctx: WorkflowContext, fn: () => T): T {
+    return EngineLogger.workflowContextStorage.run({ ...ctx }, fn);
   }
 
   // ─── Dynamic Context Helpers ──────────────────────────────────────────────

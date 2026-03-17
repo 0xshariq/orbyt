@@ -313,16 +313,24 @@ export class WorkflowExecutor {
     stepMap: Map<string, ParsedStep>,
     timeoutMs: number
   ): Promise<void> {
-    return Promise.race([
-      this.executeWorkflowPlan(workflow, plan, context, stepResults, options, stepMap),
-      new Promise<void>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error(
-            `Workflow '${workflow.name}' exceeded timeout of ${timeoutMs}ms`
-          ));
-        }, timeoutMs);
-      }),
-    ]);
+    const executionPromise = this.executeWorkflowPlan(workflow, plan, context, stepResults, options, stepMap);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+    const timeoutPromise = new Promise<void>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error(
+          `Workflow '${workflow.name}' exceeded timeout of ${timeoutMs}ms`
+        ));
+      }, timeoutMs);
+    });
+
+    try {
+      await Promise.race([executionPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   /**
