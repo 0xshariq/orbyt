@@ -8,6 +8,7 @@ repository = "https://github.com/0xshariq/orbyt"
 homepage = "https://github.com/0xshariq/orbyt/tree/main/products/orbyt/engine/orbyt-tokio-worker"
 documentation = "https://github.com/0xshariq/orbyt/tree/main/products/orbyt/engine/orbyt-tokio-worker"
 readme = "README.md"
+include = ["Cargo.toml", "README.md", "src/**"]
 
 [[bin]]
 name = "orbyt-tokio-worker"

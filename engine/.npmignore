@@ -8,5 +8,3 @@ tsconfig.json
 *.md
 docs/
 !README.md
-src/testing/integration/
-src/testing/unit/
