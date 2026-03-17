@@ -70,8 +70,10 @@ export class InternalContextBuilder {
    */
   static initializeCounters(): UsageCounters {
     return {
-      automationCount: 1,
+      automationCount: 0,
       stepCount: 0,
+      adapterCallCount: 0,
+      triggerFireCount: 0,
       weightedStepCount: 0,
       durationSeconds: 0,
     };

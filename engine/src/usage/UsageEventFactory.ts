@@ -8,7 +8,8 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import type { UsageEvent, UsageEventType, UsageEventMetadata } from '@dev-ecosystem/core';
+import type { UsageEvent, UsageEventMetadata } from '@dev-ecosystem/core';
+import { UsageEventType as CoreUsageEventType } from '@dev-ecosystem/core';
 
 /**
  * Generate a unique event ID
@@ -37,7 +38,7 @@ export function createWorkflowRunEvent(options: {
 }): UsageEvent {
   return {
     id: generateUsageEventId(),
-    type: 'usage.workflow.run',
+    type: CoreUsageEventType.WORKFLOW_RUN,
     timestamp: Date.now(),
     product: 'orbyt',
     executionId: options.executionId,
@@ -74,7 +75,7 @@ export function createStepExecuteEvent(options: {
 }): UsageEvent {
   return {
     id: generateUsageEventId(),
-    type: 'usage.step.execute',
+    type: CoreUsageEventType.STEP_EXECUTE,
     timestamp: Date.now(),
     product: 'orbyt',
     executionId: options.executionId,
@@ -117,7 +118,7 @@ export function createAdapterCallEvent(options: {
 }): UsageEvent {
   return {
     id: generateUsageEventId(),
-    type: 'usage.adapter.call',
+    type: CoreUsageEventType.ADAPTER_CALL,
     timestamp: Date.now(),
     product: 'orbyt',
     executionId: options.executionId,
@@ -153,7 +154,7 @@ export function createTriggerFireEvent(options: {
 }): UsageEvent {
   return {
     id: generateUsageEventId(),
-    type: 'usage.trigger.fire',
+    type: CoreUsageEventType.TRIGGER_FIRE,
     timestamp: Date.now(),
     product: 'orbyt',
     executionId: options.executionId,

@@ -1,12 +1,12 @@
 # @orbytautomation/engine
 
-Execution runtime for Orbyt workflows.
+Orbyt's TypeScript automation runtime.
 
 ## Package Info
 
-- Name: @orbytautomation/engine
-- Version: 0.8.0
-- Node: >= 22
+- Name: `@orbytautomation/engine`
+- Version: `0.8.4`
+- Node: `>=22`
 
 ## Install
 
@@ -14,178 +14,197 @@ Execution runtime for Orbyt workflows.
 npm install @orbytautomation/engine
 ```
 
-## Core Concepts
+## What This Engine Provides
 
-- OrbytEngine: primary runtime class
-- WorkflowLoader: load and validate workflow inputs
-- run: execute one workflow
-- runMany: preload, resolve mode, then execute many workflows
-- validate: verify workflow correctness without execution
-- explain: build and return execution plan without running steps
+- Workflow loading and validation (`WorkflowLoader`)
+- Single-workflow execution (`run`)
+- Multi-workflow orchestration (`runMany`)
+- Dry-run and explain support (`validate`, `explain`)
+- Retry/timeout execution control
+- Built-in adapters: `cli`, `shell`, `http`, `fs`
+- Event bus and lifecycle hooks
+- Usage telemetry emission through standardized `UsageCollector`
+- Durable local usage spool with optional periodic billing push
+- Checkpoint snapshots and resume support (`resumeFromRunId`)
 
-Built-in adapters are registered by default:
+## Primary APIs
 
-- cli
-- shell
-- http
-- fs
-
-## Quick Start
+### Run one workflow
 
 ```ts
-import { OrbytEngine, WorkflowLoader } from "@orbytautomation/engine";
+import { OrbytEngine } from '@orbytautomation/engine';
 
-const engine = new OrbytEngine({ logLevel: "info" });
-const workflow = await WorkflowLoader.fromFile("./workflow.yaml");
+const engine = new OrbytEngine({ logLevel: 'info' });
 
-const result = await engine.run(workflow, {
-  variables: { target: "prod" },
+const result = await engine.run('./workflow.yaml', {
+  variables: { region: 'us-east-1' },
+  env: { NODE_ENV: 'production' },
+  secrets: { TOKEN: process.env.TOKEN },
   timeout: 300000,
+  continueOnError: false,
+  triggeredBy: 'manual',
 });
 
 console.log(result.status);
 ```
 
-## Single Workflow API
-
-Accepted workflow inputs:
+Accepted workflow input formats:
 
 - file path string
 - YAML string
 - JSON string
 - parsed workflow object
 
+### Resume a workflow run
+
 ```ts
-const result = await engine.run("./workflow.yaml", {
-  variables: { region: "us-east-1" },
-  env: { NODE_ENV: "production" },
-  secrets: { TOKEN: process.env.TOKEN },
-  continueOnError: false,
-  dryRun: false,
+const resumed = await engine.run('./workflow.yaml', {
+  resumeFromRunId: 'exec-1712345678901-abc123xyz',
+  resumePolicy: 'strict', // 'strict' | 'best-effort'
+  triggeredBy: 'scheduler',
 });
 ```
 
-## Batch Execution API (runMany)
+Resume behavior:
 
-runMany behavior:
+- loads checkpoint by run id
+- restores previous step outputs/context
+- skips already successful/skipped steps
+- continues unfinished work
+- emits `workflow.resumed`
 
-1. Preload and validate all workflows first
-2. Resolve execution mode
-3. Execute in sequential, parallel, or mixed orchestration
-4. Return per-workflow and aggregate result data
+### Run many workflows
 
 ```ts
 const batch = await engine.runMany([
-  "./w1.yaml",
-  "./w2.yaml",
-  "./w3.yaml",
+  './w1.yaml',
+  './w2.yaml',
+  './w3.yaml',
 ], {
-  executionMode: "parallel", // sequential | parallel | mixed
+  executionMode: 'mixed', // sequential | parallel | mixed
   maxParallelWorkflows: 3,
   mixedBatchSize: 2,
   failFast: false,
 });
 
-console.log(batch.mode);
-console.log(batch.totalWorkflows, batch.successfulWorkflows, batch.failedWorkflows);
+console.log(batch.mode, batch.successfulWorkflows, batch.failedWorkflows);
 ```
 
-Mode resolution precedence:
+Execution mode precedence:
 
-1. Explicit executionMode option
-2. Workflow strategy.type declaration
-3. Default sequential
+1. explicit `executionMode`
+2. workflow `strategy.type`
+3. default `sequential`
 
-For details see:
-
-- ../docs/execution-modes.md
-
-## validate and explain
+## Validation and Explain
 
 ```ts
-const ok = await engine.validate("./workflow.yaml");
-const plan = await engine.explain("./workflow.yaml");
+const valid = await engine.validate('./workflow.yaml');
+const explanation = await engine.explain('./workflow.yaml');
 ```
 
-- validate returns true or throws on invalid input
-- explain returns an execution explanation object
+- `validate` returns `true` or throws
+- `explain` returns execution analysis without running steps
 
-## Configuration (OrbytEngineConfig)
+## Usage and Billing Telemetry
 
-Common options:
+The engine emits usage facts through the `UsageCollector` interface from `@dev-ecosystem/core`.
 
-- maxConcurrentWorkflows
-- maxConcurrentSteps
-- defaultTimeout
-- mode (local | distributed | dry-run)
-- enableScheduler
-- adapters
-- hooks
-- logLevel
-- verbose
-- stateDir
-- logDir
-- cacheDir
-- runtimeDir
-- workingDirectory
+Default collector behavior when `usageCollector` is not provided:
 
-Example:
+- uses built-in `FileSpoolUsageCollector`
+- writes durable local spool under `~/.orbyt/usage`
+- optionally sends periodic batches via HTTP transport
+
+Usage events emitted:
+
+- `usage.workflow.run`
+- `usage.step.execute`
+- `usage.adapter.call`
+- `usage.trigger.fire` (for non-manual trigger sources)
+
+### Configure usage spool
 
 ```ts
 const engine = new OrbytEngine({
-  mode: "local",
-  logLevel: "info",
-  maxConcurrentWorkflows: 10,
-  maxConcurrentSteps: 10,
-  defaultTimeout: 300000,
-  enableScheduler: true,
-});
-```
-
-## Events and Hooks
-
-Event bus:
-
-```ts
-const events = engine.getEventBus();
-events.on("workflow.completed", (event) => {
-  console.log(event.workflowName, event.executionId);
-});
-```
-
-Hooks:
-
-```ts
-engine.registerHook({
-  name: "audit-hook",
-  beforeStep: async (ctx) => {
-    // custom behavior
+  usageSpool: {
+    enabled: true,
+    baseDir: '/home/user/.orbyt/usage',
+    batchSize: 200,
+    flushIntervalMs: 60000,
+    maxRetryAttempts: 10,
+    billingEndpoint: process.env.BILLING_INGEST_URL,
+    billingApiKey: process.env.BILLING_API_KEY,
+    requestTimeoutMs: 10000,
   },
 });
 ```
 
-## Minimal Workflow Example
+## Checkpointing (Phase 3) and Resume (Phase 4)
 
-```yaml
-version: "1.0"
-kind: workflow
+Checkpoint snapshots are persisted to `~/.orbyt/state/checkpoints` (or configured state path) at:
 
-metadata:
-  name: simple-shell
+- workflow started
+- step updated
+- workflow completed
+- workflow failed
+- workflow timeout
+- workflow resumed
 
-workflow:
-  steps:
-    - id: step1
-      uses: shell.exec
-      with:
-        command: echo "hello"
+Snapshots include:
+
+- workflow run status
+- per-step state and outputs
+- runtime context snapshot
+- metadata with checkpoint reason and timestamps
+
+## Key Configuration Options
+
+- `maxConcurrentWorkflows`
+- `maxConcurrentSteps`
+- `defaultTimeout`
+- `mode` (`local` | `distributed` | `dry-run`)
+- `enableScheduler`
+- `adapters`
+- `hooks`
+- `logLevel`, `verbose`
+- `stateDir`, `logDir`, `cacheDir`, `runtimeDir`
+- `usageCollector`
+- `usageSpool`
+
+## Event Bus and Hooks
+
+```ts
+const events = engine.getEventBus();
+events.on('workflow.completed', (event) => {
+  console.log(event.type, event.runId);
+});
+
+engine.registerHook({
+  name: 'audit-hook',
+  beforeStep: async (ctx) => {
+    // custom logic
+  },
+});
 ```
 
-## Related
+## Runtime Directories
 
-- ../README.md
-- ../docs/execution-modes.md
-- ../WORKFLOW_SCHEMA.md
+At startup, engine prepares directories under `~/.orbyt` (or configured equivalents), including:
+
+- `state/` (executions, checkpoints, schedules, workflows)
+- `cache/`
+- `runtime/`
+- `usage/`
+- `config/`
+
+On first use, engine also creates `~/.orbyt/config/config.json`.
+
+## Related Docs
+
+- `../README.md`
+- `../docs/execution-modes.md`
+- `../WORKFLOW_SCHEMA.md`
 
 ## License
 

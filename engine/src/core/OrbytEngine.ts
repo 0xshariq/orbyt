@@ -96,6 +96,13 @@ import { ScheduleStore } from '../storage/ScheduleStore.js';
 import { WorkflowParseCache, AdapterMetadataCache } from '../cache/index.js';
 import { RuntimeArtifactStore } from '../runtime/index.js';
 import { NoOpUsageCollector } from '../usage/NoOpUsageCollector.js';
+import { FileSpoolUsageCollector, HttpUsageBatchTransport } from '../usage/FileSpoolUsageCollector.js';
+import {
+  createAdapterCallEvent,
+  createStepExecuteEvent,
+  createTriggerFireEvent,
+  createWorkflowRunEvent,
+} from '../usage/UsageEventFactory.js';
 
 /**
  * OrbytEngine - Main public API
@@ -295,8 +302,38 @@ export class OrbytEngine {
     // Wire components together
     this.setupComponents();
 
-    // Initialize usage collector (from config or use no-op default)
-    this.usageCollector = this.config.usageCollector ?? new NoOpUsageCollector();
+    // Initialize usage collector.
+    // Priority:
+    // 1) user-provided collector
+    // 2) built-in durable file spool collector (default)
+    // 3) no-op collector (explicitly disabled)
+    if (this.config.usageCollector) {
+      this.usageCollector = this.config.usageCollector;
+    } else {
+      const usageSpool = this.config.usageSpool;
+      const spoolEnabled = usageSpool?.enabled ?? true;
+      const spoolBaseDir = usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+
+      if (spoolEnabled) {
+        const transport = usageSpool?.billingEndpoint
+        ? new HttpUsageBatchTransport({
+          endpoint: usageSpool.billingEndpoint,
+          apiKey: usageSpool.billingApiKey,
+          timeoutMs: usageSpool.requestTimeoutMs,
+        })
+        : undefined;
+
+        this.usageCollector = new FileSpoolUsageCollector({
+          baseDir: spoolBaseDir,
+          batchSize: usageSpool?.batchSize,
+          flushIntervalMs: usageSpool?.flushIntervalMs,
+          maxRetryAttempts: usageSpool?.maxRetryAttempts,
+          transport,
+        });
+      } else {
+        this.usageCollector = new NoOpUsageCollector();
+      }
+    }
 
     // Ensure infrastructure directories exist before any persistence/caching.
     this.bootstrapRuntimeDirectories();
@@ -387,6 +424,7 @@ export class OrbytEngine {
       orbytHome,
       this.config.stateDir,
       join(this.config.stateDir, 'executions'),
+      join(this.config.stateDir, 'checkpoints'),
       join(this.config.stateDir, 'workflows'),
       join(this.config.stateDir, 'schedules'),
       this.config.logDir,
@@ -400,6 +438,11 @@ export class OrbytEngine {
       join(orbytHome, 'plugins'),
       join(orbytHome, 'metrics'),
       join(orbytHome, 'config'),
+      join(orbytHome, 'usage'),
+      join(orbytHome, 'usage', 'events'),
+      join(orbytHome, 'usage', 'pending'),
+      join(orbytHome, 'usage', 'sent'),
+      join(orbytHome, 'usage', 'failed'),
       join(orbytHome, 'tmp'),
       join(orbytHome, 'cloud-sync'),
     ];
@@ -453,6 +496,7 @@ export class OrbytEngine {
           runtimeDir: this.config.runtimeDir,
           workingDirectory: this.config.workingDirectory,
         },
+        usageSpool: this.config.usageSpool,
       };
 
       writeFileSync(configPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
@@ -520,6 +564,14 @@ export class OrbytEngine {
     ));
 
     this.log('info', 'Orbyt Engine stopped');
+
+    // Best-effort collector draining/cleanup on shutdown.
+    try {
+      await this.usageCollector.flush?.();
+      await this.usageCollector.close?.();
+    } catch {
+      // Non-fatal on shutdown
+    }
   }
 
   /**
@@ -797,6 +849,8 @@ export class OrbytEngine {
       continueOnError: options.continueOnError,
       dryRun: options.dryRun,
       triggeredBy: options.triggeredBy,
+      resumeFromRunId: options.resumeFromRunId,
+      resumePolicy: options.resumePolicy,
       _ownershipContext: options._ownershipContext,
       _permissionPolicy: options._permissionPolicy,
     };
@@ -903,7 +957,40 @@ export class OrbytEngine {
         },
         continueOnError: sanitizedOptions.continueOnError,
         triggeredBy: sanitizedOptions.triggeredBy || 'manual',
+        resumeFromRunId: sanitizedOptions.resumeFromRunId,
+        resumePolicy: sanitizedOptions.resumePolicy,
       };
+
+      if (execOptions.triggeredBy && execOptions.triggeredBy !== 'manual') {
+        internalContext._usage.triggerFireCount += 1;
+        this.recordUsageEvent(
+          createTriggerFireEvent({
+            executionId: internalContext._identity.executionId,
+            workflowId: parsedWorkflow.name || parsedWorkflow.metadata?.name,
+            userId: internalContext._ownership.userId,
+            workspaceId: internalContext._ownership.workspaceId,
+            pricingTier: internalContext._billing.pricingTierResolved,
+            billable: internalContext._billing.isBillable,
+            metadata: {
+              success: true,
+              triggeredBy: execOptions.triggeredBy,
+            },
+          }),
+        );
+      }
+
+      internalContext._usage.automationCount += 1;
+      this.recordUsageEvent(
+        createWorkflowRunEvent({
+          executionId: internalContext._identity.executionId,
+          workflowId: parsedWorkflow.name || parsedWorkflow.metadata?.name,
+          userId: internalContext._ownership.userId,
+          workspaceId: internalContext._ownership.workspaceId,
+          executionMode: isolatedRuntime ? 'parallel' : 'single',
+          pricingTier: internalContext._billing.pricingTierResolved,
+          billable: internalContext._billing.isBillable,
+        }),
+      );
 
       this.log('info', `Running workflow: ${parsedWorkflow.name || 'unnamed'}`);
       this.workflowStore.save(parsedWorkflow);
@@ -923,9 +1010,7 @@ export class OrbytEngine {
         () => runtime.workflowExecutor.execute(parsedWorkflow, execOptions)
       );
 
-      internalContext._usage.stepCount = result.metadata.totalSteps;
       internalContext._usage.durationSeconds = result.duration / 1000;
-      internalContext._usage.weightedStepCount = result.metadata.totalSteps;
 
       this.log('info', `Workflow completed: ${result.status}`, {
         durationMs: result.duration,
@@ -934,6 +1019,62 @@ export class OrbytEngine {
         automationCount: internalContext._usage.automationCount,
         stepCount: internalContext._usage.stepCount,
       });
+
+      const workflowId = parsedWorkflow.name || parsedWorkflow.metadata?.name;
+      for (const [stepId, stepResult] of result.stepResults.entries()) {
+        const stepDefinition = parsedWorkflow.steps.find((step) => step.id === stepId);
+        if (!stepDefinition) continue;
+
+        const success = stepResult.status === 'success';
+        const errorMessage = stepResult.error?.message;
+        const executed = stepResult.status !== 'skipped';
+
+        if (executed) {
+          internalContext._usage.stepCount += 1;
+          internalContext._usage.weightedStepCount += 1;
+        }
+
+        if (executed) {
+          this.recordUsageEvent(
+            createStepExecuteEvent({
+              executionId: internalContext._identity.executionId,
+              stepId,
+              workflowId,
+              userId: internalContext._ownership.userId,
+              workspaceId: internalContext._ownership.workspaceId,
+              adapterType: stepDefinition.adapter,
+              adapterName: stepDefinition.action,
+              durationMs: stepResult.duration,
+              success,
+              retries: Math.max(0, stepResult.attempts - 1),
+              error: errorMessage,
+              pricingTier: internalContext._billing.pricingTierResolved,
+              billable: internalContext._billing.isBillable,
+            }),
+          );
+        }
+
+        if (executed) {
+          internalContext._usage.adapterCallCount += 1;
+          this.recordUsageEvent(
+            createAdapterCallEvent({
+              executionId: internalContext._identity.executionId,
+              stepId,
+              adapterType: stepDefinition.adapter,
+              adapterName: stepDefinition.action,
+              workflowId,
+              userId: internalContext._ownership.userId,
+              workspaceId: internalContext._ownership.workspaceId,
+              durationMs: stepResult.duration,
+              success,
+              retries: Math.max(0, stepResult.attempts - 1),
+              error: errorMessage,
+              pricingTier: internalContext._billing.pricingTierResolved,
+              billable: internalContext._billing.isBillable,
+            }),
+          );
+        }
+      }
 
       await this.onWorkflowBillingComplete(internalContext, result);
       return result;

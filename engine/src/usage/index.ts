@@ -7,6 +7,7 @@
  */
 
 export { NoOpUsageCollector } from './NoOpUsageCollector.js';
+export { FileSpoolUsageCollector, HttpUsageBatchTransport, type UsageBatchTransport } from './FileSpoolUsageCollector.js';
 export {
   generateUsageEventId,
   createWorkflowRunEvent,

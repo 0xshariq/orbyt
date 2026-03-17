@@ -58,6 +58,18 @@ export interface WorkflowRunOptions {
   triggeredBy?: string;
 
   /**
+   * Resume execution from a previously checkpointed run ID.
+   */
+  resumeFromRunId?: string;
+
+  /**
+   * Resume strictness mode.
+   * - strict: require valid resumable checkpoint
+   * - best-effort: start fresh if checkpoint is missing/invalid
+   */
+  resumePolicy?: 'strict' | 'best-effort';
+
+  /**
    * Ownership context (from bridge/API)
    * INTERNAL USE: Not for user workflows
    */
@@ -260,6 +272,12 @@ export interface UsageCounters {
 
   /** Total number of steps executed */
   stepCount: number;
+
+  /** Total adapter calls executed */
+  adapterCallCount: number;
+
+  /** Total trigger fires recorded */
+  triggerFireCount: number;
 
   /** Weighted step count (sum of step weights) */
   weightedStepCount: number;
@@ -1150,6 +1168,12 @@ export interface ExecutionOptions {
 
   /** Trigger source (who/what triggered this execution) */
   triggeredBy?: string;
+
+  /** Resume from an existing checkpoint run ID */
+  resumeFromRunId?: string;
+
+  /** Resume strictness mode */
+  resumePolicy?: 'strict' | 'best-effort';
 }
 
 /**
@@ -1815,6 +1839,36 @@ export interface OrbytEngineConfig {
    * Collector must be non-fatal and never block execution
    */
   usageCollector?: UsageCollector;
+
+  /**
+   * Optional durable usage spool and periodic sender configuration.
+   * Used when usageCollector is not explicitly provided.
+   */
+  usageSpool?: {
+    /** Enable built-in spool collector (default: true) */
+    enabled?: boolean;
+
+    /** Base path for usage storage (default: ~/.orbyt/usage) */
+    baseDir?: string;
+
+    /** Max events per outbound batch (default: 200) */
+    batchSize?: number;
+
+    /** Flush interval in milliseconds (default: 60000) */
+    flushIntervalMs?: number;
+
+    /** Max retry attempts before moving events to failed queue (default: 10) */
+    maxRetryAttempts?: number;
+
+    /** Optional billing ingestion endpoint for batch push */
+    billingEndpoint?: string;
+
+    /** Optional API key for billing ingestion auth */
+    billingApiKey?: string;
+
+    /** Optional request timeout in milliseconds (default: 10000) */
+    requestTimeoutMs?: number;
+  };
 
   // === Logging & Observability ===
 

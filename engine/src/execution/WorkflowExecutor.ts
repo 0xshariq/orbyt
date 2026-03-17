@@ -25,6 +25,7 @@ import { EngineEventType, type ExecutionNode, type ExecutionOptions, type Execut
 import { performance } from 'node:perf_hooks';
 import { join } from 'node:path';
 import { ExecutionStore } from '../storage/ExecutionStore.js';
+import { CheckpointStore, type CheckpointReason, type CheckpointWorkflowStatus, type ExecutionCheckpointSnapshot, type StepSnapshot } from '../storage/CheckpointStore.js';
 
 /**
  * Workflow executor
@@ -36,6 +37,7 @@ export class WorkflowExecutor {
   private eventBus?: EventBus;
   private hookManager?: HookManager;
   private stateDir: string = join(process.cwd(), '.orbyt', 'executions');
+  private checkpointDir: string = join(process.cwd(), '.orbyt', 'checkpoints');
 
   constructor(stepExecutor: StepExecutor) {
     this.stepExecutor = stepExecutor;
@@ -62,6 +64,7 @@ export class WorkflowExecutor {
    */
   setStateDir(dir: string): void {
     this.stateDir = dir;
+    this.checkpointDir = join(dir, '..', 'checkpoints');
   }
 
   /**
@@ -75,8 +78,8 @@ export class WorkflowExecutor {
     workflow: ParsedWorkflow,
     options: ExecutionOptions = {}
   ): Promise<WorkflowResult> {
-    // Regenerate execution ID for each run so concurrent/sequential runs are distinct
-    this.executionId = this.generateExecutionId();
+    // Use original run ID for resumed workflows, otherwise generate a new run ID.
+    this.executionId = options.resumeFromRunId || this.generateExecutionId();
 
     const startedAt = new Date();
     const workflowStart = performance.now();
@@ -86,6 +89,7 @@ export class WorkflowExecutor {
     // Initialise state store (best-effort — never throws)
     const stateStore = new ExecutionStore(this.stateDir);
     stateStore.begin(this.executionId, workflowName, startedAt);
+    const checkpointStore = new CheckpointStore(this.checkpointDir);
 
     // Log workflow execution started
     LoggerManager.getLogger().workflowStarted(workflowName, {
@@ -100,6 +104,17 @@ export class WorkflowExecutor {
 
     // Create ContextStore for this execution
     this.contextStore = this.createContextStore(workflow, options);
+
+    let resumed = false;
+    if (options.resumeFromRunId) {
+      resumed = this.tryRestoreFromCheckpoint(
+        checkpointStore,
+        options.resumeFromRunId,
+        workflow,
+        stepResults,
+        options.resumePolicy ?? 'strict',
+      );
+    }
 
     // Log workflow inputs
     const logger = LoggerManager.getLogger();
@@ -150,6 +165,22 @@ export class WorkflowExecutor {
       ));
     }
 
+    if (resumed && this.eventBus) {
+      await this.eventBus.emit(createEvent(
+        EngineEventType.WORKFLOW_RESUMED,
+        {
+          workflowId: workflow.name || this.executionId,
+          workflowName,
+          runId: this.executionId,
+          triggeredBy: options.triggeredBy,
+        },
+        {
+          workflowId: workflow.name || this.executionId,
+          runId: this.executionId,
+        }
+      ));
+    }
+
     // Call beforeWorkflow hook
     if (this.hookManager) {
       await this.hookManager.runBeforeWorkflow(hookContext);
@@ -157,6 +188,17 @@ export class WorkflowExecutor {
 
     // Configure StepExecutor with ContextStore
     this.stepExecutor.setContextStore(this.contextStore);
+
+    // Save baseline checkpoint at workflow start.
+    this.saveCheckpoint(
+      checkpointStore,
+      workflow,
+      'running',
+      stepResults,
+      this.contextStore.getResolutionContext(),
+      startedAt,
+      resumed ? 'workflow-resumed' : 'workflow-started',
+    );
 
     // Convert ParsedStep[] to ExecutionNode[] for planning
     const executionNodes = this.convertToExecutionNodes(workflow.steps);
@@ -189,7 +231,9 @@ export class WorkflowExecutor {
           stepResults,
           options,
           stepMap,
-          timeout
+          timeout,
+          checkpointStore,
+          startedAt,
         );
       } else {
         await this.executeWorkflowPlan(
@@ -198,7 +242,9 @@ export class WorkflowExecutor {
           context,
           stepResults,
           options,
-          stepMap
+          stepMap,
+          checkpointStore,
+          startedAt,
         );
       }
 
@@ -221,6 +267,16 @@ export class WorkflowExecutor {
         completedAt,
         Array.from(stepResults.values()),
         Math.round(performance.now() - workflowStart)
+      );
+      this.saveCheckpoint(
+        checkpointStore,
+        workflow,
+        'completed',
+        stepResults,
+        context,
+        startedAt,
+        'workflow-completed',
+        completedAt,
       );
 
       // Emit workflow.completed event
@@ -288,6 +344,17 @@ export class WorkflowExecutor {
         workflowError
       );
 
+      this.saveCheckpoint(
+        checkpointStore,
+        workflow,
+        status === 'timeout' ? 'timeout' : 'failed',
+        stepResults,
+        context,
+        startedAt,
+        status === 'timeout' ? 'workflow-timeout' : 'workflow-failed',
+        completedAt,
+      );
+
       return this.buildResult(
         workflow,
         stepResults,
@@ -311,9 +378,11 @@ export class WorkflowExecutor {
     stepResults: Map<string, StepResult>,
     options: ExecutionOptions,
     stepMap: Map<string, ParsedStep>,
-    timeoutMs: number
+    timeoutMs: number,
+    checkpointStore: CheckpointStore,
+    startedAt: Date,
   ): Promise<void> {
-    const executionPromise = this.executeWorkflowPlan(workflow, plan, context, stepResults, options, stepMap);
+    const executionPromise = this.executeWorkflowPlan(workflow, plan, context, stepResults, options, stepMap, checkpointStore, startedAt);
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     const timeoutPromise = new Promise<void>((_, reject) => {
@@ -342,7 +411,9 @@ export class WorkflowExecutor {
     context: ResolutionContext,
     stepResults: Map<string, StepResult>,
     options: ExecutionOptions,
-    stepMap: Map<string, ParsedStep>
+    stepMap: Map<string, ParsedStep>,
+    checkpointStore: CheckpointStore,
+    startedAt: Date,
   ): Promise<void> {
     const continueOnError = options.continueOnError ?? workflow.policies?.failure === 'continue';
 
@@ -356,6 +427,12 @@ export class WorkflowExecutor {
         if (!step) {
           throw new Error(`Step not found: ${node.stepId}`);
         }
+
+        const existing = stepResults.get(step.id);
+        if (existing && (existing.status === 'success' || existing.status === 'skipped')) {
+          return Promise.resolve(existing);
+        }
+
         return this.stepExecutor.execute(step);
       });
 
@@ -370,6 +447,15 @@ export class WorkflowExecutor {
         if (result.status === 'fulfilled') {
           const stepResult = result.value;
           stepResults.set(step.id, stepResult);
+          this.saveCheckpoint(
+            checkpointStore,
+            workflow,
+            'running',
+            stepResults,
+            context,
+            startedAt,
+            'step-updated',
+          );
 
           // Update context with step output
           if (stepResult.status === 'success') {
@@ -399,6 +485,15 @@ export class WorkflowExecutor {
             startedAt: new Date(),
             completedAt: new Date(),
           });
+          this.saveCheckpoint(
+            checkpointStore,
+            workflow,
+            'running',
+            stepResults,
+            context,
+            startedAt,
+            'step-updated',
+          );
 
           if (!continueOnError && !step.continueOnError) {
             throw error;
@@ -550,6 +645,111 @@ export class WorkflowExecutor {
    */
   private generateExecutionId(): string {
     return `exec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  private saveCheckpoint(
+    store: CheckpointStore,
+    workflow: ParsedWorkflow,
+    status: CheckpointWorkflowStatus,
+    stepResults: Map<string, StepResult>,
+    context: ResolutionContext,
+    startedAt: Date,
+    reason: CheckpointReason,
+    completedAt?: Date,
+  ): void {
+    const stepStates: Record<string, StepSnapshot> = {};
+    for (const [stepId, result] of stepResults.entries()) {
+      stepStates[stepId] = {
+        id: stepId,
+        status: result.status,
+        attempts: result.attempts,
+        output: result.output,
+        error: result.error?.message,
+        durationMs: result.duration,
+        completedAt: result.completedAt.toISOString(),
+      };
+    }
+
+    const snapshot: ExecutionCheckpointSnapshot = {
+      runId: this.executionId,
+      workflowId: workflow.name || this.executionId,
+      status,
+      stepStates,
+      context: {
+        env: context.env,
+        inputs: context.inputs,
+        custom: context.context,
+        stepOutputs: Object.fromEntries(context.steps.entries()),
+      },
+      metadata: {
+        startedAt: startedAt.getTime(),
+        updatedAt: Date.now(),
+        completedAt: completedAt?.getTime(),
+        checkpointReason: reason,
+      },
+    };
+
+    store.save(snapshot);
+  }
+
+  private tryRestoreFromCheckpoint(
+    checkpointStore: CheckpointStore,
+    runId: string,
+    workflow: ParsedWorkflow,
+    stepResults: Map<string, StepResult>,
+    policy: 'strict' | 'best-effort',
+  ): boolean {
+    const snapshot = checkpointStore.load(runId);
+    if (!snapshot) {
+      if (policy === 'strict') {
+        throw new Error(`Resume failed: checkpoint not found for runId '${runId}'`);
+      }
+      return false;
+    }
+
+    if (snapshot.workflowId !== (workflow.name || runId)) {
+      if (policy === 'strict') {
+        throw new Error(
+          `Resume failed: checkpoint workflow '${snapshot.workflowId}' does not match requested workflow '${workflow.name || runId}'`,
+        );
+      }
+      return false;
+    }
+
+    if (snapshot.status === 'completed' || snapshot.status === 'failed' || snapshot.status === 'timeout') {
+      if (policy === 'strict') {
+        throw new Error(`Resume failed: checkpoint for runId '${runId}' is already terminal (${snapshot.status})`);
+      }
+      return false;
+    }
+
+    if (this.contextStore) {
+      for (const [stepId, output] of Object.entries(snapshot.context.stepOutputs ?? {})) {
+        this.contextStore.setStepOutput(stepId, output);
+      }
+    }
+
+    for (const [stepId, step] of Object.entries(snapshot.stepStates)) {
+      if (step.status !== 'success' && step.status !== 'skipped') {
+        continue;
+      }
+
+      const now = new Date();
+      const completedAt = step.completedAt ? new Date(step.completedAt) : now;
+      const status: 'success' | 'skipped' = step.status === 'success' ? 'success' : 'skipped';
+
+      stepResults.set(stepId, {
+        stepId,
+        status,
+        output: step.output ?? null,
+        attempts: step.attempts || 1,
+        duration: step.durationMs ?? 0,
+        startedAt: now,
+        completedAt,
+      });
+    }
+
+    return true;
   }
 
   /**

@@ -20,7 +20,7 @@ const ORBYT_HOME = join(homedir(), '.orbyt');
  * @param config - User-provided configuration
  * @returns Configuration with defaults applied
  */
-export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Omit<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata'>> & Pick<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata'> {
+export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Omit<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool'>> & Pick<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool'> {
   return {
     maxConcurrentWorkflows: config.maxConcurrentWorkflows ?? 10,
     maxConcurrentSteps: config.maxConcurrentSteps ?? 10,
@@ -44,7 +44,17 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
     workingDirectory: config.workingDirectory ?? process.cwd(),
     experimental: config.experimental ?? false,
     metadata: config.metadata,
-    usageCollector: config.usageCollector
+    usageCollector: config.usageCollector,
+    usageSpool: {
+      enabled: config.usageSpool?.enabled ?? true,
+      baseDir: config.usageSpool?.baseDir ?? join(ORBYT_HOME, 'usage'),
+      batchSize: config.usageSpool?.batchSize ?? 200,
+      flushIntervalMs: config.usageSpool?.flushIntervalMs ?? 60_000,
+      maxRetryAttempts: config.usageSpool?.maxRetryAttempts ?? 10,
+      billingEndpoint: config.usageSpool?.billingEndpoint,
+      billingApiKey: config.usageSpool?.billingApiKey,
+      requestTimeoutMs: config.usageSpool?.requestTimeoutMs ?? 10_000,
+    }
   };
 }
 
@@ -77,5 +87,17 @@ export function validateConfig(config: OrbytEngineConfig): void {
 
   if (config.sandboxMode && !['none', 'basic', 'strict'].includes(config.sandboxMode)) {
     throw new Error(`Invalid sandboxMode: ${config.sandboxMode}`);
+  }
+
+  if (config.usageSpool?.batchSize !== undefined && config.usageSpool.batchSize < 1) {
+    throw new Error('usageSpool.batchSize must be at least 1');
+  }
+
+  if (config.usageSpool?.flushIntervalMs !== undefined && config.usageSpool.flushIntervalMs < 1000) {
+    throw new Error('usageSpool.flushIntervalMs must be at least 1000ms');
+  }
+
+  if (config.usageSpool?.maxRetryAttempts !== undefined && config.usageSpool.maxRetryAttempts < 1) {
+    throw new Error('usageSpool.maxRetryAttempts must be at least 1');
   }
 }
