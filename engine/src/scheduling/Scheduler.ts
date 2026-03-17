@@ -33,6 +33,9 @@ export interface SchedulerConfig {
   job?: {
     workerCount?: number;
     maxConcurrent?: number;
+    workerBackend?: 'node' | 'tokio';
+    tokioWorkerCommand?: string;
+    tokioWorkerArgs?: string[];
   };
   
   /** Event handler configuration */
@@ -101,6 +104,9 @@ export class Scheduler {
       job: {
         workerCount: config.job?.workerCount ?? 4,
         maxConcurrent: config.job?.maxConcurrent ?? 10,
+        workerBackend: config.job?.workerBackend ?? 'node',
+        tokioWorkerCommand: config.job?.tokioWorkerCommand ?? 'orbyt-tokio-worker',
+        tokioWorkerArgs: config.job?.tokioWorkerArgs ?? [],
       },
       event: {
         enabled: config.event?.enabled ?? true,

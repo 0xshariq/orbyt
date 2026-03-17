@@ -294,6 +294,7 @@ export class OrbytEngine {
       maxConcurrentExecutions: this.config.maxConcurrentWorkflows,
       defaultTimeout: this.config.defaultTimeout,
       enableScheduler: this.config.enableScheduler,
+      scheduler: this.config.scheduler,
       queue: this.config.queue,
       retryPolicy: this.config.retryPolicy,
       timeoutManager: this.config.timeoutManager,
@@ -305,16 +306,23 @@ export class OrbytEngine {
     // Initialize usage collector.
     // Priority:
     // 1) user-provided collector
-    // 2) built-in durable file spool collector (default)
-    // 3) no-op collector (explicitly disabled)
+    // 2) built-in durable file spool collector (default and production-safe)
+    // 3) no-op collector (testing-only escape hatch)
     if (this.config.usageCollector) {
       this.usageCollector = this.config.usageCollector;
     } else {
       const usageSpool = this.config.usageSpool;
       const spoolEnabled = usageSpool?.enabled ?? true;
       const spoolBaseDir = usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+      const allowNoOpForTesting =
+        process.env.NODE_ENV === 'test' ||
+        process.env.ORBYT_ALLOW_NOOP_USAGE_COLLECTOR === '1';
 
-      if (spoolEnabled) {
+      if (spoolEnabled || !allowNoOpForTesting) {
+        if (!spoolEnabled && !allowNoOpForTesting) {
+          this.log('warn', 'usageSpool.enabled=false ignored outside test mode; using durable spool collector');
+        }
+
         const transport = usageSpool?.billingEndpoint
         ? new HttpUsageBatchTransport({
           endpoint: usageSpool.billingEndpoint,

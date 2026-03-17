@@ -8,7 +8,10 @@
  */
 
 import { Worker } from 'worker_threads';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createInterface, type Interface } from 'node:readline';
 import path from 'path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'url';
 import {  createJob } from '../queue/JobQueue.js';
 import { Job, JobPriority, JobQueue } from '../types/core-types.js';
@@ -25,6 +28,15 @@ export interface JobSchedulerConfig {
   
   /** Worker script path (optional, for custom workers) */
   workerScriptPath?: string;
+
+  /** Worker runtime backend */
+  workerBackend?: 'node' | 'tokio';
+
+  /** Command used to launch Tokio worker process */
+  tokioWorkerCommand?: string;
+
+  /** Optional args for Tokio worker command */
+  tokioWorkerArgs?: string[];
 }
 
 /**
@@ -32,7 +44,10 @@ export interface JobSchedulerConfig {
  */
 interface WorkerState {
   id: string;
-  worker: Worker;
+  backend: 'node' | 'tokio';
+  worker?: Worker;
+  process?: ChildProcessWithoutNullStreams;
+  stdoutReader?: Interface;
   busy: boolean;
   currentJobId?: string;
 }
@@ -57,6 +72,9 @@ export class JobScheduler {
       workerCount: config.workerCount ?? 4,
       maxConcurrent: config.maxConcurrent ?? 10,
       workerScriptPath: config.workerScriptPath ?? this.getDefaultWorkerPath(),
+      workerBackend: config.workerBackend ?? 'node',
+      tokioWorkerCommand: config.tokioWorkerCommand ?? 'orbyt-tokio-worker',
+      tokioWorkerArgs: config.tokioWorkerArgs ?? [],
     };
   }
 
@@ -111,7 +129,7 @@ export class JobScheduler {
     // Terminate all workers
     await Promise.all(
       this.workers.map(async (workerState) => {
-        await workerState.worker.terminate();
+        await this.terminateWorker(workerState);
       })
     );
 
@@ -122,6 +140,15 @@ export class JobScheduler {
    * Create a worker
    */
   private createWorker(workerId: string): void {
+    if (this.config.workerBackend === 'tokio') {
+      this.createTokioWorker(workerId);
+      return;
+    }
+
+    this.createNodeWorker(workerId);
+  }
+
+  private createNodeWorker(workerId: string): void {
     try {
       const worker = new Worker(this.config.workerScriptPath, {
         workerData: { workerId },
@@ -129,48 +156,154 @@ export class JobScheduler {
 
       const workerState: WorkerState = {
         id: workerId,
+        backend: 'node',
         worker,
         busy: false,
       };
 
-      // Handle worker messages
       worker.on('message', (message) => {
         this.handleWorkerMessage(workerState, message);
       });
 
-      // Handle worker errors
       worker.on('error', (error) => {
-        console.error(`Worker ${workerId} error:`, error);
-        workerState.busy = false;
-        
-        // Mark job as failed if there was one
-        if (workerState.currentJobId) {
-          this.jobQueue.markFailed(workerState.currentJobId, error as Error);
-          workerState.currentJobId = undefined;
-        }
+        this.handleWorkerFailure(workerState, error);
       });
 
-      // Handle worker exit
       worker.on('exit', (code) => {
         if (code !== 0) {
           console.error(`Worker ${workerId} exited with code ${code}`);
         }
-        
-        // Remove from workers array
-        const index = this.workers.findIndex(w => w.id === workerId);
-        if (index !== -1) {
-          this.workers.splice(index, 1);
-        }
-        
-        // Recreate worker if scheduler is still running
-        if (this.running && this.workers.length < this.config.workerCount) {
-          this.createWorker(`worker_${Date.now()}`);
-        }
+        this.handleWorkerExit(workerId);
       });
 
       this.workers.push(workerState);
     } catch (error) {
       console.error(`Failed to create worker ${workerId}:`, error);
+    }
+  }
+
+  private createTokioWorker(workerId: string): void {
+    try {
+      const { command, args } = this.resolveTokioCommand();
+      const process = spawn(command, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const workerState: WorkerState = {
+        id: workerId,
+        backend: 'tokio',
+        process,
+        busy: false,
+      };
+
+      const stdoutReader = createInterface({ input: process.stdout });
+      workerState.stdoutReader = stdoutReader;
+
+      stdoutReader.on('line', (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return;
+        }
+
+        try {
+          const message = JSON.parse(trimmed);
+          this.handleWorkerMessage(workerState, message);
+        } catch {
+          console.warn(`Worker ${workerId} sent non-JSON message: ${trimmed}`);
+        }
+      });
+
+      process.stderr.on('data', (chunk: Buffer) => {
+        const message = chunk.toString().trim();
+        if (message) {
+          console.error(`Worker ${workerId} stderr: ${message}`);
+        }
+      });
+
+      process.on('error', (error) => {
+        this.handleWorkerFailure(workerState, error);
+      });
+
+      process.on('exit', (code) => {
+        if (code !== 0) {
+          console.error(`Worker ${workerId} exited with code ${code ?? 'unknown'}`);
+        }
+        this.handleWorkerExit(workerId);
+      });
+
+      this.workers.push(workerState);
+    } catch (error) {
+      console.error(`Failed to create worker ${workerId}:`, error);
+    }
+  }
+
+  private resolveTokioCommand(): { command: string; args: string[] } {
+    // If explicitly configured, use the provided command and args as-is.
+    if (this.config.tokioWorkerCommand !== 'orbyt-tokio-worker') {
+      return {
+        command: this.config.tokioWorkerCommand,
+        args: this.config.tokioWorkerArgs,
+      };
+    }
+
+    // Local development fallback: run the embedded Rust sidecar directly.
+    const cwdManifestPath = path.join(process.cwd(), 'rust', 'orbyt-tokio-worker', 'Cargo.toml');
+    if (existsSync(cwdManifestPath)) {
+      return {
+        command: 'cargo',
+        args: ['run', '--quiet', '--manifest-path', cwdManifestPath],
+      };
+    }
+
+    return {
+      command: this.config.tokioWorkerCommand,
+      args: this.config.tokioWorkerArgs,
+    };
+  }
+
+  private handleWorkerFailure(workerState: WorkerState, error: unknown): void {
+    console.error(`Worker ${workerState.id} error:`, error);
+    workerState.busy = false;
+
+    if (workerState.currentJobId) {
+      const workerError = error instanceof Error ? error : new Error(String(error));
+      this.jobQueue.markFailed(workerState.currentJobId, workerError);
+      workerState.currentJobId = undefined;
+    }
+  }
+
+  private handleWorkerExit(workerId: string): void {
+    const index = this.workers.findIndex(w => w.id === workerId);
+    if (index !== -1) {
+      const workerState = this.workers[index];
+      workerState.stdoutReader?.close();
+
+      // Unexpected worker exits during active processing should fail the current job.
+      if (this.running && workerState.currentJobId) {
+        this.jobQueue.markFailed(
+          workerState.currentJobId,
+          new Error(`Worker ${workerId} exited while processing job ${workerState.currentJobId}`),
+        );
+      }
+
+      this.workers.splice(index, 1);
+    }
+
+    if (this.running && this.workers.length < this.config.workerCount) {
+      this.createWorker(`worker_${Date.now()}`);
+    }
+  }
+
+  private async terminateWorker(workerState: WorkerState): Promise<void> {
+    workerState.stdoutReader?.close();
+
+    if (workerState.backend === 'node' && workerState.worker) {
+      await workerState.worker.terminate();
+      return;
+    }
+
+    if (workerState.backend === 'tokio' && workerState.process) {
+      workerState.process.kill();
     }
   }
 
@@ -237,7 +370,7 @@ export class JobScheduler {
       workerState.currentJobId = job.id;
 
       // Send job to worker
-      workerState.worker.postMessage({
+      const payload = {
         type: 'execute',
         job: {
           id: job.id,
@@ -245,7 +378,24 @@ export class JobScheduler {
           payload: job.payload,
           metadata: job.metadata,
         },
-      });
+      };
+
+      try {
+        if (workerState.backend === 'node' && workerState.worker) {
+          workerState.worker.postMessage(payload);
+        } else if (workerState.backend === 'tokio' && workerState.process?.stdin) {
+          workerState.process.stdin.write(`${JSON.stringify(payload)}\n`);
+        } else {
+          throw new Error(`Worker ${workerState.id} is unavailable`);
+        }
+      } catch (error) {
+        workerState.busy = false;
+        workerState.currentJobId = undefined;
+        this.jobQueue.markFailed(
+          job.id,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
     }
   }
 

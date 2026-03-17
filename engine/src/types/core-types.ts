@@ -587,6 +587,20 @@ export interface EngineConfig {
   /** Enable scheduler */
   enableScheduler?: boolean;
 
+  /** Internal scheduler configuration */
+  scheduler?: {
+    job?: {
+      /** Worker runtime backend for scheduled jobs */
+      workerBackend?: 'node' | 'tokio';
+
+      /** Command used to launch Tokio worker process */
+      tokioWorkerCommand?: string;
+
+      /** Optional args for Tokio worker command */
+      tokioWorkerArgs?: string[];
+    };
+  };
+
   /** Custom job queue (default: InMemoryQueue) */
   queue?: JobQueue;
 
@@ -1793,6 +1807,23 @@ export interface OrbytEngineConfig {
    * @default true
    */
   enableScheduler?: boolean;
+
+  /**
+   * Scheduler runtime options.
+   * Keep defaults to use Node worker_threads backend.
+   */
+  scheduler?: {
+    job?: {
+      /** Worker runtime backend for scheduled jobs */
+      workerBackend?: 'node' | 'tokio';
+
+      /** Command used to launch Tokio worker process */
+      tokioWorkerCommand?: string;
+
+      /** Optional args for Tokio worker command */
+      tokioWorkerArgs?: string[];
+    };
+  };
 
   // === Queue Configuration ===
 

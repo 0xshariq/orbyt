@@ -20,7 +20,7 @@ const ORBYT_HOME = join(homedir(), '.orbyt');
  * @param config - User-provided configuration
  * @returns Configuration with defaults applied
  */
-export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Omit<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool'>> & Pick<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool'> {
+export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Omit<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler'>> & Pick<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler'> {
   return {
     maxConcurrentWorkflows: config.maxConcurrentWorkflows ?? 10,
     maxConcurrentSteps: config.maxConcurrentSteps ?? 10,
@@ -43,6 +43,13 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
     sandboxMode: config.sandboxMode ?? 'basic',
     workingDirectory: config.workingDirectory ?? process.cwd(),
     experimental: config.experimental ?? false,
+    scheduler: {
+      job: {
+        workerBackend: config.scheduler?.job?.workerBackend ?? 'node',
+        tokioWorkerCommand: config.scheduler?.job?.tokioWorkerCommand ?? 'orbyt-tokio-worker',
+        tokioWorkerArgs: config.scheduler?.job?.tokioWorkerArgs ?? [],
+      },
+    },
     metadata: config.metadata,
     usageCollector: config.usageCollector,
     usageSpool: {
@@ -99,5 +106,9 @@ export function validateConfig(config: OrbytEngineConfig): void {
 
   if (config.usageSpool?.maxRetryAttempts !== undefined && config.usageSpool.maxRetryAttempts < 1) {
     throw new Error('usageSpool.maxRetryAttempts must be at least 1');
+  }
+
+  if (config.scheduler?.job?.workerBackend !== undefined && !['node', 'tokio'].includes(config.scheduler.job.workerBackend)) {
+    throw new Error("scheduler.job.workerBackend must be either 'node' or 'tokio'");
   }
 }

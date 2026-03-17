@@ -13,7 +13,10 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "tokio-worker:run": "cargo run --quiet --manifest-path rust/orbyt-tokio-worker/Cargo.toml",
+    "test:integration": "node dist/testing/integration/run-all.js",
+    "test": "pnpm run build && pnpm run test:integration"
   },
   "keywords": [
     "automation",

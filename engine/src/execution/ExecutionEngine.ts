@@ -36,6 +36,7 @@ export class ExecutionEngine {
     maxConcurrentExecutions: number;
     defaultTimeout: number;
     enableScheduler: boolean;
+    scheduler: NonNullable<EngineConfig['scheduler']>;
     queue: JobQueue;
   };
   private queue: JobQueue;
@@ -60,6 +61,7 @@ export class ExecutionEngine {
       maxConcurrentExecutions: config.maxConcurrentExecutions ?? 10,
       defaultTimeout: config.defaultTimeout ?? 300000, // 5 minutes
       enableScheduler: config.enableScheduler ?? true,
+      scheduler: config.scheduler ?? {},
       queue: config.queue ?? new InMemoryQueue(),
       retryPolicy: config.retryPolicy,
       timeoutManager: config.timeoutManager,
@@ -92,7 +94,7 @@ export class ExecutionEngine {
     if (this.config.enableScheduler) {
       this.scheduler = new Scheduler(
         this.queue,
-        {},
+        this.config.scheduler,
         async (schedule, _execution) => {
           // Handle scheduled workflow execution
           console.log('Scheduled workflow triggered:', schedule.id);
