@@ -690,6 +690,34 @@ export interface EngineConfig {
     };
   };
 
+  // === Distributed Runtime Configuration ===
+
+  /**
+   * Distributed runtime options for queue-backed execution mode.
+   */
+  distributed?: {
+    /** Optional custom distributed queue implementation */
+    jobQueue?: DistributedJobQueue;
+
+    /** Built-in queue backend selector */
+    queueBackend?: 'memory' | 'file';
+
+    /** State directory for file-backed distributed queue */
+    fileQueueStateDir?: string;
+
+    /** Worker pool size for distributed mode */
+    workerCount?: number;
+
+    /** Worker poll interval in milliseconds */
+    pollIntervalMs?: number;
+
+    /** Job lease duration in milliseconds */
+    leaseMs?: number;
+
+    /** Lease extension heartbeat interval in milliseconds */
+    leaseExtensionMs?: number;
+  };
+
   /** Custom job queue (default: InMemoryQueue) */
   queue?: JobQueue;
 
@@ -2026,6 +2054,34 @@ export interface OrbytEngineConfig {
       /** Optional args for Tokio worker command */
       tokioWorkerArgs?: string[];
     };
+  };
+
+  // === Distributed Runtime Configuration ===
+
+  /**
+   * Distributed runtime queue settings.
+   */
+  distributed?: {
+    /** Explicit queue implementation (highest priority). */
+    jobQueue?: DistributedJobQueue;
+
+    /** Queue backend selection when jobQueue is not provided. */
+    queueBackend?: 'memory' | 'file';
+
+    /** State directory used by file-backed queue backend. */
+    fileQueueStateDir?: string;
+
+    /** Worker count override for distributed mode. */
+    workerCount?: number;
+
+    /** Worker polling interval in milliseconds. */
+    pollIntervalMs?: number;
+
+    /** Default queue lease duration in milliseconds. */
+    leaseMs?: number;
+
+    /** Lease heartbeat interval for active workers in milliseconds. */
+    leaseExtensionMs?: number;
   };
 
   // === Queue Configuration ===

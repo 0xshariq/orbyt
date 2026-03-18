@@ -5,7 +5,10 @@ import { createExecutionNode } from '../execution/ExecutionNode.js';
 import { ExecutionPlanner } from '../execution/ExecutionPlan.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
+import { createEvent } from '../events/EngineEvents.js';
+import type { EventBus } from '../events/EventBus.js';
 import {
+  EngineEventType,
   type DistributedJobQueue,
   type DistributedStepJob,
   type ExecutionOptions,
@@ -15,12 +18,21 @@ import {
   type WorkflowResult,
 } from '../types/core-types.js';
 import { DistributedStepWorker } from './DistributedStepWorker.js';
+import type { HookManager } from '../hooks/HookManager.js';
+import type { WorkflowHookContext } from '../hooks/LifecycleHooks.js';
+import { ExecutionStore } from '../storage/ExecutionStore.js';
+import { CheckpointStore, type CheckpointWorkflowStatus, type CheckpointReason, type StepSnapshot } from '../storage/CheckpointStore.js';
 
 export interface DistributedWorkflowOrchestratorOptions {
   queue: DistributedJobQueue;
   stepExecutor: StepExecutor;
   workerCount?: number;
   pollIntervalMs?: number;
+  eventBus?: EventBus;
+  hookManager?: HookManager;
+  executionStore?: ExecutionStore;
+  checkpointStore?: CheckpointStore;
+  leaseExtensionMs?: number;
 }
 
 /**
@@ -37,12 +49,22 @@ export class DistributedWorkflowOrchestrator {
   private readonly stepExecutor: StepExecutor;
   private readonly workerCount: number;
   private readonly pollIntervalMs: number;
+  private readonly eventBus?: EventBus;
+  private readonly hookManager?: HookManager;
+  private readonly executionStore?: ExecutionStore;
+  private readonly checkpointStore?: CheckpointStore;
+  private readonly leaseExtensionMs: number;
 
   constructor(options: DistributedWorkflowOrchestratorOptions) {
     this.queue = options.queue;
     this.stepExecutor = options.stepExecutor;
     this.workerCount = Math.max(1, options.workerCount ?? 4);
     this.pollIntervalMs = Math.max(10, options.pollIntervalMs ?? 50);
+    this.eventBus = options.eventBus;
+    this.hookManager = options.hookManager;
+    this.executionStore = options.executionStore;
+    this.checkpointStore = options.checkpointStore;
+    this.leaseExtensionMs = Math.max(500, options.leaseExtensionMs ?? 5_000);
   }
 
   async execute(workflow: ParsedWorkflow, options: ExecutionOptions = {}): Promise<WorkflowResult> {
@@ -50,13 +72,16 @@ export class DistributedWorkflowOrchestrator {
     const workflowStart = performance.now();
     const runId = options.resumeFromRunId || this.generateRunId();
     const workflowId = workflow.name || runId;
+    const workflowName = workflow.metadata?.name || workflow.name || 'unnamed-workflow';
 
     const logger = LoggerManager.getLogger();
+
+    this.executionStore?.begin(runId, workflowName, startedAt);
 
     const contextStore = new ContextStore({
       executionId: runId,
       workflowId,
-      workflowName: workflow.metadata?.name || workflow.name || 'unnamed-workflow',
+      workflowName,
       version: workflow.metadata?.version || workflow.version,
       description: workflow.metadata?.description || workflow.description,
       tags: workflow.metadata?.tags || workflow.tags,
@@ -87,6 +112,71 @@ export class DistributedWorkflowOrchestrator {
     const queuedSteps = new Set<string>();
     const terminalSteps = new Set<string>();
 
+    const hookContext: WorkflowHookContext = {
+      workflowId,
+      workflowName,
+      runId,
+      triggeredBy: options.triggeredBy,
+      inputs: options.inputs,
+      env: options.env,
+      metadata: workflow.metadata,
+      startTime: startedAt.getTime(),
+    };
+
+    let resumed = false;
+    if (options.resumeFromRunId && this.checkpointStore) {
+      resumed = this.restoreFromCheckpoint(
+        workflow,
+        options.resumeFromRunId,
+        options.resumePolicy ?? 'strict',
+        contextStore,
+        stepResults,
+        terminalSteps,
+      );
+    }
+
+    this.saveCheckpoint(
+      workflow,
+      runId,
+      'running',
+      stepResults,
+      contextStore,
+      startedAt,
+      resumed ? 'workflow-resumed' : 'workflow-started',
+    );
+
+    await this.eventBus?.emit(createEvent(
+      EngineEventType.WORKFLOW_STARTED,
+      {
+        workflowId,
+        workflowName,
+        runId,
+        triggeredBy: options.triggeredBy,
+        inputs: options.inputs,
+      },
+      { workflowId, runId },
+    ));
+
+    if (resumed) {
+      await this.eventBus?.emit(createEvent(
+        EngineEventType.WORKFLOW_RESUMED,
+        {
+          workflowId,
+          workflowName,
+          runId,
+          triggeredBy: options.triggeredBy,
+        },
+        { workflowId, runId },
+      ));
+      await this.hookManager?.runOnResume(hookContext);
+    }
+
+    await this.hookManager?.runBeforeWorkflow(hookContext);
+
+    for (const completedStepId of terminalSteps) {
+      this.unlockDependents(completedStepId, reverseDeps, unresolvedDeps, queuedSteps, stepsById, workflowId, runId);
+    }
+
     let workflowError: Error | undefined;
     let aborted = false;
 
@@ -99,20 +189,10 @@ export class DistributedWorkflowOrchestrator {
       onStepFinished: async (job, result) => {
         stepResults.set(job.stepId, result);
         terminalSteps.add(job.stepId);
+        this.executionStore?.stepUpdate(runId, result);
+        this.saveCheckpoint(workflow, runId, 'running', stepResults, contextStore, startedAt, 'step-updated');
 
-        const dependents = reverseDeps.get(job.stepId) || [];
-        for (const dependentId of dependents) {
-          const remaining = (unresolvedDeps.get(dependentId) ?? 1) - 1;
-          unresolvedDeps.set(dependentId, remaining);
-          if (remaining <= 0) {
-            await this.enqueueStepJob({
-              workflowId,
-              runId,
-              step: stepsById.get(dependentId)!,
-              queuedSteps,
-            });
-          }
-        }
+        await this.unlockDependents(job.stepId, reverseDeps, unresolvedDeps, queuedSteps, stepsById, workflowId, runId);
       },
       onStepFailed: async (job, error, outcome) => {
         if (outcome === 'requeued') {
@@ -132,6 +212,8 @@ export class DistributedWorkflowOrchestrator {
 
         stepResults.set(job.stepId, failedResult);
         terminalSteps.add(job.stepId);
+        this.executionStore?.stepUpdate(runId, failedResult);
+        this.saveCheckpoint(workflow, runId, 'running', stepResults, contextStore, startedAt, 'step-updated');
 
         const step = stepsById.get(job.stepId);
         const continueOnError = options.continueOnError ?? workflow.policies?.failure === 'continue';
@@ -141,21 +223,10 @@ export class DistributedWorkflowOrchestrator {
           return;
         }
 
-        const dependents = reverseDeps.get(job.stepId) || [];
-        for (const dependentId of dependents) {
-          const remaining = (unresolvedDeps.get(dependentId) ?? 1) - 1;
-          unresolvedDeps.set(dependentId, remaining);
-          if (remaining <= 0) {
-            await this.enqueueStepJob({
-              workflowId,
-              runId,
-              step: stepsById.get(dependentId)!,
-              queuedSteps,
-            });
-          }
-        }
+        await this.unlockDependents(job.stepId, reverseDeps, unresolvedDeps, queuedSteps, stepsById, workflowId, runId);
       },
       pollIntervalMs: this.pollIntervalMs,
+      leaseExtensionMs: this.leaseExtensionMs,
     }));
 
     const initialSteps = ExecutionPlanner.getInitialNodes(plan)
@@ -199,6 +270,57 @@ export class DistributedWorkflowOrchestrator {
       : failedSteps > 0
         ? 'partial'
         : 'success';
+
+    const finalStoreStatus = status === 'timeout' ? 'timeout' : status === 'failure' ? 'failed' : 'completed';
+    this.executionStore?.finalize(
+      runId,
+      finalStoreStatus,
+      completedAt,
+      Array.from(stepResults.values()),
+      duration,
+      workflowError,
+    );
+
+    this.saveCheckpoint(
+      workflow,
+      runId,
+      finalStoreStatus,
+      stepResults,
+      contextStore,
+      startedAt,
+      status === 'timeout' ? 'workflow-timeout' : status === 'failure' ? 'workflow-failed' : 'workflow-completed',
+      completedAt,
+    );
+
+    if (status === 'success' || status === 'partial') {
+      await this.eventBus?.emit(createEvent(
+        EngineEventType.WORKFLOW_COMPLETED,
+        {
+          workflowId,
+          workflowName,
+          runId,
+          durationMs: duration,
+          stepCount: workflow.steps.length,
+        },
+        { workflowId, runId },
+      ));
+      await this.hookManager?.runAfterWorkflow(hookContext);
+    } else {
+      await this.eventBus?.emit(createEvent(
+        EngineEventType.WORKFLOW_FAILED,
+        {
+          workflowId,
+          workflowName,
+          runId,
+          error: workflowError?.message || 'Distributed execution failed',
+          durationMs: duration,
+        },
+        { workflowId, runId },
+      ));
+      if (workflowError) {
+        await this.hookManager?.runOnError(hookContext, workflowError);
+      }
+    }
 
     logger.info('[DistributedWorkflowOrchestrator] Workflow execution finished', {
       workflowId,
@@ -283,6 +405,143 @@ export class DistributedWorkflowOrchestrator {
     }
 
     return reverse;
+  }
+
+  private async unlockDependents(
+    completedStepId: string,
+    reverseDeps: Map<string, string[]>,
+    unresolvedDeps: Map<string, number>,
+    queuedSteps: Set<string>,
+    stepsById: Map<string, ParsedStep>,
+    workflowId: string,
+    runId: string,
+  ): Promise<void> {
+    const dependents = reverseDeps.get(completedStepId) || [];
+    for (const dependentId of dependents) {
+      const remaining = (unresolvedDeps.get(dependentId) ?? 1) - 1;
+      unresolvedDeps.set(dependentId, remaining);
+      if (remaining <= 0) {
+        const step = stepsById.get(dependentId);
+        if (step) {
+          await this.enqueueStepJob({
+            workflowId,
+            runId,
+            step,
+            queuedSteps,
+          });
+        }
+      }
+    }
+  }
+
+  private restoreFromCheckpoint(
+    workflow: ParsedWorkflow,
+    runId: string,
+    policy: 'strict' | 'best-effort',
+    contextStore: ContextStore,
+    stepResults: Map<string, StepResult>,
+    terminalSteps: Set<string>,
+  ): boolean {
+    if (!this.checkpointStore) {
+      return false;
+    }
+
+    const snapshot = this.checkpointStore.load(runId);
+    if (!snapshot) {
+      if (policy === 'strict') {
+        throw new Error(`Resume failed: checkpoint not found for runId '${runId}'`);
+      }
+      return false;
+    }
+
+    if (snapshot.workflowId !== (workflow.name || runId)) {
+      if (policy === 'strict') {
+        throw new Error(`Resume failed: checkpoint workflow '${snapshot.workflowId}' mismatch`);
+      }
+      return false;
+    }
+
+    if (snapshot.status === 'completed' || snapshot.status === 'failed' || snapshot.status === 'timeout') {
+      if (policy === 'strict') {
+        throw new Error(`Resume failed: checkpoint for runId '${runId}' is terminal (${snapshot.status})`);
+      }
+      return false;
+    }
+
+    for (const [stepId, output] of Object.entries(snapshot.context.stepOutputs ?? {})) {
+      contextStore.setStepOutput(stepId, output);
+    }
+
+    for (const [stepId, state] of Object.entries(snapshot.stepStates)) {
+      if (state.status !== 'success' && state.status !== 'skipped') {
+        continue;
+      }
+
+      const now = new Date();
+      const completedAt = state.completedAt ? new Date(state.completedAt) : now;
+      const status: 'success' | 'skipped' = state.status === 'success' ? 'success' : 'skipped';
+      const stepResult: StepResult = {
+        stepId,
+        status,
+        output: state.output ?? null,
+        attempts: state.attempts || 1,
+        duration: state.durationMs ?? 0,
+        startedAt: now,
+        completedAt,
+      };
+      stepResults.set(stepId, stepResult);
+      terminalSteps.add(stepId);
+    }
+
+    return true;
+  }
+
+  private saveCheckpoint(
+    workflow: ParsedWorkflow,
+    runId: string,
+    status: CheckpointWorkflowStatus,
+    stepResults: Map<string, StepResult>,
+    contextStore: ContextStore,
+    startedAt: Date,
+    reason: CheckpointReason,
+    completedAt?: Date,
+  ): void {
+    if (!this.checkpointStore) {
+      return;
+    }
+
+    const stepStates: Record<string, StepSnapshot> = {};
+    for (const [stepId, result] of stepResults.entries()) {
+      stepStates[stepId] = {
+        id: stepId,
+        status: result.status,
+        attempts: result.attempts,
+        output: result.output,
+        error: result.error?.message,
+        durationMs: result.duration,
+        completedAt: result.completedAt.toISOString(),
+      };
+    }
+
+    const context = contextStore.getResolutionContext();
+    this.checkpointStore.save({
+      runId,
+      workflowId: workflow.name || runId,
+      status,
+      stepStates,
+      context: {
+        env: context.env,
+        inputs: context.inputs,
+        custom: context.context,
+        stepOutputs: Object.fromEntries(context.steps.entries()),
+      },
+      metadata: {
+        startedAt: startedAt.getTime(),
+        updatedAt: Date.now(),
+        completedAt: completedAt?.getTime(),
+        checkpointReason: reason,
+      },
+    });
   }
 
   private convertToExecutionNodes(steps: ParsedStep[]) {

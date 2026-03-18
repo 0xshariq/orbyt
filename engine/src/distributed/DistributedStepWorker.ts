@@ -11,6 +11,7 @@ export interface DistributedStepWorkerOptions {
   onStepFinished: (job: DistributedStepJob, result: StepResult) => Promise<void>;
   onStepFailed: (job: DistributedStepJob, error: Error, outcome: 'requeued' | 'failed' | 'missing') => Promise<void>;
   pollIntervalMs?: number;
+  leaseExtensionMs?: number;
 }
 
 /**
@@ -30,6 +31,7 @@ export class DistributedStepWorker {
   private readonly onStepFinished: (job: DistributedStepJob, result: StepResult) => Promise<void>;
   private readonly onStepFailed: (job: DistributedStepJob, error: Error, outcome: 'requeued' | 'failed' | 'missing') => Promise<void>;
   private readonly pollIntervalMs: number;
+  private readonly leaseExtensionMs: number;
 
   private running = false;
 
@@ -42,6 +44,7 @@ export class DistributedStepWorker {
     this.onStepFinished = options.onStepFinished;
     this.onStepFailed = options.onStepFailed;
     this.pollIntervalMs = options.pollIntervalMs ?? 50;
+    this.leaseExtensionMs = Math.max(500, options.leaseExtensionMs ?? 5_000);
   }
 
   start(): void {
@@ -79,7 +82,14 @@ export class DistributedStepWorker {
         }
 
         const context = this.resolveContext(job);
-        const result = await this.stepExecutor.execute(step, context);
+        const leaseHeartbeat = this.startLeaseHeartbeat(job);
+
+        let result: StepResult;
+        try {
+          result = await this.stepExecutor.execute(step, context);
+        } finally {
+          clearInterval(leaseHeartbeat);
+        }
 
         if (result.status === 'success' || result.status === 'skipped') {
           await this.queue.ack(job.jobId);
@@ -100,5 +110,16 @@ export class DistributedStepWorker {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private startLeaseHeartbeat(job: DistributedStepJob): ReturnType<typeof setInterval> {
+    const timer = setInterval(() => {
+      void this.queue.extendLease(job.jobId, this.workerId).catch(() => {
+        // Non-fatal; queue reclaim logic handles expired leases.
+      });
+    }, this.leaseExtensionMs);
+
+    timer.unref?.();
+    return timer;
   }
 }

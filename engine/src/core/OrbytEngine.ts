@@ -97,7 +97,8 @@ import { WorkflowParseCache, AdapterMetadataCache } from '../cache/index.js';
 import { RuntimeArtifactStore } from '../runtime/index.js';
 import { NoOpUsageCollector } from '../usage/NoOpUsageCollector.js';
 import { FileSpoolUsageCollector, HttpUsageBatchTransport } from '../usage/FileSpoolUsageCollector.js';
-import { DistributedWorkflowOrchestrator, InMemoryDistributedJobQueue } from '../distributed/index.js';
+import { DistributedWorkflowOrchestrator, FileDistributedJobQueue, InMemoryDistributedJobQueue } from '../distributed/index.js';
+import { CheckpointStore } from '../storage/CheckpointStore.js';
 import {
   createAdapterCallEvent,
   createStepExecuteEvent,
@@ -1103,19 +1104,41 @@ export class OrbytEngine {
     execOptions: ExecutionOptions,
     stepExecutor: StepExecutor,
   ): Promise<WorkflowResult> {
-    const workerCount = this.config.scheduler?.job?.workerCount
+    const distributed = this.config.distributed;
+    const queueBackend = distributed?.queueBackend ?? 'memory';
+    const queueStateDir = distributed?.fileQueueStateDir ?? join(homedir(), '.orbyt', 'distributed-queue');
+
+    const workerCount = distributed?.workerCount
+      ?? this.config.scheduler?.job?.workerCount
       ?? Math.max(1, Math.min(8, this.config.maxConcurrentSteps || 4));
 
-    const queue = new InMemoryDistributedJobQueue();
+    const queue = distributed?.jobQueue
+      ?? (queueBackend === 'file'
+        ? new FileDistributedJobQueue({
+          stateDir: queueStateDir,
+          leaseMs: distributed?.leaseMs,
+        })
+        : new InMemoryDistributedJobQueue({
+          leaseMs: distributed?.leaseMs,
+        }));
+
     const orchestrator = new DistributedWorkflowOrchestrator({
       queue,
       stepExecutor,
       workerCount,
-      pollIntervalMs: 50,
+      pollIntervalMs: distributed?.pollIntervalMs,
+      eventBus: this.eventBus,
+      hookManager: this.hookManager,
+      executionStore: this.executionStore,
+      checkpointStore: new CheckpointStore(join(this.config.stateDir, 'checkpoints')),
+      leaseExtensionMs: distributed?.leaseExtensionMs,
     });
 
     this.log('info', '[Distributed] Executing workflow via scheduler->queue->workers runtime', {
       workerCount,
+      queueBackend: distributed?.jobQueue
+        ? 'custom'
+        : queueBackend,
       workflowId: workflow.name || workflow.metadata?.name,
     });
 

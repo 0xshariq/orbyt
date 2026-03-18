@@ -20,7 +20,7 @@ const ORBYT_HOME = join(homedir(), '.orbyt');
  * @param config - User-provided configuration
  * @returns Configuration with defaults applied
  */
-export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Omit<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler'>> & Pick<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler'> {
+export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Omit<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler' | 'distributed'>> & Pick<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler' | 'distributed'> {
   return {
     maxConcurrentWorkflows: config.maxConcurrentWorkflows ?? 10,
     maxConcurrentSteps: config.maxConcurrentSteps ?? 10,
@@ -50,6 +50,15 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
         tokioWorkerCommand: config.scheduler?.job?.tokioWorkerCommand ?? 'orbyt-tokio-worker',
         tokioWorkerArgs: config.scheduler?.job?.tokioWorkerArgs ?? [],
       },
+    },
+    distributed: {
+      jobQueue: config.distributed?.jobQueue,
+      queueBackend: config.distributed?.queueBackend ?? 'memory',
+      fileQueueStateDir: config.distributed?.fileQueueStateDir ?? join(ORBYT_HOME, 'distributed-queue'),
+      workerCount: config.distributed?.workerCount ?? config.scheduler?.job?.workerCount ?? 4,
+      pollIntervalMs: config.distributed?.pollIntervalMs ?? 50,
+      leaseMs: config.distributed?.leaseMs ?? 30_000,
+      leaseExtensionMs: config.distributed?.leaseExtensionMs ?? 5_000,
     },
     metadata: config.metadata,
     usageCollector: config.usageCollector,
@@ -111,5 +120,25 @@ export function validateConfig(config: OrbytEngineConfig): void {
 
   if (config.scheduler?.job?.workerBackend !== undefined && !['node', 'tokio'].includes(config.scheduler.job.workerBackend)) {
     throw new Error("scheduler.job.workerBackend must be either 'node' or 'tokio'");
+  }
+
+  if (config.distributed?.queueBackend !== undefined && !['memory', 'file'].includes(config.distributed.queueBackend)) {
+    throw new Error("distributed.queueBackend must be either 'memory' or 'file'");
+  }
+
+  if (config.distributed?.workerCount !== undefined && config.distributed.workerCount < 1) {
+    throw new Error('distributed.workerCount must be at least 1');
+  }
+
+  if (config.distributed?.pollIntervalMs !== undefined && config.distributed.pollIntervalMs < 10) {
+    throw new Error('distributed.pollIntervalMs must be at least 10ms');
+  }
+
+  if (config.distributed?.leaseMs !== undefined && config.distributed.leaseMs < 1000) {
+    throw new Error('distributed.leaseMs must be at least 1000ms');
+  }
+
+  if (config.distributed?.leaseExtensionMs !== undefined && config.distributed.leaseExtensionMs < 500) {
+    throw new Error('distributed.leaseExtensionMs must be at least 500ms');
   }
 }
