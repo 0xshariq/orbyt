@@ -71,7 +71,7 @@ import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
 import { createEngineContext } from './EngineContext.js';
 import { LoggerManager, type EngineLogger } from '../logging/index.js';
 import { LogCategoryEnum, WorkflowContext } from '../types/log-types.js';
-import { LogLevel as CoreLogLevel, type UsageCollector } from '@dev-ecosystem/core';
+import { LogLevel as CoreLogLevel, type UsageCollector, type UsageEvent } from '@dev-ecosystem/core';
 import { ExecutionEngine } from '../execution/ExecutionEngine.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
 import { WorkflowExecutor } from '../execution/WorkflowExecutor.js';
@@ -85,9 +85,9 @@ import { CLIAdapter, ShellAdapter, HTTPAdapter, FSAdapter } from '../adapters/bu
 import { InternalContextBuilder } from '../execution/InternalExecutionContext.js';
 import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
-import { EngineContext, EngineEventType, ExecutionExplanation, ExecutionOptions, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
+import { EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { ExecutionStore } from '../storage/ExecutionStore.js';
@@ -324,12 +324,12 @@ export class OrbytEngine {
         }
 
         const transport = usageSpool?.billingEndpoint
-        ? new HttpUsageBatchTransport({
-          endpoint: usageSpool.billingEndpoint,
-          apiKey: usageSpool.billingApiKey,
-          timeoutMs: usageSpool.requestTimeoutMs,
-        })
-        : undefined;
+          ? new HttpUsageBatchTransport({
+            endpoint: usageSpool.billingEndpoint,
+            apiKey: usageSpool.billingApiKey,
+            timeoutMs: usageSpool.requestTimeoutMs,
+          })
+          : undefined;
 
         this.usageCollector = new FileSpoolUsageCollector({
           baseDir: spoolBaseDir,
@@ -1470,6 +1470,259 @@ export class OrbytEngine {
    */
   getVersion(): string {
     return this.version;
+  }
+
+  /**
+   * Query usage events from the local spool archive and return aggregated metrics.
+   */
+  async getUsage(options: EngineUsageQueryOptions = {}): Promise<EngineUsageQueryResult> {
+    const now = Date.now();
+    const from = options.from ?? now - 30 * 24 * 60 * 60 * 1000;
+    const to = options.to ?? now;
+    const groupBy = options.groupBy ?? 'none';
+
+    if (from > to) {
+      throw new Error(`Invalid usage query range: from (${from}) must be <= to (${to})`);
+    }
+
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const eventsDir = join(usageBaseDir, 'events');
+    const filteredEvents: UsageEvent[] = [];
+
+    if (existsSync(eventsDir)) {
+      const files = readdirSync(eventsDir)
+        .filter((name) => name.endsWith('.jsonl'))
+        .sort();
+
+      for (const file of files) {
+        const filePath = join(eventsDir, file);
+        let content = '';
+
+        try {
+          content = readFileSync(filePath, 'utf8');
+        } catch {
+          continue;
+        }
+
+        if (!content.trim()) {
+          continue;
+        }
+
+        const lines = content.split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
+          }
+
+          let event: UsageEvent;
+          try {
+            event = JSON.parse(trimmed) as UsageEvent;
+          } catch {
+            continue;
+          }
+
+          if (!this.matchesUsageQuery(event, options, from, to)) {
+            continue;
+          }
+
+          filteredEvents.push(event);
+        }
+      }
+    }
+
+    const byType: Record<string, number> = {};
+    const byProduct: Record<string, number> = {};
+    const byAdapter: Record<string, number> = {};
+    const byWorkflow: Record<string, number> = {};
+    const byWorkspace: Record<string, number> = {};
+    const byUser: Record<string, number> = {};
+    const byTrigger: Record<string, number> = {};
+    const groupedMap = new Map<string, EngineUsageGroupBucket>();
+
+    let billableEvents = 0;
+    let successEvents = 0;
+    let failureEvents = 0;
+    let totalDurationMs = 0;
+
+    for (const event of filteredEvents) {
+      byType[event.type] = (byType[event.type] ?? 0) + 1;
+      byProduct[event.product] = (byProduct[event.product] ?? 0) + 1;
+
+      const adapterKey = event.adapterName || event.adapterType || 'unknown';
+      byAdapter[adapterKey] = (byAdapter[adapterKey] ?? 0) + 1;
+
+      const workflowKey = event.workflowId || 'unknown';
+      byWorkflow[workflowKey] = (byWorkflow[workflowKey] ?? 0) + 1;
+
+      const workspaceKey = event.workspaceId || 'unknown';
+      byWorkspace[workspaceKey] = (byWorkspace[workspaceKey] ?? 0) + 1;
+
+      const userKey = event.userId || 'unknown';
+      byUser[userKey] = (byUser[userKey] ?? 0) + 1;
+
+      const triggerKey = this.resolveTriggerKey(event);
+      byTrigger[triggerKey] = (byTrigger[triggerKey] ?? 0) + 1;
+
+      if (event.billable === true) {
+        billableEvents += 1;
+      }
+
+      if (event.metadata?.success === true) {
+        successEvents += 1;
+      } else if (event.metadata?.success === false) {
+        failureEvents += 1;
+      }
+
+      const durationMs = typeof event.metadata?.durationMs === 'number'
+        ? Math.max(0, event.metadata.durationMs)
+        : 0;
+      totalDurationMs += durationMs;
+
+      if (groupBy !== 'none') {
+        const key = this.resolveUsageGroupKey(event, groupBy);
+        const existing = groupedMap.get(key) ?? {
+          key,
+          eventCount: 0,
+          billableCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          totalDurationMs: 0,
+        };
+
+        existing.eventCount += 1;
+        if (event.billable === true) {
+          existing.billableCount += 1;
+        }
+        if (event.metadata?.success === true) {
+          existing.successCount += 1;
+        } else if (event.metadata?.success === false) {
+          existing.failureCount += 1;
+        }
+        existing.totalDurationMs += durationMs;
+
+        groupedMap.set(key, existing);
+      }
+    }
+
+    const normalizedLimit =
+      typeof options.limit === 'number' && Number.isFinite(options.limit) && options.limit > 0
+        ? Math.floor(options.limit)
+        : undefined;
+
+    const outputEvents = options.includeEvents
+      ? (normalizedLimit ? filteredEvents.slice(-normalizedLimit) : filteredEvents)
+      : undefined;
+
+    return {
+      query: {
+        from,
+        to,
+        groupBy,
+        limit: normalizedLimit,
+      },
+      totalEvents: filteredEvents.length,
+      billableEvents,
+      successEvents,
+      failureEvents,
+      totalDurationMs,
+      byType,
+      byProduct,
+      byAdapter,
+      byWorkflow,
+      byWorkspace,
+      byUser,
+      byTrigger,
+      grouped: Array.from(groupedMap.values()).sort((a, b) => a.key.localeCompare(b.key)),
+      events: outputEvents?.map((event) => ({
+        id: event.id,
+        type: event.type,
+        timestamp: event.timestamp,
+        product: event.product,
+        executionId: event.executionId,
+        workflowId: event.workflowId,
+        stepId: event.stepId,
+        adapterName: event.adapterName,
+        adapterType: event.adapterType,
+        billable: event.billable,
+        metadata: event.metadata,
+      })),
+    };
+  }
+
+  private matchesUsageQuery(
+    event: UsageEvent,
+    options: EngineUsageQueryOptions,
+    from: number,
+    to: number,
+  ): boolean {
+    if (!event || typeof event !== 'object') return false;
+    if (typeof event.timestamp !== 'number') return false;
+    if (event.timestamp < from || event.timestamp > to) return false;
+
+    if (options.userId && event.userId !== options.userId) return false;
+    if (options.workspaceId && event.workspaceId !== options.workspaceId) return false;
+    if (options.product && event.product !== options.product) return false;
+    if (options.eventType && event.type !== options.eventType) return false;
+    if (options.adapterName && event.adapterName !== options.adapterName) return false;
+    if (options.adapterType && event.adapterType !== options.adapterType) return false;
+
+    return true;
+  }
+
+  private resolveUsageGroupKey(
+    event: UsageEvent,
+    groupBy: NonNullable<EngineUsageQueryOptions['groupBy']>,
+  ): string {
+    if (groupBy === 'workflow') {
+      return event.workflowId || 'unknown';
+    }
+    if (groupBy === 'adapter') {
+      return event.adapterName || event.adapterType || 'unknown';
+    }
+    if (groupBy === 'trigger') {
+      return this.resolveTriggerKey(event);
+    }
+    if (groupBy === 'product') {
+      return event.product || 'unknown';
+    }
+    if (groupBy === 'workspace') {
+      return event.workspaceId || 'unknown';
+    }
+    if (groupBy === 'user') {
+      return event.userId || 'unknown';
+    }
+    if (groupBy === 'type') {
+      return event.type || 'unknown';
+    }
+
+    const date = new Date(event.timestamp);
+    if (groupBy === 'hourly') {
+      return `${date.toISOString().slice(0, 13)}:00:00Z`;
+    }
+    if (groupBy === 'daily') {
+      return date.toISOString().slice(0, 10);
+    }
+    if (groupBy === 'weekly') {
+      const day = date.getUTCDay();
+      const shift = day === 0 ? -6 : 1 - day;
+      const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + shift));
+      return start.toISOString().slice(0, 10);
+    }
+
+    return 'all';
+  }
+
+  private resolveTriggerKey(event: UsageEvent): string {
+    if (event.type === 'usage.trigger.fire') {
+      const triggerType =
+        typeof event.metadata?.triggerType === 'string'
+          ? event.metadata.triggerType
+          : undefined;
+      return triggerType || 'trigger.fire';
+    }
+
+    return 'non-trigger';
   }
 
   /**

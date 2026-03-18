@@ -140,6 +140,92 @@ export interface WorkflowBatchItemResult {
 }
 
 /**
+ * Query options for reading usage events from the engine spool.
+ */
+export interface EngineUsageQueryOptions {
+  /** Inclusive lower bound timestamp (unix ms). */
+  from?: number;
+
+  /** Inclusive upper bound timestamp (unix ms). */
+  to?: number;
+
+  /** Optional ownership filter. */
+  userId?: string;
+  workspaceId?: string;
+
+  /** Optional product filter (e.g. 'orbyt'). */
+  product?: string;
+
+  /** Optional event type filter (e.g. 'usage.step.execute'). */
+  eventType?: string;
+
+  /** Optional adapter filter. */
+  adapterName?: string;
+  adapterType?: string;
+
+  /**
+   * Grouping mode for summarized buckets.
+   * - none: no grouped buckets
+   * - hourly/daily/weekly: time windows
+    * - workflow/adapter/trigger/product/workspace/user/type: dimension buckets
+   */
+    groupBy?: 'none' | 'hourly' | 'daily' | 'weekly' | 'workflow' | 'adapter' | 'trigger' | 'product' | 'workspace' | 'user' | 'type';
+
+  /** Maximum number of events returned when includeEvents=true. */
+  limit?: number;
+
+  /** Include filtered raw events in the response. */
+  includeEvents?: boolean;
+}
+
+/**
+ * Aggregate bucket for usage summaries.
+ */
+export interface EngineUsageGroupBucket {
+  key: string;
+  eventCount: number;
+  billableCount: number;
+  successCount: number;
+  failureCount: number;
+  totalDurationMs: number;
+}
+
+/**
+ * Engine usage query result.
+ */
+export interface EngineUsageQueryResult {
+  query: Required<Pick<EngineUsageQueryOptions, 'from' | 'to' | 'groupBy'>> & {
+    limit?: number;
+  };
+  totalEvents: number;
+  billableEvents: number;
+  successEvents: number;
+  failureEvents: number;
+  totalDurationMs: number;
+  byType: Record<string, number>;
+  byProduct: Record<string, number>;
+  byAdapter: Record<string, number>;
+  byWorkflow: Record<string, number>;
+  byWorkspace: Record<string, number>;
+  byUser: Record<string, number>;
+  byTrigger: Record<string, number>;
+  grouped: EngineUsageGroupBucket[];
+  events?: Array<{
+    id: string;
+    type: string;
+    timestamp: number;
+    product: string;
+    executionId: string;
+    workflowId?: string;
+    stepId?: string;
+    adapterName?: string;
+    adapterType?: string;
+    billable?: boolean;
+    metadata?: Record<string, any>;
+  }>;
+}
+
+/**
  * Aggregated multi-workflow execution result.
  */
 export interface WorkflowBatchResult {

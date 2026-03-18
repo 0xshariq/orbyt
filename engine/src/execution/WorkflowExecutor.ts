@@ -181,6 +181,11 @@ export class WorkflowExecutor {
       ));
     }
 
+    // Call onResume hook after checkpoint restoration and resume event emission.
+    if (resumed && this.hookManager) {
+      await this.hookManager.runOnResume(hookContext);
+    }
+
     // Call beforeWorkflow hook
     if (this.hookManager) {
       await this.hookManager.runBeforeWorkflow(hookContext);
@@ -723,6 +728,52 @@ export class WorkflowExecutor {
       return false;
     }
 
+    const nonRetryEligibleFailures = this.collectNonRetryEligibleFailures(workflow, snapshot);
+    if (nonRetryEligibleFailures.length > 0) {
+      const details = nonRetryEligibleFailures
+        .map((item) => `${item.stepId}(attempts=${item.attempts}, maxRetry=${item.maxRetry})`)
+        .join(', ');
+      const message =
+        `Resume retry-eligibility check found ${nonRetryEligibleFailures.length} failed ` +
+        `step(s) with exhausted retries: ${details}`;
+
+      if (policy === 'strict') {
+        throw new Error(`${message}. Use resumePolicy='best-effort' to restart without strict resume guarantees.`);
+      }
+
+      LoggerManager.getLogger().warn(
+        `[WorkflowExecutor] ${message}. Continuing because resumePolicy='best-effort'.`,
+        {
+          runId,
+          workflowId: workflow.name || runId,
+          nonRetryEligibleFailures,
+        },
+      );
+    }
+
+    const idempotencyRisks = this.collectResumeIdempotencyRisks(workflow, snapshot);
+    if (idempotencyRisks.length > 0) {
+      const details = idempotencyRisks
+        .map((risk) => `${risk.stepId}(${risk.adapterName})`)
+        .join(', ');
+      const message =
+        `Resume idempotency check found ${idempotencyRisks.length} non-idempotent ` +
+        `pending step(s): ${details}`;
+
+      if (policy === 'strict') {
+        throw new Error(`${message}. Use resumePolicy='best-effort' to allow continuation with warning.`);
+      }
+
+      LoggerManager.getLogger().warn(
+        `[WorkflowExecutor] ${message}. Continuing because resumePolicy='best-effort'.`,
+        {
+          runId,
+          workflowId: workflow.name || runId,
+          idempotencyRisks,
+        },
+      );
+    }
+
     if (this.contextStore) {
       for (const [stepId, output] of Object.entries(snapshot.context.stepOutputs ?? {})) {
         this.contextStore.setStepOutput(stepId, output);
@@ -752,6 +803,70 @@ export class WorkflowExecutor {
     return true;
   }
 
+  private collectResumeIdempotencyRisks(
+    workflow: ParsedWorkflow,
+    snapshot: ExecutionCheckpointSnapshot,
+  ): Array<{ stepId: string; adapterName: string; action: string; sideEffectLevel: 'low' | 'medium' | 'high' | 'unknown' }> {
+    const registry = this.stepExecutor.getAdapterRegistry();
+    const risks: Array<{ stepId: string; adapterName: string; action: string; sideEffectLevel: 'low' | 'medium' | 'high' | 'unknown' }> = [];
+
+    for (const step of workflow.steps) {
+      const snapshotState = snapshot.stepStates[step.id];
+      const alreadyCompleted =
+        snapshotState?.status === 'success' || snapshotState?.status === 'skipped';
+
+      if (alreadyCompleted) {
+        continue;
+      }
+
+      const action = String(step.action || '').trim();
+      const actionNamespace = action.split('.')[0];
+      const adapterName = step.adapter || actionNamespace;
+      const adapter = registry.get(adapterName) || (actionNamespace ? registry.get(actionNamespace) : undefined);
+      const isIdempotent = adapter?.capabilities?.idempotent === true;
+      const sideEffectLevel = (adapter?.capabilities as any)?.sideEffectLevel ?? 'unknown';
+
+      if (!isIdempotent) {
+        risks.push({
+          stepId: step.id,
+          adapterName,
+          action,
+          sideEffectLevel,
+        });
+      }
+    }
+
+    return risks;
+  }
+
+  private collectNonRetryEligibleFailures(
+    workflow: ParsedWorkflow,
+    snapshot: ExecutionCheckpointSnapshot,
+  ): Array<{ stepId: string; attempts: number; maxRetry: number }> {
+    const exhausted: Array<{ stepId: string; attempts: number; maxRetry: number }> = [];
+
+    for (const step of workflow.steps) {
+      const snapshotState = snapshot.stepStates[step.id];
+      if (!snapshotState || snapshotState.status !== 'failure') {
+        continue;
+      }
+
+      const maxRetry = step.retry?.max ?? 0;
+      const attempts = snapshotState.attempts ?? 1;
+
+      // attempts include the initial attempt. If attempts > maxRetry, retries are exhausted.
+      if (attempts > maxRetry) {
+        exhausted.push({
+          stepId: step.id,
+          attempts,
+          maxRetry,
+        });
+      }
+    }
+
+    return exhausted;
+  }
+
   /**
    * Get execution ID
    */
@@ -759,3 +874,4 @@ export class WorkflowExecutor {
     return this.executionId;
   }
 }
+
