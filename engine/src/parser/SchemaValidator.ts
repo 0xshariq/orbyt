@@ -18,6 +18,7 @@ import {
 } from '../errors/index.js';
 import { getValidFields, isValidField } from '../errors/FieldRegistry.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
+import type { WorkflowLimitsPolicy, WorkflowUsagePolicy } from '../types/core-types.js';
 
 /**
  * Enhanced schema validator with diagnostic capabilities
@@ -39,8 +40,16 @@ export class SchemaValidator {
       // First, check for unknown fields at root level
       this.validateUnknownFields(rawWorkflow as Record<string, any>, 'root');
 
+      // Phase-2 foundation validation for usage/limits schema blocks.
+      // This is engine-local and warning-policy focused.
+      this.validateUsageAndLimits(rawWorkflow);
+
+      // Normalize engine-local additions before core schema parse so we remain
+      // forward-compatible while ecosystem-core schema evolves.
+      const normalizedForCore = this.normalizeForCoreSchema(rawWorkflow);
+
       // Use Zod schema from ecosystem-core for structural validation
-      const validated = OrbytWorkflowSchema.parse(rawWorkflow);
+      const validated = OrbytWorkflowSchema.parse(normalizedForCore);
 
       // Additional semantic validations
       this.validateWorkflowBody(validated);
@@ -64,6 +73,205 @@ export class SchemaValidator {
 
       throw error;
     }
+  }
+
+  /**
+   * Extract normalized usage/limits policy blocks from raw workflow.
+   * These are phase-2 intent blocks and remain warning-only in runtime.
+   */
+  static extractUsageAndLimits(
+    rawWorkflow: unknown,
+    validated?: WorkflowDefinitionZod,
+  ): { usage?: WorkflowUsagePolicy; limits?: WorkflowLimitsPolicy } {
+    if (!rawWorkflow || typeof rawWorkflow !== 'object' || Array.isArray(rawWorkflow)) {
+      return {};
+    }
+
+    const root = rawWorkflow as Record<string, any>;
+    const rawUsage = this.isPlainObject(root.usage) ? root.usage : undefined;
+    const validatedUsage = this.isPlainObject((validated as any)?.usage)
+      ? ((validated as any).usage as Record<string, any>)
+      : undefined;
+
+    const usage: WorkflowUsagePolicy | undefined = ((): WorkflowUsagePolicy | undefined => {
+      const mode = rawUsage?.mode
+        ?? (validatedUsage?.track === false ? 'disabled' : (validatedUsage ? 'auto' : undefined));
+
+      const policy: WorkflowUsagePolicy = {
+        mode,
+        scope: rawUsage?.scope ?? validatedUsage?.scope,
+        tags: rawUsage?.tags ?? validatedUsage?.tags,
+        track: rawUsage?.track ?? validatedUsage?.track,
+        category: rawUsage?.category ?? validatedUsage?.category,
+        billable: rawUsage?.billable ?? validatedUsage?.billable,
+        product: rawUsage?.product ?? validatedUsage?.product,
+      };
+
+      if (
+        policy.mode === undefined
+        && policy.scope === undefined
+        && policy.tags === undefined
+        && policy.track === undefined
+        && policy.category === undefined
+        && policy.billable === undefined
+        && policy.product === undefined
+      ) {
+        return undefined;
+      }
+
+      return policy;
+    })();
+
+    const rawLimits = this.isPlainObject(root.limits) ? root.limits : undefined;
+    const limits: WorkflowLimitsPolicy | undefined = rawLimits
+      ? {
+          maxRuns: rawLimits.maxRuns,
+          maxStepsPerRun: rawLimits.maxStepsPerRun,
+          maxAdapters: rawLimits.maxAdapters,
+        }
+      : undefined;
+
+    return { usage, limits };
+  }
+
+  private static normalizeForCoreSchema(rawWorkflow: unknown): unknown {
+    if (!rawWorkflow || typeof rawWorkflow !== 'object' || Array.isArray(rawWorkflow)) {
+      return rawWorkflow;
+    }
+
+    const normalized = structuredClone(rawWorkflow as Record<string, any>);
+
+    // limits is an engine-local foundation block and not yet part of
+    // ecosystem-core root schema.
+    if ('limits' in normalized) {
+      delete normalized.limits;
+    }
+
+    // usage.mode is an engine-local alias. Map it to track for compatibility,
+    // then remove mode before strict schema parsing.
+    if (this.isPlainObject(normalized.usage)) {
+      const usage = normalized.usage as Record<string, any>;
+      if ('mode' in usage && !('track' in usage)) {
+        const mode = usage.mode;
+        if (mode === 'disabled') {
+          usage.track = false;
+        } else if (mode === 'auto' || mode === 'manual') {
+          usage.track = true;
+        }
+      }
+      if ('mode' in usage) {
+        delete usage.mode;
+      }
+    }
+
+    return normalized;
+  }
+
+  private static validateUsageAndLimits(rawWorkflow: unknown): void {
+    if (!rawWorkflow || typeof rawWorkflow !== 'object' || Array.isArray(rawWorkflow)) {
+      return;
+    }
+
+    const root = rawWorkflow as Record<string, any>;
+    const usage = root.usage;
+    if (usage !== undefined) {
+      if (!this.isPlainObject(usage)) {
+        throw new SchemaError({
+          code: 'ORB-S-002' as any,
+          message: 'Invalid type for usage: expected object',
+          path: 'usage',
+          hint: 'Use an object such as usage: { mode, scope, tags }',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      if (usage.mode !== undefined && !['auto', 'manual', 'disabled'].includes(usage.mode)) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Invalid usage.mode: ${String(usage.mode)}`,
+          path: 'usage.mode',
+          hint: 'Allowed values: auto, manual, disabled',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      if (
+        usage.scope !== undefined
+        && !['workflow', 'step', 'adapter', 'ecosystem', 'component'].includes(String(usage.scope))
+      ) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Invalid usage.scope: ${String(usage.scope)}`,
+          path: 'usage.scope',
+          hint: 'Allowed values: workflow, step, adapter, ecosystem, component',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      if (usage.tags !== undefined) {
+        if (!Array.isArray(usage.tags) || usage.tags.some((tag: unknown) => typeof tag !== 'string')) {
+          throw new SchemaError({
+            code: 'ORB-S-002' as any,
+            message: 'Invalid usage.tags: expected string[]',
+            path: 'usage.tags',
+            hint: 'Example: usage: { tags: ["automation", "orbyt"] }',
+            severity: ErrorSeverity.ERROR,
+          });
+        }
+      }
+    }
+
+    const limits = root.limits;
+    if (limits !== undefined) {
+      if (!this.isPlainObject(limits)) {
+        throw new SchemaError({
+          code: 'ORB-S-002' as any,
+          message: 'Invalid type for limits: expected object',
+          path: 'limits',
+          hint: 'Use an object such as limits: { maxRuns, maxStepsPerRun, maxAdapters }',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      this.validatePositiveInt(limits.maxRuns, 'limits.maxRuns');
+      this.validatePositiveInt(limits.maxStepsPerRun, 'limits.maxStepsPerRun');
+
+      if (limits.maxAdapters !== undefined) {
+        if (!this.isPlainObject(limits.maxAdapters)) {
+          throw new SchemaError({
+            code: 'ORB-S-002' as any,
+            message: 'Invalid limits.maxAdapters: expected object map',
+            path: 'limits.maxAdapters',
+            hint: 'Example: limits: { maxAdapters: { http: 100, shell: 10 } }',
+            severity: ErrorSeverity.ERROR,
+          });
+        }
+
+        for (const [adapterName, value] of Object.entries(limits.maxAdapters)) {
+          this.validatePositiveInt(value, `limits.maxAdapters.${adapterName}`);
+        }
+      }
+    }
+  }
+
+  private static validatePositiveInt(value: unknown, path: string): void {
+    if (value === undefined) {
+      return;
+    }
+
+    if (!Number.isInteger(value) || (value as number) < 1) {
+      throw new SchemaError({
+        code: 'ORB-S-002' as any,
+        message: `Invalid ${path}: expected integer >= 1`,
+        path,
+        hint: 'Use a positive integer value',
+        severity: ErrorSeverity.ERROR,
+      });
+    }
+  }
+
+  private static isPlainObject(value: unknown): value is Record<string, any> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
   }
 
   /**

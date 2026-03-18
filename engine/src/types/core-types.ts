@@ -974,6 +974,34 @@ export interface JobQueue<T = any> {
 /**
  * Parsed workflow ready for execution
  */
+export interface WorkflowUsagePolicy {
+  /** Usage emission mode (engine-interpreted) */
+  mode?: 'auto' | 'manual' | 'disabled';
+
+  /** Aggregation scope dimension */
+  scope?: 'workflow' | 'step' | 'adapter' | 'ecosystem' | 'component' | string;
+
+  /** Optional usage tags for grouping */
+  tags?: string[];
+
+  /** Compatibility with core schema usage field */
+  track?: boolean;
+  category?: string;
+  billable?: boolean;
+  product?: string;
+}
+
+export interface WorkflowLimitsPolicy {
+  /** Max workflow runs for policy window (warning-only for now) */
+  maxRuns?: number;
+
+  /** Max steps allowed per run (warning-only for now) */
+  maxStepsPerRun?: number;
+
+  /** Per-adapter call limits (warning-only for now) */
+  maxAdapters?: Record<string, number>;
+}
+
 export interface ParsedWorkflow {
   /** Workflow metadata */
   name?: string;
@@ -1068,6 +1096,12 @@ export interface ParsedWorkflow {
     isolation?: string;
     priority?: string;
   };
+
+  /** Workflow usage intent (foundation for counting policy) */
+  usage?: WorkflowUsagePolicy;
+
+  /** Workflow limits intent (warning-only in current phase) */
+  limits?: WorkflowLimitsPolicy;
 }
 
 /**

@@ -40,6 +40,7 @@ export const ROOT_FIELDS = [
   
   // Usage tracking
   'usage',                // Usage tracking configuration (production)
+  'limits',               // Usage limit hints (phase-2 warning-only foundation)
   
   // Production-ready universal fields
   'strategy',             // Execution strategy (production)
@@ -185,12 +186,22 @@ export const RETRY_FIELDS = [
  * Valid fields in usage tracking config
  */
 export const USAGE_FIELDS = [
+  'mode',
   'track',
   'scope',
   'category',
   'billable',
   'product',
   'tags',
+] as const;
+
+/**
+ * Valid fields in workflow limits config
+ */
+export const LIMITS_FIELDS = [
+  'maxRuns',
+  'maxStepsPerRun',
+  'maxAdapters',
 ] as const;
 
 /**
@@ -303,6 +314,7 @@ export const FIELD_REGISTRY: Record<string, readonly string[]> = {
   'permissions': PERMISSIONS_FIELDS,
   'retry': RETRY_FIELDS,
   'usage': USAGE_FIELDS,
+  'limits': LIMITS_FIELDS,
   'step.usage': STEP_USAGE_FIELDS,
 };
 

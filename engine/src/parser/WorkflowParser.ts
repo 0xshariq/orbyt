@@ -41,6 +41,7 @@ export class WorkflowParser {
       StepParser.validateAll(steps);
 
       // Step 4: Build parsed workflow
+      const { usage, limits } = SchemaValidator.extractUsageAndLimits(rawWorkflow, validated);
       const parsed: ParsedWorkflow = {
         name: validated.metadata?.name,
         description: validated.metadata?.description,
@@ -58,7 +59,11 @@ export class WorkflowParser {
         outputs: validated.outputs,
         strategy: (validated as any).strategy,
         execution: (validated as any).execution,
+        usage,
+        limits,
       };
+
+      this.emitUsageLimitsDisclaimer(logger, parsed);
 
       const duration = Date.now() - startTime;
       logger.parsingCompleted('workflow', duration, {
@@ -75,6 +80,30 @@ export class WorkflowParser {
       }
       throw error;
     }
+  }
+
+  /**
+   * Emit development-stage disclaimer for usage/limits policy blocks.
+   * Current behavior is non-blocking and warning-only.
+   */
+  private static emitUsageLimitsDisclaimer(
+    logger: ReturnType<typeof LoggerManager.getLogger>,
+    parsed: ParsedWorkflow,
+  ): void {
+    if (!parsed.usage && !parsed.limits) {
+      return;
+    }
+
+    logger.warn(
+      '[WorkflowParser] Usage/Limits policy detected. This is currently warning-only and non-blocking; strict restrictions will be enforced in a future engine release.',
+      {
+        hasUsagePolicy: !!parsed.usage,
+        hasLimitsPolicy: !!parsed.limits,
+        usageMode: parsed.usage?.mode,
+        usageScope: parsed.usage?.scope,
+        limits: parsed.limits,
+      },
+    );
   }
 
   /**
