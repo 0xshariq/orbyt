@@ -676,6 +676,9 @@ export interface EngineConfig {
   /** Internal scheduler configuration */
   scheduler?: {
     job?: {
+      /** Worker pool size used by scheduler/distributed runtime */
+      workerCount?: number;
+
       /** Worker runtime backend for scheduled jobs */
       workerBackend?: 'node' | 'tokio';
 
@@ -1055,6 +1058,83 @@ export interface JobQueue<T = any> {
    * @returns True if queue has no jobs
    */
   isEmpty(): Promise<boolean>;
+}
+
+/**
+ * Distributed step job status.
+ */
+export type DistributedStepJobStatus = 'queued' | 'leased' | 'completed' | 'failed';
+
+/**
+ * Canonical step-level distributed job model.
+ *
+ * This follows the distributed-future execution model:
+ * Engine (planner/state) -> Queue -> Workers -> Adapters.
+ */
+export interface DistributedStepJob {
+  /** Unique queue job ID. */
+  jobId: string;
+
+  /** Workflow run/execution ID. */
+  runId: string;
+
+  /** Workflow identifier for diagnostics. */
+  workflowId: string;
+
+  /** Step identifier within the workflow DAG. */
+  stepId: string;
+
+  /** Adapter action reference (e.g., shell.exec, http.request.get). */
+  uses: string;
+
+  /** Step input payload. */
+  input: Record<string, any>;
+
+  /** Number of attempts made so far. */
+  attempts: number;
+
+  /** Maximum attempts allowed before terminal failure. */
+  maxAttempts: number;
+
+  /** Current distributed queue lifecycle state. */
+  status: DistributedStepJobStatus;
+
+  /** Worker lease owner (if leased). */
+  workerId?: string;
+
+  /** Lease expiration timestamp in unix ms. */
+  leaseExpiresAt?: number;
+
+  /** Creation timestamp in unix ms. */
+  createdAt: number;
+
+  /** Last update timestamp in unix ms. */
+  updatedAt: number;
+
+  /** Optional error from the last attempt. */
+  lastError?: string;
+}
+
+/**
+ * Distributed queue stats for orchestration and diagnostics.
+ */
+export interface DistributedQueueStats {
+  queued: number;
+  leased: number;
+  completed: number;
+  failed: number;
+}
+
+/**
+ * Queue contract for distributed step execution.
+ */
+export interface DistributedJobQueue {
+  push(job: DistributedStepJob): Promise<void>;
+  pull(workerId: string): Promise<DistributedStepJob | null>;
+  ack(jobId: string): Promise<void>;
+  nack(jobId: string, error: Error, requeue?: boolean): Promise<'requeued' | 'failed' | 'missing'>;
+  extendLease(jobId: string, workerId: string, leaseMs?: number): Promise<boolean>;
+  getStats(): Promise<DistributedQueueStats>;
 }
 
 /**
@@ -1934,6 +2014,9 @@ export interface OrbytEngineConfig {
    */
   scheduler?: {
     job?: {
+      /** Worker pool size used by scheduler/distributed runtime */
+      workerCount?: number;
+
       /** Worker runtime backend for scheduled jobs */
       workerBackend?: 'node' | 'tokio';
 
@@ -2229,6 +2312,12 @@ export interface ExecutionExplanation {
     concurrency?: number;
     sandbox?: 'none' | 'basic' | 'strict';
   };
+
+  /** Resolved workflow usage policy (if declared). */
+  usagePolicy?: WorkflowUsagePolicy;
+
+  /** Resolved workflow limits policy (if declared). */
+  limitsPolicy?: WorkflowLimitsPolicy;
 
   /** Unique adapters used in this workflow */
   adaptersUsed: string[];

@@ -58,6 +58,7 @@ export * from './automation/index.js';
 // Queue and scheduling (for distributed setups)
 export * from './queue/index.js';
 export * from './scheduling/index.js';
+export * from './distributed/index.js';
 
 // Cache and runtime artifacts
 export * from './cache/index.js';

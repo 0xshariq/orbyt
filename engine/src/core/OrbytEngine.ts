@@ -97,6 +97,7 @@ import { WorkflowParseCache, AdapterMetadataCache } from '../cache/index.js';
 import { RuntimeArtifactStore } from '../runtime/index.js';
 import { NoOpUsageCollector } from '../usage/NoOpUsageCollector.js';
 import { FileSpoolUsageCollector, HttpUsageBatchTransport } from '../usage/FileSpoolUsageCollector.js';
+import { DistributedWorkflowOrchestrator, InMemoryDistributedJobQueue } from '../distributed/index.js';
 import {
   createAdapterCallEvent,
   createStepExecuteEvent,
@@ -1013,9 +1014,13 @@ export class OrbytEngine {
           workflowExecutor: this.workflowExecutor,
         };
 
+      const useDistributedRuntime = this.config.mode === 'distributed';
+
       const result = await this.measureWorkflowExecution(
         parsedWorkflow.name || 'unnamed',
-        () => runtime.workflowExecutor.execute(parsedWorkflow, execOptions)
+        () => useDistributedRuntime
+          ? this.executeDistributedWorkflow(parsedWorkflow, execOptions, runtime.stepExecutor)
+          : runtime.workflowExecutor.execute(parsedWorkflow, execOptions)
       );
 
       internalContext._usage.durationSeconds = result.duration / 1000;
@@ -1091,6 +1096,30 @@ export class OrbytEngine {
     // Clear any non-scoped workflow context left by prior preload parsing.
     LoggerManager.clearWorkflowContext();
     return result;
+  }
+
+  private async executeDistributedWorkflow(
+    workflow: ParsedWorkflow,
+    execOptions: ExecutionOptions,
+    stepExecutor: StepExecutor,
+  ): Promise<WorkflowResult> {
+    const workerCount = this.config.scheduler?.job?.workerCount
+      ?? Math.max(1, Math.min(8, this.config.maxConcurrentSteps || 4));
+
+    const queue = new InMemoryDistributedJobQueue();
+    const orchestrator = new DistributedWorkflowOrchestrator({
+      queue,
+      stepExecutor,
+      workerCount,
+      pollIntervalMs: 50,
+    });
+
+    this.log('info', '[Distributed] Executing workflow via scheduler->queue->workers runtime', {
+      workerCount,
+      workflowId: workflow.name || workflow.metadata?.name,
+    });
+
+    return orchestrator.execute(workflow, execOptions);
   }
 
   /**

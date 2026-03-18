@@ -162,6 +162,14 @@ export class ExplanationGenerator {
             explanation.policies = workflow.policies;
         }
 
+        if (workflow.usage) {
+            explanation.usagePolicy = workflow.usage;
+        }
+
+        if (workflow.limits) {
+            explanation.limitsPolicy = workflow.limits;
+        }
+
         if (workflow.metadata?.tags || workflow.tags) {
             explanation.tags = workflow.metadata?.tags || workflow.tags;
         }

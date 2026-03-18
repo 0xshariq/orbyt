@@ -45,6 +45,7 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
     experimental: config.experimental ?? false,
     scheduler: {
       job: {
+        workerCount: config.scheduler?.job?.workerCount ?? 4,
         workerBackend: config.scheduler?.job?.workerBackend ?? 'node',
         tokioWorkerCommand: config.scheduler?.job?.tokioWorkerCommand ?? 'orbyt-tokio-worker',
         tokioWorkerArgs: config.scheduler?.job?.tokioWorkerArgs ?? [],
