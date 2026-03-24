@@ -18,8 +18,10 @@ import { LogLevel } from '@dev-ecosystem/core';
 import { registerRunCommand } from './commands/run.js';
 import { registerValidateCommand } from './commands/validate.js';
 import { registerExplainCommand } from './commands/explain.js';
+import { registerDryRunCommand } from './commands/dry-run.js';
 import { registerEngineCommand } from './commands/engine.js';
 import { registerAdaptersCommand } from './commands/adapters.js';
+import { registerDistributedCommand } from './commands/distributed.js';
 
 /**
  * Main CLI function
@@ -52,10 +54,12 @@ async function main(): Promise<void> {
 
   // Register commands
   registerRunCommand(program);
+  registerDryRunCommand(program);
   registerValidateCommand(program);
   registerExplainCommand(program);
   registerEngineCommand(program);
   registerAdaptersCommand(program);
+  registerDistributedCommand(program);
 
   // Parse arguments
   await program.parseAsync(process.argv);
