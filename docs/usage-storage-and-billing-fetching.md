@@ -87,6 +87,28 @@ For delivery retry state:
 - `.orbyt/usage/sent/*.json`
 - `.orbyt/usage/failed/*.json`
 
+### `.orbyt/usage` Directory Semantics
+
+- `events/`
+  - append-only JSONL archive partitioned by day
+  - source of truth for replay and reconciliation
+- `pending/`
+  - envelopes queued for external delivery
+  - retried in batches by collector flush loop
+- `sent/`
+  - envelopes successfully delivered to ingestion endpoint
+  - can be retained short-term for forensic checks
+- `failed/`
+  - envelopes that exceeded retry threshold
+  - requires operator replay or investigation
+
+Operational rules:
+
+- never mutate records in `events/`
+- move envelopes between state directories atomically
+- retention for `sent/` and `failed/` must be policy-driven
+- if billing endpoint is down, `pending/` may grow but workflows must continue
+
 Why this model:
 
 - replay support
@@ -303,8 +325,23 @@ Future work (not required for v1):
 - `usageSpool.flushIntervalMs = 60000`
 - `usageSpool.batchSize = 200`
 - `usageSpool.maxRetryAttempts = 10`
+- `usageSpool.sentRetentionDays = 7`
+- `usageSpool.failedRetentionDays = 30`
 - aggregation cadence: daily every 24h (plus optional manual run)
 - lateness window: 72h
+
+## CLI/Admin Diagnostics
+
+Use Orbyt CLI to inspect spool health and queue sizes:
+
+- `orbyt usage-spool`
+
+This reports:
+
+- base spool directory
+- pending/sent/failed envelope counts
+- archived event day file count
+- collector health status and last success timestamp
 
 ## Operational KPIs for v1
 
