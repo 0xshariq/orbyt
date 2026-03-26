@@ -44,6 +44,8 @@ import {
   LogCategoryEnum,
 } from '../types/log-types.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // ─── Internal dispatch interface ──────────────────────────────────────────────
 
@@ -175,6 +177,9 @@ export class EngineLogger implements LogDispatcher {
   private config: Required<EngineLoggerConfig>;
   private formatOptions: LogFormatOptions;
   private logHistory: EngineLogEvent[] = [];
+  private readonly fileOutputEnabled: boolean;
+  private readonly fileOutputDirectory: string;
+  private readonly defaultFileName: string;
   /** Workflow context set by the engine before run/explain/validate */
   private workflowContext: WorkflowContext | null = null;
 
@@ -197,6 +202,7 @@ export class EngineLogger implements LogDispatcher {
       source: config.source || 'Orbyt',
       structuredEvents: config.structuredEvents ?? true,
       category: config.category || LogCategoryEnum.SYSTEM,
+      fileOutput: config.fileOutput ?? {},
       maxHistorySize: config.maxHistorySize ?? 5000,
     };
 
@@ -206,6 +212,10 @@ export class EngineLogger implements LogDispatcher {
       timestamp: this.config.timestamp,
       includeSource: true,
     };
+
+    this.fileOutputEnabled = config.fileOutput?.enabled === true;
+    this.fileOutputDirectory = config.fileOutput?.directory || '.orbyt/logs';
+    this.defaultFileName = config.fileOutput?.fileName || 'engine.json';
 
     // Bind category sub-loggers
     this.runtime = new CategoryLogger(this, LogCategoryEnum.RUNTIME);
@@ -385,6 +395,94 @@ export class EngineLogger implements LogDispatcher {
     });
     const formatted = formatLog(entry, this.formatOptions);
     console.log(formatted);
+
+    // Best-effort file persistence for operational diagnostics.
+    if (this.fileOutputEnabled) {
+      try {
+        const serializedEvent = {
+          level,
+          type: event.type,
+          timestamp: event.timestamp.toISOString(),
+          message: event.message,
+          category: event.category,
+          source: event.source,
+          context: event.context,
+          error: event.error
+            ? {
+              name: event.error.name,
+              message: event.error.message,
+              stack: event.error.stack,
+            }
+            : undefined,
+        };
+        this.appendJsonWorkflowLog(serializedEvent, activeWorkflowContext ?? undefined);
+      } catch {
+        // Non-fatal by design: file logging failure must not break engine execution.
+      }
+    }
+  }
+
+  private appendJsonWorkflowLog(
+    event: Record<string, unknown>,
+    workflowContext?: WorkflowContext,
+  ): void {
+    const logFilePath = this.resolveWorkflowLogFilePath(workflowContext);
+
+    const payload: {
+      workflow?: WorkflowContext;
+      logs: Record<string, unknown>[];
+    } = existsSync(logFilePath)
+        ? this.readExistingLogPayload(logFilePath)
+        : {
+          workflow: workflowContext,
+          logs: [],
+        };
+
+    if (!payload.workflow && workflowContext) {
+      payload.workflow = { ...workflowContext };
+    }
+
+    payload.logs.push(event);
+    writeFileSync(logFilePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  }
+
+  private readExistingLogPayload(logFilePath: string): {
+    workflow?: WorkflowContext;
+    logs: Record<string, unknown>[];
+  } {
+    try {
+      const raw = readFileSync(logFilePath, 'utf8');
+      const parsed = JSON.parse(raw) as { workflow?: WorkflowContext; logs?: Record<string, unknown>[] };
+      return {
+        workflow: parsed.workflow,
+        logs: Array.isArray(parsed.logs) ? parsed.logs : [],
+      };
+    } catch {
+      return { logs: [] };
+    }
+  }
+
+  private resolveWorkflowLogFilePath(workflowContext?: WorkflowContext): string {
+    const workflowName = this.sanitizeFileSegment(workflowContext?.name || 'engine');
+    const executionId = this.sanitizeFileSegment(workflowContext?.executionId);
+
+    if (executionId) {
+      return join(this.fileOutputDirectory, `${workflowName}__${executionId}.json`);
+    }
+
+    const defaultName = this.defaultFileName.toLowerCase().endsWith('.json')
+      ? this.defaultFileName
+      : `${this.defaultFileName}.json`;
+    return join(this.fileOutputDirectory, defaultName);
+  }
+
+  private sanitizeFileSegment(value?: string): string {
+    if (!value) return '';
+    const sanitized = value
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    return sanitized || 'workflow';
   }
 
   /**

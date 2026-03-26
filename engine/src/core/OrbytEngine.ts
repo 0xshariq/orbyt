@@ -71,21 +71,20 @@ import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
 import { createEngineContext } from './EngineContext.js';
 import { LoggerManager, type EngineLogger } from '../logging/index.js';
 import { LogCategoryEnum, WorkflowContext } from '../types/log-types.js';
-import { LogLevel as CoreLogLevel, type UsageCollector, type UsageEvent } from '@dev-ecosystem/core';
+import { LogLevel as CoreLogLevel, type UsageCollector, type UsageEvent, type Adapter } from '@dev-ecosystem/core';
 import { ExecutionEngine } from '../execution/ExecutionEngine.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
 import { WorkflowExecutor } from '../execution/WorkflowExecutor.js';
 import { EventBus } from '../events/EventBus.js';
 import { HookManager } from '../hooks/HookManager.js';
 import { AdapterRegistry } from '../adapters/AdapterRegistry.js';
-import type { Adapter } from '@dev-ecosystem/core';
 import type { LifecycleHook } from '../hooks/LifecycleHooks.js';
 import { createEvent } from '../events/EngineEvents.js';
 import { CLIAdapter, ShellAdapter, HTTPAdapter, FSAdapter } from '../adapters/builtins/index.js';
 import { InternalContextBuilder } from '../execution/InternalExecutionContext.js';
 import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
-import { DailyUsageAggregateBucket, DailyUsageAggregationRunResult, DailyUsageAggregateQueryOptions, DailyUsageAggregationState, EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, PeriodUsageRollupBucket, QuotaDecision, QuotaPolicy, UsageCollectorHealthStatus, UsagePeriodRollupQueryOptions, UsagePeriodRollupRunResult, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
+import { BillingUsageFetchBucket, BillingUsageFetchCursor, BillingUsageFetchOptions, BillingUsageFetchProvider, BillingUsageFetchResult, BillingUsageIncrementalFetchOptions, BillingUsageIncrementalFetchResult, DailyUsageAggregateBucket, DailyUsageAggregationRunResult, DailyUsageAggregateQueryOptions, DailyUsageAggregateRebuildOptions, DailyUsageAggregateRebuildResult, DailyUsageAggregationState, EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, InternalExecutionContext, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, PeriodUsageRollupBucket, QuotaDecision, QuotaPolicy, QuotaStatusQueryOptions, QuotaStatusResult, QuotaUsageCounters, UsageAggregationPipelineRunResult, UsageCollectorHealthStatus, UsagePeriodRollupQueryOptions, UsagePeriodRollupRunResult, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowQuotaMetadata, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -277,6 +276,11 @@ export class OrbytEngine {
       source: 'OrbytEngine',
       structuredEvents: true,
       category: LogCategoryEnum.SYSTEM,
+      fileOutput: {
+        enabled: true,
+        directory: this.config.logDir,
+        fileName: 'engine.log',
+      },
     });
     this.logger = LoggerManager.getLogger();
 
@@ -896,6 +900,8 @@ export class OrbytEngine {
 
     const result = await LoggerManager.runWithWorkflowContext({
       name: parsedWorkflow.name ?? parsedWorkflow.metadata?.name,
+      executionId: internalContext._identity.executionId,
+      runId: internalContext._identity.runId,
       version: parsedWorkflow.version,
       kind: parsedWorkflow.kind,
       description: parsedWorkflow.description ?? parsedWorkflow.metadata?.description,
@@ -1039,6 +1045,7 @@ export class OrbytEngine {
           ? this.executeDistributedWorkflow(parsedWorkflow, execOptions, runtime.stepExecutor)
           : runtime.workflowExecutor.execute(parsedWorkflow, execOptions)
       );
+      result.metadata.quota = this.createWorkflowQuotaMetadata(quotaDecision);
 
       internalContext._usage.durationSeconds = result.duration / 1000;
 
@@ -1117,7 +1124,7 @@ export class OrbytEngine {
 
   private async evaluatePreExecutionQuota(
     workflow: ParsedWorkflow,
-    internalContext: any,
+    internalContext: InternalExecutionContext,
   ): Promise<QuotaDecision> {
     const workspaceId = internalContext?._ownership?.workspaceId || 'unknown';
     const product = internalContext?._billing?.effectiveProduct || 'orbyt';
@@ -1189,6 +1196,127 @@ export class OrbytEngine {
       projected,
     };
 
+    return this.evaluateQuotaDecision(policy, snapshot);
+  }
+
+  /**
+   * Engine-only quota inspection API for pre-flight checks and diagnostics.
+   */
+  async getQuotaStatus(options: QuotaStatusQueryOptions = {}): Promise<QuotaStatusResult> {
+    const workspaceId = options.workspaceId || 'local';
+    const product = options.product || 'orbyt';
+    const policy = this.resolveQuotaPolicy(options.subscriptionTier || 'free');
+    const dayStartMs = this.getUtcDayStartMs(Date.now());
+    const periodStart = new Date(dayStartMs).toISOString().slice(0, 10);
+
+    const fallbackPolicy: QuotaPolicy = {
+      workflowRuns: Number.MAX_SAFE_INTEGER,
+      stepExecutions: Number.MAX_SAFE_INTEGER,
+      adapterCalls: Number.MAX_SAFE_INTEGER,
+      computeMs: Number.MAX_SAFE_INTEGER,
+      warningRatio: 1,
+    };
+
+    const usage = await this.getUsage({
+      from: dayStartMs,
+      to: Date.now(),
+      workspaceId,
+      product,
+      groupBy: 'none',
+    });
+
+    const consumed: QuotaUsageCounters = {
+      workflowRuns: usage.byType['usage.workflow.run'] ?? 0,
+      stepExecutions: usage.byType['usage.step.execute'] ?? 0,
+      adapterCalls: usage.byType['usage.adapter.call'] ?? 0,
+      computeMs: usage.totalDurationMs ?? 0,
+    };
+
+    const increment = options.projectedIncrement ?? {};
+    const projected: QuotaUsageCounters = {
+      workflowRuns: consumed.workflowRuns + (increment.workflowRuns ?? 0),
+      stepExecutions: consumed.stepExecutions + (increment.stepExecutions ?? 0),
+      adapterCalls: consumed.adapterCalls + (increment.adapterCalls ?? 0),
+      computeMs: consumed.computeMs + (increment.computeMs ?? 0),
+    };
+
+    const snapshot = {
+      workspaceId,
+      periodStart,
+      policy: policy ?? fallbackPolicy,
+      consumed,
+      projected,
+    };
+
+    if (!policy) {
+      return {
+        enforced: false,
+        decision: {
+          decision: 'allow',
+          reason: 'quota policy not enforced for subscription tier',
+          snapshot,
+        },
+      };
+    }
+
+    return {
+      enforced: true,
+      decision: this.evaluateQuotaDecision(policy, snapshot),
+    };
+  }
+
+  private resolveQuotaPolicy(subscriptionTier?: string): QuotaPolicy | undefined {
+    const tier = (subscriptionTier || 'free').toLowerCase();
+
+    if (tier === 'enterprise' || tier === 'business') {
+      return this.config.quotaPolicies.enterprise;
+    }
+
+    if (tier === 'pro' || tier === 'professional') {
+      return this.config.quotaPolicies.pro;
+    }
+
+    return this.config.quotaPolicies.free;
+  }
+
+  private createQuotaDeniedResult(
+    workflow: ParsedWorkflow,
+    internalContext: InternalExecutionContext,
+    decision: QuotaDecision,
+  ): WorkflowResult {
+    const now = new Date();
+
+    return {
+      workflowName: workflow.name || workflow.metadata?.name || 'unnamed',
+      executionId: internalContext?._identity?.executionId || `quota-denied-${Date.now()}`,
+      status: 'failure',
+      stepResults: new Map(),
+      duration: 0,
+      startedAt: now,
+      completedAt: now,
+      error: new Error(`${decision.reason} (deny_limit_reached)`),
+      metadata: {
+        totalSteps: workflow.steps.length,
+        successfulSteps: 0,
+        failedSteps: 0,
+        skippedSteps: workflow.steps.length,
+        phases: 0,
+        quota: this.createWorkflowQuotaMetadata(decision),
+      },
+    };
+  }
+
+  private createWorkflowQuotaMetadata(decision: QuotaDecision): WorkflowQuotaMetadata {
+    return {
+      decision: decision.decision,
+      reason: decision.reason,
+      snapshot: decision.snapshot,
+    };
+  }
+
+  private evaluateQuotaDecision(policy: QuotaPolicy, snapshot: QuotaDecision['snapshot']): QuotaDecision {
+    const projected = snapshot.projected;
+
     if (projected.workflowRuns > policy.workflowRuns) {
       return {
         decision: 'deny_limit_reached',
@@ -1242,46 +1370,6 @@ export class OrbytEngine {
       decision: 'allow',
       reason: 'within daily quota',
       snapshot,
-    };
-  }
-
-  private resolveQuotaPolicy(subscriptionTier?: string): QuotaPolicy | undefined {
-    const tier = (subscriptionTier || 'free').toLowerCase();
-
-    if (tier === 'enterprise' || tier === 'business') {
-      return this.config.quotaPolicies.enterprise;
-    }
-
-    if (tier === 'pro' || tier === 'professional') {
-      return this.config.quotaPolicies.pro;
-    }
-
-    return this.config.quotaPolicies.free;
-  }
-
-  private createQuotaDeniedResult(
-    workflow: ParsedWorkflow,
-    internalContext: any,
-    decision: QuotaDecision,
-  ): WorkflowResult {
-    const now = new Date();
-
-    return {
-      workflowName: workflow.name || workflow.metadata?.name || 'unnamed',
-      executionId: internalContext?._identity?.executionId || `quota-denied-${Date.now()}`,
-      status: 'failure',
-      stepResults: new Map(),
-      duration: 0,
-      startedAt: now,
-      completedAt: now,
-      error: new Error(`${decision.reason} (deny_limit_reached)`),
-      metadata: {
-        totalSteps: workflow.steps.length,
-        successfulSteps: 0,
-        failedSteps: 0,
-        skippedSteps: workflow.steps.length,
-        phases: 0,
-      },
     };
   }
 
@@ -2109,6 +2197,123 @@ export class OrbytEngine {
   }
 
   /**
+   * Rebuild selected daily aggregate buckets from raw events.
+   *
+   * Used to repair counters when late/out-of-order events arrive.
+   */
+  rebuildDailyUsageAggregates(options: DailyUsageAggregateRebuildOptions = {}): DailyUsageAggregateRebuildResult {
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const eventsDir = join(usageBaseDir, 'events');
+    const aggregateFile = join(usageBaseDir, 'aggregates', 'daily.json');
+
+    const existing = this.readDailyAggregateBuckets(aggregateFile);
+    if (!existsSync(eventsDir)) {
+      return {
+        fromDay: options.fromDay,
+        toDay: options.toDay,
+        selectedDays: 0,
+        removedBuckets: 0,
+        rebuiltBuckets: 0,
+        aggregateFile,
+      };
+    }
+
+    const allDays = readdirSync(eventsDir)
+      .filter((name) => name.endsWith('.jsonl'))
+      .map((name) => name.replace(/\.jsonl$/, ''))
+      .sort();
+
+    const selectedDays = allDays.filter((day) => {
+      if (options.fromDay && day < options.fromDay) return false;
+      if (options.toDay && day > options.toDay) return false;
+      return true;
+    });
+
+    const selectedSet = new Set(selectedDays);
+    const shouldReplaceBucket = (bucket: DailyUsageAggregateBucket): boolean => {
+      if (!selectedSet.has(bucket.day)) return false;
+      if (options.workspaceId && bucket.workspaceId !== options.workspaceId) return false;
+      if (options.product && bucket.product !== options.product) return false;
+      return true;
+    };
+
+    const kept = existing.filter((bucket) => !shouldReplaceBucket(bucket));
+    const removedBuckets = existing.length - kept.length;
+
+    const rebuiltMap = new Map<string, DailyUsageAggregateBucket>();
+
+    for (const day of selectedDays) {
+      const filePath = join(eventsDir, `${day}.jsonl`);
+      let content = '';
+      try {
+        content = readFileSync(filePath, 'utf8');
+      } catch {
+        continue;
+      }
+
+      const lines = content.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+      for (const line of lines) {
+        let event: UsageEvent;
+        try {
+          event = JSON.parse(line) as UsageEvent;
+        } catch {
+          continue;
+        }
+
+        const workspaceId = event.workspaceId || 'unknown';
+        const product = event.product || 'unknown';
+        if (options.workspaceId && workspaceId !== options.workspaceId) continue;
+        if (options.product && product !== options.product) continue;
+
+        const key = this.aggregateBucketKey(day, workspaceId, product);
+        const bucket = rebuiltMap.get(key) ?? {
+          day,
+          workspaceId,
+          product,
+          workflowRuns: 0,
+          stepExecutions: 0,
+          adapterCalls: 0,
+          computeMs: 0,
+          billableEvents: 0,
+          totalEvents: 0,
+          updatedAt: Date.now(),
+        };
+
+        bucket.totalEvents += 1;
+        if (event.billable === true) bucket.billableEvents += 1;
+        if (event.type === 'usage.workflow.run') bucket.workflowRuns += 1;
+        else if (event.type === 'usage.step.execute') bucket.stepExecutions += 1;
+        else if (event.type === 'usage.adapter.call') bucket.adapterCalls += 1;
+
+        const durationMs = typeof event.metadata?.durationMs === 'number'
+          ? Math.max(0, event.metadata.durationMs)
+          : 0;
+        bucket.computeMs += durationMs;
+        bucket.updatedAt = Date.now();
+
+        rebuiltMap.set(key, bucket);
+      }
+    }
+
+    const merged = [...kept, ...Array.from(rebuiltMap.values())].sort((a, b) => {
+      if (a.day !== b.day) return a.day.localeCompare(b.day);
+      if (a.workspaceId !== b.workspaceId) return a.workspaceId.localeCompare(b.workspaceId);
+      return a.product.localeCompare(b.product);
+    });
+
+    writeFileSync(aggregateFile, JSON.stringify(merged, null, 2), 'utf8');
+
+    return {
+      fromDay: options.fromDay,
+      toDay: options.toDay,
+      selectedDays: selectedDays.length,
+      removedBuckets,
+      rebuiltBuckets: rebuiltMap.size,
+      aggregateFile,
+    };
+  }
+
+  /**
    * Build weekly/monthly rollups from daily aggregate counters.
    */
   runUsagePeriodRollups(): UsagePeriodRollupRunResult {
@@ -2200,6 +2405,24 @@ export class OrbytEngine {
   }
 
   /**
+   * Run the full usage aggregation pipeline in deterministic order.
+   *
+   * Order:
+   * 1. Build daily aggregates from raw events
+   * 2. Build weekly/monthly rollups from daily aggregates
+   */
+  runUsageAggregationPipeline(): UsageAggregationPipelineRunResult {
+    const daily = this.runDailyUsageAggregation();
+    const rollups = this.runUsagePeriodRollups();
+
+    return {
+      daily,
+      rollups,
+      generatedAt: Date.now(),
+    };
+  }
+
+  /**
    * Read persisted weekly/monthly usage rollups.
    */
   getUsagePeriodRollups(options: UsagePeriodRollupQueryOptions): PeriodUsageRollupBucket[] {
@@ -2213,6 +2436,146 @@ export class OrbytEngine {
 
     const limit = options.limit && options.limit > 0 ? options.limit : undefined;
     return limit ? rollups.slice(0, limit) : rollups;
+  }
+
+  /**
+   * Billing-facing fetch API over persisted usage aggregates.
+   *
+   * Supports daily/weekly/monthly pulls with optional pre-fetch refresh.
+   */
+  getBillingUsageForPeriod(options: BillingUsageFetchOptions = {}): BillingUsageFetchResult {
+    const periodType = options.periodType ?? 'daily';
+    const refreshBeforeFetch = options.refreshBeforeFetch ?? true;
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const aggregatesDir = join(usageBaseDir, 'aggregates');
+    const sourceFile = join(aggregatesDir, `${periodType}.json`);
+    const watermarkFile = join(aggregatesDir, 'watermark.json');
+
+    if (refreshBeforeFetch) {
+      this.runUsageAggregationPipeline();
+    }
+
+    const billingBuckets: BillingUsageFetchBucket[] = periodType === 'daily'
+      ? this.getDailyUsageAggregates({
+        workspaceId: options.workspaceId,
+        product: options.product,
+      }).map((bucket) => ({
+        periodType: 'daily',
+        periodStart: bucket.day,
+        workspaceId: bucket.workspaceId,
+        product: bucket.product,
+        workflowRuns: bucket.workflowRuns,
+        stepExecutions: bucket.stepExecutions,
+        adapterCalls: bucket.adapterCalls,
+        computeMs: bucket.computeMs,
+        billableEvents: bucket.billableEvents,
+        totalEvents: bucket.totalEvents,
+        updatedAt: bucket.updatedAt,
+      }))
+      : this.getUsagePeriodRollups({
+        periodType,
+        workspaceId: options.workspaceId,
+        product: options.product,
+      }).map((bucket) => ({
+        periodType: bucket.periodType,
+        periodStart: bucket.periodStart,
+        workspaceId: bucket.workspaceId,
+        product: bucket.product,
+        workflowRuns: bucket.workflowRuns,
+        stepExecutions: bucket.stepExecutions,
+        adapterCalls: bucket.adapterCalls,
+        computeMs: bucket.computeMs,
+        billableEvents: bucket.billableEvents,
+        totalEvents: bucket.totalEvents,
+        updatedAt: bucket.updatedAt,
+      }));
+
+    const filteredByRange = billingBuckets.filter((bucket) => {
+      if (options.fromPeriodStart && bucket.periodStart < options.fromPeriodStart) return false;
+      if (options.toPeriodStart && bucket.periodStart > options.toPeriodStart) return false;
+      return true;
+    });
+
+    const sorted = filteredByRange.sort((a, b) => {
+      if (a.periodStart !== b.periodStart) return a.periodStart.localeCompare(b.periodStart);
+      if (a.workspaceId !== b.workspaceId) return a.workspaceId.localeCompare(b.workspaceId);
+      return a.product.localeCompare(b.product);
+    });
+
+    const limit = options.limit && options.limit > 0 ? options.limit : undefined;
+    const finalBuckets = limit ? sorted.slice(0, limit) : sorted;
+
+    const aggregationState = this.readDailyAggregationState(watermarkFile);
+    return {
+      periodType,
+      fetchedAt: Date.now(),
+      refreshedBeforeFetch: refreshBeforeFetch,
+      sourceFile,
+      watermarkDay: aggregationState.watermarkDay,
+      totalBuckets: finalBuckets.length,
+      buckets: finalBuckets,
+    };
+  }
+
+  /**
+   * Incremental billing fetch API based on a caller-provided cursor.
+   *
+   * Semantics:
+   * - cursor.lastPeriodStart is treated as exclusive
+   * - returned nextCursor always points to the newest delivered period
+   */
+  getBillingUsageIncremental(options: BillingUsageIncrementalFetchOptions = {}): BillingUsageIncrementalFetchResult {
+    const previousCursor = options.cursor;
+    const requestedPeriodType = options.periodType ?? previousCursor?.periodType ?? 'daily';
+
+    const baseResult = this.getBillingUsageForPeriod({
+      ...options,
+      periodType: requestedPeriodType,
+      workspaceId: options.workspaceId ?? previousCursor?.workspaceId,
+      product: options.product ?? previousCursor?.product,
+    });
+
+    const exclusiveFloor = previousCursor?.lastPeriodStart;
+    const filteredBuckets = exclusiveFloor
+      ? baseResult.buckets.filter((bucket) => bucket.periodStart > exclusiveFloor)
+      : baseResult.buckets;
+
+    const newestPeriodStart = filteredBuckets.length > 0
+      ? filteredBuckets[filteredBuckets.length - 1]?.periodStart
+      : previousCursor?.lastPeriodStart;
+
+    const nextCursor: BillingUsageFetchCursor = {
+      periodType: requestedPeriodType,
+      lastPeriodStart: newestPeriodStart,
+      workspaceId: options.workspaceId ?? previousCursor?.workspaceId,
+      product: options.product ?? previousCursor?.product,
+      updatedAt: Date.now(),
+    };
+
+    return {
+      previousCursor,
+      nextCursor,
+      periodType: requestedPeriodType,
+      fetchedAt: Date.now(),
+      refreshedBeforeFetch: baseResult.refreshedBeforeFetch,
+      sourceFile: baseResult.sourceFile,
+      watermarkDay: baseResult.watermarkDay,
+      totalBuckets: filteredBuckets.length,
+      buckets: filteredBuckets,
+    };
+  }
+
+  /**
+   * Expose Orbyt's usage aggregation fetch APIs through the shared
+   * billing-provider contract from ecosystem-core.
+   */
+  getBillingUsageFetchProvider(): BillingUsageFetchProvider {
+    return {
+      fetchUsageForBilling: async (options: BillingUsageFetchOptions = {}) =>
+        this.getBillingUsageForPeriod(options),
+      fetchUsageForBillingIncremental: async (options: BillingUsageIncrementalFetchOptions = {}) =>
+        this.getBillingUsageIncremental(options),
+    };
   }
 
   private matchesUsageQuery(

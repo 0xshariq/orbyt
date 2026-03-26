@@ -1383,7 +1383,14 @@ export interface WorkflowResult {
     failedSteps: number;
     skippedSteps: number;
     phases: number;
+    quota?: WorkflowQuotaMetadata;
   };
+}
+
+export interface WorkflowQuotaMetadata {
+  decision: QuotaDecision['decision'];
+  reason: string;
+  snapshot: QuotaDecisionSnapshot;
 }
 
 /**
@@ -3658,6 +3665,22 @@ export interface DailyUsageAggregateQueryOptions {
   limit?: number;
 }
 
+export interface DailyUsageAggregateRebuildOptions {
+  fromDay?: string;
+  toDay?: string;
+  workspaceId?: string;
+  product?: string;
+}
+
+export interface DailyUsageAggregateRebuildResult {
+  fromDay?: string;
+  toDay?: string;
+  selectedDays: number;
+  removedBuckets: number;
+  rebuiltBuckets: number;
+  aggregateFile: string;
+}
+
 export interface PeriodUsageRollupBucket {
   periodType: 'weekly' | 'monthly';
   periodStart: string;
@@ -3679,6 +3702,12 @@ export interface UsagePeriodRollupRunResult {
   monthlyFile: string;
 }
 
+export interface UsageAggregationPipelineRunResult {
+  daily: DailyUsageAggregationRunResult;
+  rollups: UsagePeriodRollupRunResult;
+  generatedAt: number;
+}
+
 export interface UsagePeriodRollupQueryOptions {
   periodType: 'weekly' | 'monthly';
   periodStart?: string;
@@ -3686,6 +3715,17 @@ export interface UsagePeriodRollupQueryOptions {
   product?: string;
   limit?: number;
 }
+
+export type {
+  BillingUsageFetchPeriod,
+  BillingUsageFetchOptions,
+  BillingUsageFetchBucket,
+  BillingUsageFetchResult,
+  BillingUsageFetchCursor,
+  BillingUsageIncrementalFetchOptions,
+  BillingUsageIncrementalFetchResult,
+  BillingUsageFetchProvider,
+} from '@dev-ecosystem/core';
 
 export interface UsageCollectorHealthStatus {
   healthy: boolean;
@@ -3720,4 +3760,17 @@ export interface QuotaDecision {
   decision: 'allow' | 'allow_with_warning' | 'deny_limit_reached';
   reason: string;
   snapshot: QuotaDecisionSnapshot;
+}
+
+export interface QuotaStatusQueryOptions {
+  workspaceId?: string;
+  product?: string;
+  subscriptionTier?: string;
+  /** Optional projected increments for pre-flight checks */
+  projectedIncrement?: Partial<QuotaUsageCounters>;
+}
+
+export interface QuotaStatusResult {
+  enforced: boolean;
+  decision: QuotaDecision;
 }

@@ -204,6 +204,16 @@ export interface EngineLoggerConfig {
   structuredEvents?: boolean;
   /** Log category */
   category: LogCategory;
+
+  /** Optional file output settings for persisted logs */
+  fileOutput?: {
+    /** Enable writing logs to disk */
+    enabled?: boolean;
+    /** Directory where log files will be written */
+    directory?: string;
+    /** File name for persisted logs */
+    fileName?: string;
+  };
   /**
    * Maximum number of log events to keep in the in-memory history ring-buffer.
    * Older entries are silently dropped once the limit is reached. A value of
@@ -237,6 +247,10 @@ export interface EngineLoggerConfig {
 export interface WorkflowContext {
   /** Workflow name from the YAML file (e.g. "deploy-api") */
   name?: string;
+  /** Engine-generated execution ID used to isolate logs per workflow run */
+  executionId?: string;
+  /** Engine-generated run ID for audit correlation */
+  runId?: string;
   /** Semantic version string (e.g. "1.2.0") */
   version?: string;
   /** Document kind (e.g. "workflow", "pipeline") */
