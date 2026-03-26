@@ -1,5 +1,5 @@
-import { accessSync, constants as FsConstants, existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { accessSync, constants as FsConstants, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { Command } from 'commander';
 import { OrbytEngine } from '@orbytautomation/engine';
 import { createFormatter, type FormatterType } from '../formatters/createFormatter.js';
@@ -24,8 +24,41 @@ interface DoctorReport {
 	checks: CheckResult[];
 }
 
+interface UsageSpoolReport {
+	baseDir: string;
+	pendingCount: number;
+	sentCount: number;
+	failedCount: number;
+	eventArchiveDays: number;
+	collectorHealth: {
+		healthy: boolean;
+		detail?: string;
+		lastSuccessAt?: number;
+	};
+}
+
+interface UsageAggregateRunResult {
+	processedDays: number;
+	updatedBuckets: number;
+	watermarkDay?: string;
+	aggregateFile: string;
+	watermarkFile: string;
+}
+
 interface EngineDiagnosticsAccess {
 	getVersion?: () => string;
+	getUsageCollectorHealth?: () => Promise<{
+		healthy: boolean;
+		detail?: string;
+		lastSuccessAt?: number;
+	}>;
+	runDailyUsageAggregation?: () => UsageAggregateRunResult;
+	getDailyUsageAggregates?: (options?: {
+		day?: string;
+		workspaceId?: string;
+		product?: string;
+		limit?: number;
+	}) => Array<Record<string, unknown>>;
 	getAdapterStats?: () => {
 		total: number;
 		initialized: number;
@@ -47,6 +80,28 @@ export function registerEngineCommand(program: Command): void {
 		.option('--silent', 'Minimal output')
 		.option('--no-color', 'Disable colored output')
 		.action(runDoctor);
+
+	program
+		.command('usage-spool')
+		.description('Inspect local usage spool health and queue sizes')
+		.option('-f, --format <format>', 'Output format (human|json|verbose|null)', 'human')
+		.option('--verbose', 'Show detailed diagnostics output')
+		.option('--silent', 'Minimal output')
+		.option('--no-color', 'Disable colored output')
+		.action(runUsageSpool);
+
+	program
+		.command('usage-aggregate')
+		.description('Build and inspect persisted daily usage aggregates')
+		.option('--day <yyyy-mm-dd>', 'Filter aggregate rows by day')
+		.option('--workspace-id <id>', 'Filter aggregate rows by workspace id')
+		.option('--product <name>', 'Filter aggregate rows by product')
+		.option('--limit <n>', 'Maximum rows to print', parseInt)
+		.option('-f, --format <format>', 'Output format (human|json|verbose|null)', 'human')
+		.option('--verbose', 'Show detailed diagnostics output')
+		.option('--silent', 'Minimal output')
+		.option('--no-color', 'Disable colored output')
+		.action(runUsageAggregate);
 }
 
 async function runDoctor(options: DoctorOptions): Promise<void> {
@@ -140,5 +195,133 @@ function checkDirectory(name: string, dir: string): CheckResult {
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { name, ok: false, detail: `${dir} (${message})` };
+	}
+}
+
+async function runUsageSpool(options: DoctorOptions): Promise<void> {
+	const format = (options.format || 'human') as FormatterType;
+	const formatter = createFormatter(format, {
+		verbose: options.verbose,
+		silent: options.silent,
+		noColor: options.noColor,
+	});
+
+	try {
+		const engine = new OrbytEngine({ logLevel: 'silent' });
+		const diagnostics = engine as unknown as EngineDiagnosticsAccess;
+		const config = engine.getConfig();
+		const baseDir = ((config as unknown as { usageSpool?: { baseDir?: string } }).usageSpool?.baseDir) || '';
+
+		const collectorHealth = diagnostics.getUsageCollectorHealth
+			? await diagnostics.getUsageCollectorHealth()
+			: {
+				healthy: true,
+				detail: 'collector health API unavailable in this engine build',
+			};
+
+		const report: UsageSpoolReport = {
+			baseDir,
+			pendingCount: countFiles(join(baseDir, 'pending'), '.json'),
+			sentCount: countFiles(join(baseDir, 'sent'), '.json'),
+			failedCount: countFiles(join(baseDir, 'failed'), '.json'),
+			eventArchiveDays: countFiles(join(baseDir, 'events'), '.jsonl'),
+			collectorHealth,
+		};
+
+		if (format === 'json') {
+			process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+		} else {
+			formatter.showInfo('Usage Spool Diagnostics');
+			formatter.showInfo(`Base directory: ${report.baseDir}`);
+			formatter.showInfo(`Pending envelopes: ${report.pendingCount}`);
+			formatter.showInfo(`Sent envelopes: ${report.sentCount}`);
+			formatter.showInfo(`Failed envelopes: ${report.failedCount}`);
+			formatter.showInfo(`Archived event days: ${report.eventArchiveDays}`);
+			formatter.showInfo(
+				`Collector health: ${report.collectorHealth.healthy ? 'healthy' : 'unhealthy'} ` +
+				`(${report.collectorHealth.detail || 'no detail'})`,
+			);
+
+			if (report.collectorHealth.lastSuccessAt) {
+				formatter.showInfo(`Collector last success: ${new Date(report.collectorHealth.lastSuccessAt).toISOString()}`);
+			}
+		}
+
+		process.exit(report.collectorHealth.healthy ? 0 : 1);
+	} catch (error) {
+		const err = error instanceof Error ? error : new Error(String(error));
+		formatter.showError(err);
+		process.exit(1);
+	}
+}
+
+function countFiles(dir: string, suffix: '.json' | '.jsonl'): number {
+	if (!dir || !existsSync(dir)) {
+		return 0;
+	}
+
+	try {
+		return readdirSync(dir).filter((name) => name.endsWith(suffix)).length;
+	} catch {
+		return 0;
+	}
+}
+
+async function runUsageAggregate(options: {
+	day?: string;
+	workspaceId?: string;
+	product?: string;
+	limit?: number;
+	format?: string;
+	verbose?: boolean;
+	silent?: boolean;
+	noColor?: boolean;
+}): Promise<void> {
+	const format = (options.format || 'human') as FormatterType;
+	const formatter = createFormatter(format, {
+		verbose: options.verbose,
+		silent: options.silent,
+		noColor: options.noColor,
+	});
+
+	try {
+		const engine = new OrbytEngine({ logLevel: 'silent' });
+		const diagnostics = engine as unknown as EngineDiagnosticsAccess;
+
+		if (typeof diagnostics.runDailyUsageAggregation !== 'function' || typeof diagnostics.getDailyUsageAggregates !== 'function') {
+			throw new Error('This installed engine version does not expose daily usage aggregation APIs. Upgrade @orbytautomation/engine.');
+		}
+
+		const runResult = diagnostics.runDailyUsageAggregation();
+		const rows = diagnostics.getDailyUsageAggregates({
+			day: options.day,
+			workspaceId: options.workspaceId,
+			product: options.product,
+			limit: options.limit,
+		});
+
+		if (format === 'json') {
+			process.stdout.write(`${JSON.stringify({ runResult, rows }, null, 2)}\n`);
+		} else {
+			formatter.showInfo('Daily Usage Aggregation');
+			formatter.showInfo(`Processed days: ${runResult.processedDays}`);
+			formatter.showInfo(`Updated buckets: ${runResult.updatedBuckets}`);
+			formatter.showInfo(`Watermark day: ${runResult.watermarkDay || 'none'}`);
+			formatter.showInfo(`Aggregate file: ${runResult.aggregateFile}`);
+			formatter.showInfo(`Watermark file: ${runResult.watermarkFile}`);
+			formatter.showInfo(`Rows returned: ${rows.length}`);
+
+			if (!options.silent && rows.length > 0) {
+				for (const row of rows.slice(0, options.limit && options.limit > 0 ? options.limit : 20)) {
+					formatter.showInfo(JSON.stringify(row));
+				}
+			}
+		}
+
+		process.exit(0);
+	} catch (error) {
+		const err = error instanceof Error ? error : new Error(String(error));
+		formatter.showError(err);
+		process.exit(1);
 	}
 }
