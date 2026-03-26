@@ -2150,6 +2150,12 @@ export interface OrbytEngineConfig {
     /** Max retry attempts before moving events to failed queue (default: 10) */
     maxRetryAttempts?: number;
 
+    /** Retention for sent spool envelopes in days (default: 7) */
+    sentRetentionDays?: number;
+
+    /** Retention for failed spool envelopes in days (default: 30) */
+    failedRetentionDays?: number;
+
     /** Optional billing ingestion endpoint for batch push */
     billingEndpoint?: string;
 
@@ -2158,6 +2164,16 @@ export interface OrbytEngineConfig {
 
     /** Optional request timeout in milliseconds (default: 10000) */
     requestTimeoutMs?: number;
+  };
+
+  /**
+   * Optional quota policy overrides used by engine-side pre-execution enforcement.
+   * Enterprise can be omitted to disable hard quota checks for that tier.
+   */
+  quotaPolicies?: {
+    free?: QuotaPolicy;
+    pro?: QuotaPolicy;
+    enterprise?: QuotaPolicy;
   };
 
   // === Logging & Observability ===
@@ -3607,4 +3623,101 @@ export interface DependencyInfo {
 
   /** Step ID to dependents map (reverse) */
   stepDependents: Map<string, string[]>;
+}
+
+export interface DailyUsageAggregateBucket {
+  day: string;
+  workspaceId: string;
+  product: string;
+  workflowRuns: number;
+  stepExecutions: number;
+  adapterCalls: number;
+  computeMs: number;
+  billableEvents: number;
+  totalEvents: number;
+  updatedAt: number;
+}
+
+export interface DailyUsageAggregationState {
+  watermarkDay?: string;
+  updatedAt: number;
+}
+
+export interface DailyUsageAggregationRunResult {
+  processedDays: number;
+  updatedBuckets: number;
+  watermarkDay?: string;
+  aggregateFile: string;
+  watermarkFile: string;
+}
+
+export interface DailyUsageAggregateQueryOptions {
+  day?: string;
+  workspaceId?: string;
+  product?: string;
+  limit?: number;
+}
+
+export interface PeriodUsageRollupBucket {
+  periodType: 'weekly' | 'monthly';
+  periodStart: string;
+  workspaceId: string;
+  product: string;
+  workflowRuns: number;
+  stepExecutions: number;
+  adapterCalls: number;
+  computeMs: number;
+  billableEvents: number;
+  totalEvents: number;
+  updatedAt: number;
+}
+
+export interface UsagePeriodRollupRunResult {
+  weeklyBuckets: number;
+  monthlyBuckets: number;
+  weeklyFile: string;
+  monthlyFile: string;
+}
+
+export interface UsagePeriodRollupQueryOptions {
+  periodType: 'weekly' | 'monthly';
+  periodStart?: string;
+  workspaceId?: string;
+  product?: string;
+  limit?: number;
+}
+
+export interface UsageCollectorHealthStatus {
+  healthy: boolean;
+  detail?: string;
+  lastSuccessAt?: number;
+}
+
+export interface QuotaPolicy {
+  workflowRuns: number;
+  stepExecutions: number;
+  adapterCalls: number;
+  computeMs: number;
+  warningRatio: number;
+}
+
+export interface QuotaUsageCounters {
+  workflowRuns: number;
+  stepExecutions: number;
+  adapterCalls: number;
+  computeMs: number;
+}
+
+export interface QuotaDecisionSnapshot {
+  workspaceId: string;
+  periodStart: string;
+  policy: QuotaPolicy;
+  consumed: QuotaUsageCounters;
+  projected: QuotaUsageCounters;
+}
+
+export interface QuotaDecision {
+  decision: 'allow' | 'allow_with_warning' | 'deny_limit_reached';
+  reason: string;
+  snapshot: QuotaDecisionSnapshot;
 }

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { UsageCollector, UsageEvent } from '@dev-ecosystem/core';
 
@@ -68,6 +68,8 @@ export interface FileSpoolUsageCollectorOptions {
     batchSize?: number;
     flushIntervalMs?: number;
     maxRetryAttempts?: number;
+    sentRetentionDays?: number;
+    failedRetentionDays?: number;
     transport?: UsageBatchTransport;
 }
 
@@ -95,11 +97,14 @@ export class FileSpoolUsageCollector implements UsageCollector {
     private readonly batchSize: number;
     private readonly flushIntervalMs: number;
     private readonly maxRetryAttempts: number;
+    private readonly sentRetentionDays: number;
+    private readonly failedRetentionDays: number;
     private readonly transport?: UsageBatchTransport;
 
     private flushTimer?: ReturnType<typeof setInterval>;
     private isFlushing = false;
     private lastSuccessAt?: number;
+    private retentionTick = 0;
 
     constructor(options: FileSpoolUsageCollectorOptions) {
         this.baseDir = options.baseDir;
@@ -110,6 +115,8 @@ export class FileSpoolUsageCollector implements UsageCollector {
         this.batchSize = options.batchSize ?? 200;
         this.flushIntervalMs = options.flushIntervalMs ?? 60_000;
         this.maxRetryAttempts = options.maxRetryAttempts ?? 10;
+        this.sentRetentionDays = options.sentRetentionDays ?? 7;
+        this.failedRetentionDays = options.failedRetentionDays ?? 30;
         this.transport = options.transport;
 
         this.ensureDirs();
@@ -139,6 +146,11 @@ export class FileSpoolUsageCollector implements UsageCollector {
             const day = new Date(event.timestamp).toISOString().slice(0, 10);
             const archiveFile = join(this.eventsDir, `${day}.jsonl`);
             appendFileSync(archiveFile, `${JSON.stringify(event)}\n`, 'utf8');
+
+            this.retentionTick += 1;
+            if (this.retentionTick % 500 === 0) {
+                this.applyRetentionPolicies();
+            }
         } catch {
             // Non-fatal by design
         }
@@ -218,6 +230,7 @@ export class FileSpoolUsageCollector implements UsageCollector {
         } catch {
             // Non-fatal by design
         } finally {
+            this.applyRetentionPolicies();
             this.isFlushing = false;
         }
     }
@@ -226,11 +239,13 @@ export class FileSpoolUsageCollector implements UsageCollector {
         try {
             this.ensureDirs();
             const pending = readdirSync(this.pendingDir).filter((f) => f.endsWith('.json')).length;
+            const sent = readdirSync(this.sentDir).filter((f) => f.endsWith('.json')).length;
             const failed = readdirSync(this.failedDir).filter((f) => f.endsWith('.json')).length;
+            const archivedDays = readdirSync(this.eventsDir).filter((f) => f.endsWith('.jsonl')).length;
 
             return {
                 healthy: true,
-                detail: `pending=${pending}, failed=${failed}`,
+                detail: `pending=${pending}, sent=${sent}, failed=${failed}, archivedDays=${archivedDays}`,
                 lastSuccessAt: this.lastSuccessAt,
             };
         } catch {
@@ -271,6 +286,42 @@ export class FileSpoolUsageCollector implements UsageCollector {
             return JSON.parse(raw) as SpoolEnvelope;
         } catch {
             return null;
+        }
+    }
+
+    private applyRetentionPolicies(): void {
+        try {
+            this.pruneByAgeDays(this.sentDir, this.sentRetentionDays);
+            this.pruneByAgeDays(this.failedDir, this.failedRetentionDays);
+        } catch {
+            // Non-fatal by design
+        }
+    }
+
+    private pruneByAgeDays(dir: string, retentionDays: number): void {
+        const cutoffMs = Date.now() - Math.max(1, retentionDays) * 24 * 60 * 60 * 1000;
+        const files = readdirSync(dir).filter((name) => name.endsWith('.json'));
+
+        for (const name of files) {
+            const filePath = join(dir, name);
+            const createdAt = this.resolveFileCreatedAtMs(filePath, name);
+            if (createdAt <= cutoffMs) {
+                unlinkSync(filePath);
+            }
+        }
+    }
+
+    private resolveFileCreatedAtMs(filePath: string, name: string): number {
+        const tsPart = name.split('-', 1)[0];
+        const parsed = Number(tsPart);
+        if (Number.isFinite(parsed) && parsed > 0) {
+            return parsed;
+        }
+
+        try {
+            return statSync(filePath).mtimeMs;
+        } catch {
+            return Date.now();
         }
     }
 }

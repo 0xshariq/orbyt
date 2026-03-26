@@ -85,7 +85,7 @@ import { CLIAdapter, ShellAdapter, HTTPAdapter, FSAdapter } from '../adapters/bu
 import { InternalContextBuilder } from '../execution/InternalExecutionContext.js';
 import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
-import { EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
+import { DailyUsageAggregateBucket, DailyUsageAggregationRunResult, DailyUsageAggregateQueryOptions, DailyUsageAggregationState, EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, PeriodUsageRollupBucket, QuotaDecision, QuotaPolicy, UsageCollectorHealthStatus, UsagePeriodRollupQueryOptions, UsagePeriodRollupRunResult, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -249,6 +249,7 @@ export class OrbytEngine {
   private adapterMetadataCache: AdapterMetadataCache;
   private runtimeArtifactStore: RuntimeArtifactStore;
   private usageCollector: UsageCollector;
+  private readonly warnedMissingWorkspaceExecutions = new Set<string>();
 
   constructor(config: OrbytEngineConfig = {}) {
     // Validate and apply defaults
@@ -338,6 +339,8 @@ export class OrbytEngine {
           batchSize: usageSpool?.batchSize,
           flushIntervalMs: usageSpool?.flushIntervalMs,
           maxRetryAttempts: usageSpool?.maxRetryAttempts,
+          sentRetentionDays: usageSpool?.sentRetentionDays,
+          failedRetentionDays: usageSpool?.failedRetentionDays,
           transport,
         });
       } else {
@@ -550,6 +553,9 @@ export class OrbytEngine {
 
     await this.executionEngine.start();
     this.isStarted = true;
+
+    // Collector health is diagnostics-only and must never block startup.
+    void this.emitUsageCollectorHealthTelemetry('startup');
 
     this.log('info', 'Orbyt Engine started');
   }
@@ -901,6 +907,16 @@ export class OrbytEngine {
         return await this.dryRun(parsedWorkflow, options);
       }
 
+      // Phase 3: enforce pre-execution usage quota policy before running workflow.
+      const quotaDecision = await this.evaluatePreExecutionQuota(parsedWorkflow, internalContext);
+      if (quotaDecision.decision === 'deny_limit_reached') {
+        this.log('warn', 'Execution blocked by usage quota policy', quotaDecision.snapshot);
+        return this.createQuotaDeniedResult(parsedWorkflow, internalContext, quotaDecision);
+      }
+      if (quotaDecision.decision === 'allow_with_warning') {
+        this.log('warn', 'Execution near usage quota threshold', quotaDecision.snapshot);
+      }
+
       // ============================================================================
       // INTELLIGENCE LAYERS (Foundation - doesn't change execution yet)
       // ============================================================================
@@ -1099,6 +1115,176 @@ export class OrbytEngine {
     return result;
   }
 
+  private async evaluatePreExecutionQuota(
+    workflow: ParsedWorkflow,
+    internalContext: any,
+  ): Promise<QuotaDecision> {
+    const workspaceId = internalContext?._ownership?.workspaceId || 'unknown';
+    const product = internalContext?._billing?.effectiveProduct || 'orbyt';
+    const isBillable = internalContext?._billing?.isBillable === true;
+
+    const policy = this.resolveQuotaPolicy(internalContext?._ownership?.subscriptionTier);
+    const dayStartMs = this.getUtcDayStartMs(Date.now());
+    const periodStart = new Date(dayStartMs).toISOString().slice(0, 10);
+
+    const defaultSnapshot = {
+      workspaceId,
+      periodStart,
+      policy: policy ?? {
+        workflowRuns: Number.MAX_SAFE_INTEGER,
+        stepExecutions: Number.MAX_SAFE_INTEGER,
+        adapterCalls: Number.MAX_SAFE_INTEGER,
+        computeMs: Number.MAX_SAFE_INTEGER,
+        warningRatio: 1,
+      },
+      consumed: {
+        workflowRuns: 0,
+        stepExecutions: 0,
+        adapterCalls: 0,
+        computeMs: 0,
+      },
+      projected: {
+        workflowRuns: 0,
+        stepExecutions: 0,
+        adapterCalls: 0,
+        computeMs: 0,
+      },
+    };
+
+    if (!isBillable || !policy) {
+      return {
+        decision: 'allow',
+        reason: !isBillable ? 'non-billable execution' : 'quota policy not enforced for subscription tier',
+        snapshot: defaultSnapshot,
+      };
+    }
+
+    const usage = await this.getUsage({
+      from: dayStartMs,
+      to: Date.now(),
+      workspaceId,
+      product,
+      groupBy: 'none',
+    });
+
+    const consumed = {
+      workflowRuns: usage.byType['usage.workflow.run'] ?? 0,
+      stepExecutions: usage.byType['usage.step.execute'] ?? 0,
+      adapterCalls: usage.byType['usage.adapter.call'] ?? 0,
+      computeMs: usage.totalDurationMs ?? 0,
+    };
+
+    const projected = {
+      workflowRuns: consumed.workflowRuns + 1,
+      stepExecutions: consumed.stepExecutions + workflow.steps.length,
+      adapterCalls: consumed.adapterCalls + workflow.steps.length,
+      computeMs: consumed.computeMs,
+    };
+
+    const snapshot = {
+      workspaceId,
+      periodStart,
+      policy,
+      consumed,
+      projected,
+    };
+
+    if (projected.workflowRuns > policy.workflowRuns) {
+      return {
+        decision: 'deny_limit_reached',
+        reason: 'daily workflow run quota reached',
+        snapshot,
+      };
+    }
+    if (projected.stepExecutions > policy.stepExecutions) {
+      return {
+        decision: 'deny_limit_reached',
+        reason: 'daily step execution quota reached',
+        snapshot,
+      };
+    }
+    if (projected.adapterCalls > policy.adapterCalls) {
+      return {
+        decision: 'deny_limit_reached',
+        reason: 'daily adapter call quota reached',
+        snapshot,
+      };
+    }
+    if (projected.computeMs > policy.computeMs) {
+      return {
+        decision: 'deny_limit_reached',
+        reason: 'daily compute quota reached',
+        snapshot,
+      };
+    }
+
+    const warningThresholds = {
+      workflowRuns: Math.floor(policy.workflowRuns * policy.warningRatio),
+      stepExecutions: Math.floor(policy.stepExecutions * policy.warningRatio),
+      adapterCalls: Math.floor(policy.adapterCalls * policy.warningRatio),
+      computeMs: Math.floor(policy.computeMs * policy.warningRatio),
+    };
+
+    const nearQuota = projected.workflowRuns >= warningThresholds.workflowRuns
+      || projected.stepExecutions >= warningThresholds.stepExecutions
+      || projected.adapterCalls >= warningThresholds.adapterCalls
+      || projected.computeMs >= warningThresholds.computeMs;
+
+    if (nearQuota) {
+      return {
+        decision: 'allow_with_warning',
+        reason: 'daily usage near quota threshold',
+        snapshot,
+      };
+    }
+
+    return {
+      decision: 'allow',
+      reason: 'within daily quota',
+      snapshot,
+    };
+  }
+
+  private resolveQuotaPolicy(subscriptionTier?: string): QuotaPolicy | undefined {
+    const tier = (subscriptionTier || 'free').toLowerCase();
+
+    if (tier === 'enterprise' || tier === 'business') {
+      return this.config.quotaPolicies.enterprise;
+    }
+
+    if (tier === 'pro' || tier === 'professional') {
+      return this.config.quotaPolicies.pro;
+    }
+
+    return this.config.quotaPolicies.free;
+  }
+
+  private createQuotaDeniedResult(
+    workflow: ParsedWorkflow,
+    internalContext: any,
+    decision: QuotaDecision,
+  ): WorkflowResult {
+    const now = new Date();
+
+    return {
+      workflowName: workflow.name || workflow.metadata?.name || 'unnamed',
+      executionId: internalContext?._identity?.executionId || `quota-denied-${Date.now()}`,
+      status: 'failure',
+      stepResults: new Map(),
+      duration: 0,
+      startedAt: now,
+      completedAt: now,
+      error: new Error(`${decision.reason} (deny_limit_reached)`),
+      metadata: {
+        totalSteps: workflow.steps.length,
+        successfulSteps: 0,
+        failedSteps: 0,
+        skippedSteps: workflow.steps.length,
+        phases: 0,
+      },
+    };
+  }
+
   private async executeDistributedWorkflow(
     workflow: ParsedWorkflow,
     execOptions: ExecutionOptions,
@@ -1257,19 +1443,90 @@ export class OrbytEngine {
    * 
    * @param event - Usage event to record
    */
-  private recordUsageEvent(event: any): void {
+  private recordUsageEvent(event: UsageEvent): void {
+    const normalizedEvent = this.normalizeUsageEventForBilling(event);
+
     // Fire-and-forget: record usage asynchronously without blocking
     process.nextTick(async () => {
       try {
-        await this.usageCollector.record(event);
+        await this.usageCollector.record(normalizedEvent);
       } catch (error) {
         // Log but don't propagate - usage tracking must never fail execution
         this.log('debug', 'Usage collection failed (non-fatal)', {
           error: error instanceof Error ? error.message : String(error),
-          eventType: event.type,
-          executionId: event.executionId,
+          eventType: normalizedEvent.type,
+          executionId: normalizedEvent.executionId,
         });
       }
+    });
+  }
+
+  /**
+   * Guard billing integrity by requiring workspace identity for billable usage.
+   * If workspace is missing, event is kept for observability but marked non-billable.
+   */
+  private normalizeUsageEventForBilling(event: UsageEvent): UsageEvent {
+    if (event.billable !== true || event.workspaceId) {
+      return event;
+    }
+
+    const executionKey = event.executionId || event.id;
+    if (!this.warnedMissingWorkspaceExecutions.has(executionKey)) {
+      this.warnedMissingWorkspaceExecutions.add(executionKey);
+      this.log('warn', 'Billable usage event missing workspaceId; forcing non-billable', {
+        eventType: event.type,
+        executionId: event.executionId,
+      });
+    }
+
+    return {
+      ...event,
+      billable: false,
+      metadata: {
+        ...event.metadata,
+        billingGuard: 'workspace-id-missing',
+        originalBillable: true,
+      },
+    };
+  }
+
+  /**
+   * Expose usage collector health for diagnostics and CLI admin checks.
+   */
+  async getUsageCollectorHealth(): Promise<UsageCollectorHealthStatus> {
+    try {
+      const status = await this.usageCollector.healthCheck?.();
+      return status ?? {
+        healthy: true,
+        detail: 'healthCheck not implemented by collector',
+      };
+    } catch (error) {
+      return {
+        healthy: false,
+        detail: `usage collector health check failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /**
+   * Best-effort collector health telemetry.
+   */
+  private async emitUsageCollectorHealthTelemetry(source: 'startup' | 'manual'): Promise<void> {
+    const status = await this.getUsageCollectorHealth();
+
+    if (status.healthy) {
+      this.log('debug', 'Usage collector health', {
+        source,
+        detail: status.detail,
+        lastSuccessAt: status.lastSuccessAt,
+      });
+      return;
+    }
+
+    this.log('warn', 'Usage collector reported unhealthy status', {
+      source,
+      detail: status.detail,
+      lastSuccessAt: status.lastSuccessAt,
     });
   }
 
@@ -1702,6 +1959,262 @@ export class OrbytEngine {
     };
   }
 
+  /**
+   * Build persisted daily aggregate usage counters from raw usage archives.
+   */
+  runDailyUsageAggregation(): DailyUsageAggregationRunResult {
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const eventsDir = join(usageBaseDir, 'events');
+    const aggregatesDir = join(usageBaseDir, 'aggregates');
+    const aggregateFile = join(aggregatesDir, 'daily.json');
+    const watermarkFile = join(aggregatesDir, 'watermark.json');
+
+    if (!existsSync(aggregatesDir)) {
+      mkdirSync(aggregatesDir, { recursive: true });
+    }
+
+    const existingBuckets = this.readDailyAggregateBuckets(aggregateFile);
+    const bucketMap = new Map<string, DailyUsageAggregateBucket>();
+    for (const bucket of existingBuckets) {
+      bucketMap.set(this.aggregateBucketKey(bucket.day, bucket.workspaceId, bucket.product), bucket);
+    }
+
+    const state = this.readDailyAggregationState(watermarkFile);
+    const watermarkDay = state.watermarkDay;
+
+    if (!existsSync(eventsDir)) {
+      writeFileSync(aggregateFile, JSON.stringify(existingBuckets, null, 2), 'utf8');
+      writeFileSync(watermarkFile, JSON.stringify(state, null, 2), 'utf8');
+      return {
+        processedDays: 0,
+        updatedBuckets: 0,
+        watermarkDay,
+        aggregateFile,
+        watermarkFile,
+      };
+    }
+
+    const files = readdirSync(eventsDir)
+      .filter((name) => name.endsWith('.jsonl'))
+      .sort();
+
+    const pendingFiles = files.filter((name) => {
+      const day = name.replace(/\.jsonl$/, '');
+      return !watermarkDay || day > watermarkDay;
+    });
+
+    let processedDays = 0;
+    const updatedKeys = new Set<string>();
+    let latestWatermark = watermarkDay;
+
+    for (const file of pendingFiles) {
+      const day = file.replace(/\.jsonl$/, '');
+      const filePath = join(eventsDir, file);
+      let content = '';
+
+      try {
+        content = readFileSync(filePath, 'utf8');
+      } catch {
+        continue;
+      }
+
+      const lines = content.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+      for (const line of lines) {
+        let event: UsageEvent;
+        try {
+          event = JSON.parse(line) as UsageEvent;
+        } catch {
+          continue;
+        }
+
+        const workspaceId = event.workspaceId || 'unknown';
+        const product = event.product || 'unknown';
+        const key = this.aggregateBucketKey(day, workspaceId, product);
+        const existing = bucketMap.get(key) ?? {
+          day,
+          workspaceId,
+          product,
+          workflowRuns: 0,
+          stepExecutions: 0,
+          adapterCalls: 0,
+          computeMs: 0,
+          billableEvents: 0,
+          totalEvents: 0,
+          updatedAt: Date.now(),
+        };
+
+        existing.totalEvents += 1;
+        if (event.billable === true) {
+          existing.billableEvents += 1;
+        }
+
+        if (event.type === 'usage.workflow.run') {
+          existing.workflowRuns += 1;
+        } else if (event.type === 'usage.step.execute') {
+          existing.stepExecutions += 1;
+        } else if (event.type === 'usage.adapter.call') {
+          existing.adapterCalls += 1;
+        }
+
+        const durationMs = typeof event.metadata?.durationMs === 'number'
+          ? Math.max(0, event.metadata.durationMs)
+          : 0;
+        existing.computeMs += durationMs;
+        existing.updatedAt = Date.now();
+
+        bucketMap.set(key, existing);
+        updatedKeys.add(key);
+      }
+
+      processedDays += 1;
+      latestWatermark = day;
+    }
+
+    const nextBuckets = Array.from(bucketMap.values()).sort((a, b) => {
+      if (a.day !== b.day) return a.day.localeCompare(b.day);
+      if (a.workspaceId !== b.workspaceId) return a.workspaceId.localeCompare(b.workspaceId);
+      return a.product.localeCompare(b.product);
+    });
+
+    const nextState: DailyUsageAggregationState = {
+      watermarkDay: latestWatermark,
+      updatedAt: Date.now(),
+    };
+
+    writeFileSync(aggregateFile, JSON.stringify(nextBuckets, null, 2), 'utf8');
+    writeFileSync(watermarkFile, JSON.stringify(nextState, null, 2), 'utf8');
+
+    return {
+      processedDays,
+      updatedBuckets: updatedKeys.size,
+      watermarkDay: nextState.watermarkDay,
+      aggregateFile,
+      watermarkFile,
+    };
+  }
+
+  /**
+   * Read persisted daily usage aggregate counters.
+   */
+  getDailyUsageAggregates(options: DailyUsageAggregateQueryOptions = {}): DailyUsageAggregateBucket[] {
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const aggregateFile = join(usageBaseDir, 'aggregates', 'daily.json');
+    const buckets = this.readDailyAggregateBuckets(aggregateFile)
+      .filter((bucket) => (options.day ? bucket.day === options.day : true))
+      .filter((bucket) => (options.workspaceId ? bucket.workspaceId === options.workspaceId : true))
+      .filter((bucket) => (options.product ? bucket.product === options.product : true));
+
+    const limit = options.limit && options.limit > 0 ? options.limit : undefined;
+    return limit ? buckets.slice(0, limit) : buckets;
+  }
+
+  /**
+   * Build weekly/monthly rollups from daily aggregate counters.
+   */
+  runUsagePeriodRollups(): UsagePeriodRollupRunResult {
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const aggregatesDir = join(usageBaseDir, 'aggregates');
+    const weeklyFile = join(aggregatesDir, 'weekly.json');
+    const monthlyFile = join(aggregatesDir, 'monthly.json');
+
+    if (!existsSync(aggregatesDir)) {
+      mkdirSync(aggregatesDir, { recursive: true });
+    }
+
+    const daily = this.readDailyAggregateBuckets(join(aggregatesDir, 'daily.json'));
+    const weeklyMap = new Map<string, PeriodUsageRollupBucket>();
+    const monthlyMap = new Map<string, PeriodUsageRollupBucket>();
+
+    for (const bucket of daily) {
+      const weekStart = this.getWeekStartDay(bucket.day);
+      const monthStart = this.getMonthStartDay(bucket.day);
+
+      const weeklyKey = this.rollupBucketKey('weekly', weekStart, bucket.workspaceId, bucket.product);
+      const monthlyKey = this.rollupBucketKey('monthly', monthStart, bucket.workspaceId, bucket.product);
+
+      const weekly = weeklyMap.get(weeklyKey) ?? {
+        periodType: 'weekly' as const,
+        periodStart: weekStart,
+        workspaceId: bucket.workspaceId,
+        product: bucket.product,
+        workflowRuns: 0,
+        stepExecutions: 0,
+        adapterCalls: 0,
+        computeMs: 0,
+        billableEvents: 0,
+        totalEvents: 0,
+        updatedAt: Date.now(),
+      };
+      weekly.workflowRuns += bucket.workflowRuns;
+      weekly.stepExecutions += bucket.stepExecutions;
+      weekly.adapterCalls += bucket.adapterCalls;
+      weekly.computeMs += bucket.computeMs;
+      weekly.billableEvents += bucket.billableEvents;
+      weekly.totalEvents += bucket.totalEvents;
+      weekly.updatedAt = Date.now();
+      weeklyMap.set(weeklyKey, weekly);
+
+      const monthly = monthlyMap.get(monthlyKey) ?? {
+        periodType: 'monthly' as const,
+        periodStart: monthStart,
+        workspaceId: bucket.workspaceId,
+        product: bucket.product,
+        workflowRuns: 0,
+        stepExecutions: 0,
+        adapterCalls: 0,
+        computeMs: 0,
+        billableEvents: 0,
+        totalEvents: 0,
+        updatedAt: Date.now(),
+      };
+      monthly.workflowRuns += bucket.workflowRuns;
+      monthly.stepExecutions += bucket.stepExecutions;
+      monthly.adapterCalls += bucket.adapterCalls;
+      monthly.computeMs += bucket.computeMs;
+      monthly.billableEvents += bucket.billableEvents;
+      monthly.totalEvents += bucket.totalEvents;
+      monthly.updatedAt = Date.now();
+      monthlyMap.set(monthlyKey, monthly);
+    }
+
+    const weeklyBuckets = Array.from(weeklyMap.values()).sort((a, b) => {
+      if (a.periodStart !== b.periodStart) return a.periodStart.localeCompare(b.periodStart);
+      if (a.workspaceId !== b.workspaceId) return a.workspaceId.localeCompare(b.workspaceId);
+      return a.product.localeCompare(b.product);
+    });
+    const monthlyBuckets = Array.from(monthlyMap.values()).sort((a, b) => {
+      if (a.periodStart !== b.periodStart) return a.periodStart.localeCompare(b.periodStart);
+      if (a.workspaceId !== b.workspaceId) return a.workspaceId.localeCompare(b.workspaceId);
+      return a.product.localeCompare(b.product);
+    });
+
+    writeFileSync(weeklyFile, JSON.stringify(weeklyBuckets, null, 2), 'utf8');
+    writeFileSync(monthlyFile, JSON.stringify(monthlyBuckets, null, 2), 'utf8');
+
+    return {
+      weeklyBuckets: weeklyBuckets.length,
+      monthlyBuckets: monthlyBuckets.length,
+      weeklyFile,
+      monthlyFile,
+    };
+  }
+
+  /**
+   * Read persisted weekly/monthly usage rollups.
+   */
+  getUsagePeriodRollups(options: UsagePeriodRollupQueryOptions): PeriodUsageRollupBucket[] {
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const file = join(usageBaseDir, 'aggregates', `${options.periodType}.json`);
+    const rollups = this.readPeriodRollupBuckets(file)
+      .filter((bucket) => bucket.periodType === options.periodType)
+      .filter((bucket) => (options.periodStart ? bucket.periodStart === options.periodStart : true))
+      .filter((bucket) => (options.workspaceId ? bucket.workspaceId === options.workspaceId : true))
+      .filter((bucket) => (options.product ? bucket.product === options.product : true));
+
+    const limit = options.limit && options.limit > 0 ? options.limit : undefined;
+    return limit ? rollups.slice(0, limit) : rollups;
+  }
+
   private matchesUsageQuery(
     event: UsageEvent,
     options: EngineUsageQueryOptions,
@@ -1775,6 +2288,94 @@ export class OrbytEngine {
     }
 
     return 'non-trigger';
+  }
+
+  private readDailyAggregateBuckets(path: string): DailyUsageAggregateBucket[] {
+    if (!existsSync(path)) {
+      return [];
+    }
+
+    try {
+      const raw = readFileSync(path, 'utf8');
+      const parsed = JSON.parse(raw) as DailyUsageAggregateBucket[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private readDailyAggregationState(path: string): DailyUsageAggregationState {
+    if (!existsSync(path)) {
+      return {
+        updatedAt: Date.now(),
+      };
+    }
+
+    try {
+      const raw = readFileSync(path, 'utf8');
+      const parsed = JSON.parse(raw) as DailyUsageAggregationState;
+      return {
+        watermarkDay: parsed.watermarkDay,
+        updatedAt: parsed.updatedAt || Date.now(),
+      };
+    } catch {
+      return {
+        updatedAt: Date.now(),
+      };
+    }
+  }
+
+  private aggregateBucketKey(day: string, workspaceId: string, product: string): string {
+    return `${day}|${workspaceId}|${product}`;
+  }
+
+  private readPeriodRollupBuckets(path: string): PeriodUsageRollupBucket[] {
+    if (!existsSync(path)) {
+      return [];
+    }
+
+    try {
+      const raw = readFileSync(path, 'utf8');
+      const parsed = JSON.parse(raw) as PeriodUsageRollupBucket[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private getUtcDayStartMs(timestamp: number): number {
+    const d = new Date(timestamp);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  }
+
+  private getWeekStartDay(day: string): string {
+    const date = new Date(`${day}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime())) {
+      return day;
+    }
+
+    const weekday = date.getUTCDay();
+    const shift = weekday === 0 ? 6 : weekday - 1;
+    date.setUTCDate(date.getUTCDate() - shift);
+    return date.toISOString().slice(0, 10);
+  }
+
+  private getMonthStartDay(day: string): string {
+    const date = new Date(`${day}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime())) {
+      return day;
+    }
+
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-01`;
+  }
+
+  private rollupBucketKey(
+    periodType: 'weekly' | 'monthly',
+    periodStart: string,
+    workspaceId: string,
+    product: string,
+  ): string {
+    return `${periodType}|${periodStart}|${workspaceId}|${product}`;
   }
 
   /**

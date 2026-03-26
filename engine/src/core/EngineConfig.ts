@@ -68,10 +68,29 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
       batchSize: config.usageSpool?.batchSize ?? 200,
       flushIntervalMs: config.usageSpool?.flushIntervalMs ?? 60_000,
       maxRetryAttempts: config.usageSpool?.maxRetryAttempts ?? 10,
+      sentRetentionDays: config.usageSpool?.sentRetentionDays ?? 7,
+      failedRetentionDays: config.usageSpool?.failedRetentionDays ?? 30,
       billingEndpoint: config.usageSpool?.billingEndpoint,
       billingApiKey: config.usageSpool?.billingApiKey,
       requestTimeoutMs: config.usageSpool?.requestTimeoutMs ?? 10_000,
-    }
+    },
+    quotaPolicies: {
+      free: config.quotaPolicies?.free ?? {
+        workflowRuns: 200,
+        stepExecutions: 5000,
+        adapterCalls: 5000,
+        computeMs: 2 * 60 * 60 * 1000,
+        warningRatio: 0.85,
+      },
+      pro: config.quotaPolicies?.pro ?? {
+        workflowRuns: 5000,
+        stepExecutions: 100000,
+        adapterCalls: 100000,
+        computeMs: 24 * 60 * 60 * 1000,
+        warningRatio: 0.9,
+      },
+      enterprise: config.quotaPolicies?.enterprise,
+    },
   };
 }
 
@@ -118,6 +137,14 @@ export function validateConfig(config: OrbytEngineConfig): void {
     throw new Error('usageSpool.maxRetryAttempts must be at least 1');
   }
 
+  if (config.usageSpool?.sentRetentionDays !== undefined && config.usageSpool.sentRetentionDays < 1) {
+    throw new Error('usageSpool.sentRetentionDays must be at least 1 day');
+  }
+
+  if (config.usageSpool?.failedRetentionDays !== undefined && config.usageSpool.failedRetentionDays < 1) {
+    throw new Error('usageSpool.failedRetentionDays must be at least 1 day');
+  }
+
   if (config.scheduler?.job?.workerBackend !== undefined && !['node', 'tokio'].includes(config.scheduler.job.workerBackend)) {
     throw new Error("scheduler.job.workerBackend must be either 'node' or 'tokio'");
   }
@@ -141,4 +168,28 @@ export function validateConfig(config: OrbytEngineConfig): void {
   if (config.distributed?.leaseExtensionMs !== undefined && config.distributed.leaseExtensionMs < 500) {
     throw new Error('distributed.leaseExtensionMs must be at least 500ms');
   }
+
+  const validateQuotaPolicy = (name: 'free' | 'pro' | 'enterprise', policy?: OrbytEngineConfig['quotaPolicies'] extends infer T ? T extends object ? T[keyof T] : never : never): void => {
+    if (!policy) return;
+
+    if (policy.workflowRuns < 1) {
+      throw new Error(`quotaPolicies.${name}.workflowRuns must be at least 1`);
+    }
+    if (policy.stepExecutions < 1) {
+      throw new Error(`quotaPolicies.${name}.stepExecutions must be at least 1`);
+    }
+    if (policy.adapterCalls < 1) {
+      throw new Error(`quotaPolicies.${name}.adapterCalls must be at least 1`);
+    }
+    if (policy.computeMs < 1) {
+      throw new Error(`quotaPolicies.${name}.computeMs must be at least 1`);
+    }
+    if (!(policy.warningRatio > 0 && policy.warningRatio <= 1)) {
+      throw new Error(`quotaPolicies.${name}.warningRatio must be > 0 and <= 1`);
+    }
+  };
+
+  validateQuotaPolicy('free', config.quotaPolicies?.free);
+  validateQuotaPolicy('pro', config.quotaPolicies?.pro);
+  validateQuotaPolicy('enterprise', config.quotaPolicies?.enterprise);
 }

@@ -24,6 +24,19 @@ export function generateUsageEventId(): string {
 }
 
 /**
+ * Generate a default idempotency key for usage ingestion deduplication.
+ *
+ * Keys are stable for the event object lifetime and unique per generated event.
+ */
+export function generateUsageIdempotencyKey(
+  eventType: CoreUsageEventType,
+  executionId: string,
+  eventId: string,
+): string {
+  return `${eventType}:${executionId}:${eventId}`;
+}
+
+/**
  * Create a workflow run usage event
  */
 export function createWorkflowRunEvent(options: {
@@ -35,9 +48,11 @@ export function createWorkflowRunEvent(options: {
   executionMode?: string;
   pricingTier?: string;
   billable?: boolean;
+  idempotencyKey?: string;
 }): UsageEvent {
+  const id = generateUsageEventId();
   return {
-    id: generateUsageEventId(),
+    id,
     type: CoreUsageEventType.WORKFLOW_RUN,
     timestamp: Date.now(),
     product: 'orbyt',
@@ -48,6 +63,8 @@ export function createWorkflowRunEvent(options: {
     executionMode: options.executionMode,
     pricingTier: options.pricingTier,
     billable: options.billable ?? true,
+    idempotencyKey: options.idempotencyKey
+      ?? generateUsageIdempotencyKey(CoreUsageEventType.WORKFLOW_RUN, options.executionId, id),
     metadata: options.metadata ?? {
       success: true,
     },
@@ -72,9 +89,11 @@ export function createStepExecuteEvent(options: {
   metadata?: UsageEventMetadata;
   pricingTier?: string;
   billable?: boolean;
+  idempotencyKey?: string;
 }): UsageEvent {
+  const id = generateUsageEventId();
   return {
-    id: generateUsageEventId(),
+    id,
     type: CoreUsageEventType.STEP_EXECUTE,
     timestamp: Date.now(),
     product: 'orbyt',
@@ -87,6 +106,8 @@ export function createStepExecuteEvent(options: {
     adapterName: options.adapterName,
     pricingTier: options.pricingTier,
     billable: options.billable ?? true,
+    idempotencyKey: options.idempotencyKey
+      ?? generateUsageIdempotencyKey(CoreUsageEventType.STEP_EXECUTE, options.executionId, id),
     metadata: {
       ...options.metadata,
       durationMs: options.durationMs,
@@ -115,9 +136,11 @@ export function createAdapterCallEvent(options: {
   metadata?: UsageEventMetadata;
   pricingTier?: string;
   billable?: boolean;
+  idempotencyKey?: string;
 }): UsageEvent {
+  const id = generateUsageEventId();
   return {
-    id: generateUsageEventId(),
+    id,
     type: CoreUsageEventType.ADAPTER_CALL,
     timestamp: Date.now(),
     product: 'orbyt',
@@ -130,6 +153,8 @@ export function createAdapterCallEvent(options: {
     adapterName: options.adapterName,
     pricingTier: options.pricingTier,
     billable: options.billable ?? true,
+    idempotencyKey: options.idempotencyKey
+      ?? generateUsageIdempotencyKey(CoreUsageEventType.ADAPTER_CALL, options.executionId, id),
     metadata: {
       ...options.metadata,
       durationMs: options.durationMs,
@@ -151,9 +176,11 @@ export function createTriggerFireEvent(options: {
   metadata?: UsageEventMetadata;
   pricingTier?: string;
   billable?: boolean;
+  idempotencyKey?: string;
 }): UsageEvent {
+  const id = generateUsageEventId();
   return {
-    id: generateUsageEventId(),
+    id,
     type: CoreUsageEventType.TRIGGER_FIRE,
     timestamp: Date.now(),
     product: 'orbyt',
@@ -163,6 +190,8 @@ export function createTriggerFireEvent(options: {
     workspaceId: options.workspaceId,
     pricingTier: options.pricingTier,
     billable: options.billable ?? true,
+    idempotencyKey: options.idempotencyKey
+      ?? generateUsageIdempotencyKey(CoreUsageEventType.TRIGGER_FIRE, options.executionId, id),
     metadata: options.metadata ?? {
       success: true,
     },
