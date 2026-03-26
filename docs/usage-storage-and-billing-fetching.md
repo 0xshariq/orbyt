@@ -1,245 +1,340 @@
-# Orbyt Usage Storage and Billing Fetching Plan
+# Orbyt Usage Storage and Billing Fetching
 
-## Purpose
+## Document Goal
 
-Define a proper, production-friendly approach for:
+Define a practical and phased plan for Orbyt to:
 
-- storing usage in real time
-- ensuring usage is emitted through the core `UsageCollector` interface
-- allowing billing engine fetch/aggregation on daily, weekly, or monthly windows
-- enabling quota restriction based on purchased subscription
+- store usage in real time
+- emit usage only through the core `UsageCollector` contract
+- enforce subscription limits using near real-time usage counters
+- provide only foundational billing-fetch capabilities in v1
 
-This plan is aligned with `ecosystem-core/src/usage/UsageTypes.ts` and `UsageCollector` contract.
+This plan intentionally keeps billing computation lightweight until Orbyt engine maturity and v1 release stabilization.
 
-## Design Principles
+## Scope and Staging
 
-- Usage must be recorded in real time at event boundaries.
-- Event writes must never block critical execution path.
-- Usage facts must be engine-generated, not user-provided.
-- Storage should be append-only for auditability.
-- Billing fetch cadence (daily/weekly/monthly) should read from pre-aggregated windows where possible.
-- Enforcement path should support near real-time counters, while invoicing can run on periodic windows.
+### In Scope for v1
 
-## Core Contract: UsageCollector Is Mandatory
+- reliable real-time usage event capture
+- durable local spool under `.orbyt/usage`
+- optional HTTP transport for usage batch delivery
+- dedup/idempotency foundations
+- daily usage aggregation job foundation
+- basic weekly/monthly windows available as optional rollups
+- quota restriction based on near real-time counters
 
-All usage emission must go through the core `UsageCollector` interface.
+### Out of Scope for v1 (Post-v1)
 
-Required method:
+- full invoice generation and tax logic
+- complex pricing rules and retroactive repricing
+- revenue recognition workflows
+- advanced billing dispute automation
+
+## Current State in Orbyt (Already Implemented)
+
+Orbyt already has strong building blocks:
+
+- `FileSpoolUsageCollector` is available and durable.
+- `NoOpUsageCollector` exists for testing-only fallback.
+- `UsageEventFactory` creates canonical usage events.
+- Engine records usage asynchronously and non-fatally.
+- Engine flushes/closes collector on shutdown.
+- Default spool path is `.orbyt/usage`.
+
+Implementation references:
+
+- `products/orbyt/engine/src/usage/FileSpoolUsageCollector.ts`
+- `products/orbyt/engine/src/usage/UsageEventFactory.ts`
+- `products/orbyt/engine/src/core/OrbytEngine.ts`
+- `products/orbyt/engine/src/core/EngineConfig.ts`
+- `ecosystem-core/src/usage/UsageTypes.ts`
+
+## Core Contract Rule
+
+All usage events must go through `UsageCollector` from core.
+
+Required:
 
 - `record(event: UsageEvent): Promise<void>`
 
-Optional methods (recommended for efficiency):
+Recommended:
 
 - `recordBatch(events: UsageEvent[]): Promise<void>`
 - `flush(): Promise<void>`
 - `healthCheck(): Promise<{ healthy: boolean; detail?: string; lastSuccessAt?: number }>`
+- `close(): Promise<void>`
 
-`UsageCollector` target should be:
+Collector identity for production ingestion:
 
-- `billing-engine` for production billing ingestion
+- `contractVersion = '1.0'`
+- `target = 'billing-engine'`
 
-## Real-Time Usage Storage Strategy
+## Storage Strategy
 
-Use a dual-layer storage pattern.
+Use a two-layer model.
 
-### Layer A: Real-Time Raw Event Log (Source of Truth)
+### Layer A: Raw Event Source of Truth (Real Time)
 
-Write each `UsageEvent` immediately via `UsageCollector.record` into an append-only store.
+Every usage event is appended immediately to immutable event storage.
 
-Recommended data model per event:
+For local/dev v1:
 
-- id
-- idempotencyKey
-- timestamp
-- product
-- executionId
-- workflowId
-- workspaceId
-- userId
-- type
-- adapterName
-- billable
-- metadata.durationMs
-- metadata.success
+- `.orbyt/usage/events/YYYY-MM-DD.jsonl`
 
-Recommended persistence options:
+For delivery retry state:
 
-- local/dev: JSONL files under `.orbyt/usage/events/YYYY/MM/DD/*.jsonl`
-- production: durable event table or log-backed queue with at-least-once delivery
+- `.orbyt/usage/pending/*.json`
+- `.orbyt/usage/sent/*.json`
+- `.orbyt/usage/failed/*.json`
 
-Why append-only raw events:
+Why this model:
 
-- replayable for billing corrections
-- supports audits and disputes
-- allows re-aggregation if pricing or logic changes
+- replay support
+- auditability
+- correction/re-aggregation support
+- resilience during network or billing endpoint outages
 
-### Layer B: Near Real-Time Counters (Fast Enforcement)
+### Layer B: Near Real-Time Aggregates (Enforcement Read Model)
 
-Maintain rolling counters keyed by:
+Maintain counters keyed by:
 
-- workspaceId
-- product
-- metric (workflow_runs, adapter_calls, compute_ms, etc.)
-- periodStart (day/week/month)
+- `workspaceId`
+- `product`
+- `metric`
+- `periodType` (`daily`, `weekly`, `monthly`)
+- `periodStart`
 
-These counters are updated asynchronously from raw events and used for:
+Example metrics:
 
-- quota checks
-- soft/hard limit enforcement
-- fast API reads
+- `workflow_runs`
+- `step_executions`
+- `adapter_calls`
+- `compute_ms`
 
-This avoids scanning large raw logs during every request.
+This read model is used for fast allow/deny decisions and avoids scanning raw logs per request.
 
-## Billing Fetch Cadence (Daily, Weekly, Monthly)
+## Event Emission Policy
 
-Billing engine should fetch aggregates in windows:
+Emit events only at deterministic engine lifecycle points:
 
-- daily: default recommended for most teams
-- weekly: optional for lower volume plans
-- monthly: invoice finalization window
+- workflow started/run (`usage.workflow.run`)
+- step executed (`usage.step.execute`)
+- adapter call (`usage.adapter.call`)
+- trigger fired (`usage.trigger.fire`)
 
-### Recommended Execution
+Required fields per event for v1 enforcement/billing foundation:
 
-1. Ingest new raw events continuously (real time)
-2. Update counters continuously (near real time)
-3. Run scheduled billing jobs:
-   - daily aggregation job (primary)
-   - optional weekly summary job
-   - monthly invoice close job
-4. Mark processed watermark per workspace and product
+- `id`
+- `timestamp`
+- `type`
+- `product`
+- `executionId`
+- `workspaceId` (mandatory for multi-tenant billing)
+- `userId` (recommended)
+- `billable`
+- `idempotencyKey` (recommended)
 
-Use watermark checkpoints to guarantee idempotent fetching:
+## Billing Fetching Approach (Foundational for v1)
 
-- `lastProcessedTimestamp` per workspace/product/job
+Billing fetching in v1 should focus on usage availability, not final money logic.
 
-## Proper End-to-End Flow
+### Fetch Windows
 
-1. Orbyt engine finishes a billable action (workflow run, step execution, adapter call).
-2. Engine emits canonical `UsageEvent`.
-3. Orbyt-specific collector implementing core `UsageCollector` records event immediately.
-4. Event is appended to raw log (Layer A).
-5. Aggregator updates period counters (Layer B).
-6. Subscription enforcement reads Layer B to allow or restrict usage.
-7. Billing engine scheduled job fetches daily/weekly/monthly aggregates for charges.
+- Daily: primary and recommended
+- Weekly: optional summarization
+- Monthly: optional summary for reporting
 
-## Restriction Logic Against Subscription
+### Fetch Job Responsibilities
 
-Use two thresholds per metric:
+- read new usage since last watermark
+- aggregate by workspace/product/period
+- upsert counters
+- persist watermark checkpoints
+- emit operational logs/metrics
 
-- soft limit: allow execution but emit warning/notification
-- hard limit: block billable execution
+### Watermark Model
 
-Enforcement evaluation inputs:
+Store:
 
-- plan entitlements (included units)
-- current period consumed units (from Layer B)
-- overage policy (block, allow with overage, or grace)
+- `jobName`
+- `workspaceId`
+- `product`
+- `lastProcessedTimestamp`
+- `updatedAt`
 
-Decision output:
+This makes jobs restart-safe and idempotent.
 
-- allow
-- allow_with_warning
-- deny_limit_reached
+## Subscription Restriction Model
 
-## Idempotency and Correctness
+For each request/workflow run:
 
-To avoid double billing:
+1. Resolve active plan entitlements.
+2. Read current period counters.
+3. Evaluate policy.
+4. Return decision:
+   - `allow`
+   - `allow_with_warning`
+   - `deny_limit_reached`
 
-- enforce unique constraint on `idempotencyKey` (or fallback `id`)
-- deduplicate at collector ingestion point
-- scheduled billing jobs must be restart-safe and idempotent
+Policy levels:
 
-For late or out-of-order events:
+- soft limit: warn but allow
+- hard limit: deny billable execution
 
-- accept event if within configurable lateness window
-- trigger re-aggregation for affected day/week/month bucket
+## Reliability and Data Correctness
 
-## Reliability Requirements
+Must-have guarantees:
 
-Collector behavior should follow core contract expectations:
+- non-fatal usage recording (never fail workflow execution)
+- at-least-once delivery from spool to ingestion endpoint
+- idempotent ingestion (dedupe by `idempotencyKey` or `id`)
+- graceful shutdown via `flush` and `close`
 
-- non-fatal: never crash workflow for usage write errors
-- resilient: retry with backoff for transient failures
-- bounded: in-memory buffer with flush thresholds
-- graceful shutdown: call `flush` and `close`
+Late event behavior:
 
-Recommended SLOs:
+- accept late events within configured lateness window
+- re-aggregate impacted periods only
 
-- P95 `record` latency under 50 ms
-- no event loss on normal shutdown
-- recovery replay supported after restart
+## Implementation Plan
 
-## Suggested Storage Schema (Logical)
+This section is the execution plan requested for engineering.
 
-### Raw Events
+### Phase 0: Hardening Existing Foundation (1-2 days)
 
-- usage_events
-  - event_id (pk)
-  - idempotency_key (unique)
-  - ts
-  - workspace_id
-  - user_id
-  - product
-  - execution_id
-  - workflow_id
-  - event_type
-  - adapter_name
-  - billable
-  - duration_ms
-  - success
-  - metadata_json
+Deliverables:
 
-Indexes:
+- confirm `workspaceId` presence across all billable paths
+- add/verify `idempotencyKey` generation in event factory
+- add collector health telemetry wiring
+- add docs for `.orbyt/usage` directory semantics
 
-- (workspace_id, ts)
-- (product, ts)
-- (event_type, ts)
-- (idempotency_key unique)
+Acceptance criteria:
 
-### Aggregates
+- usage events are emitted for workflow, step, adapter, trigger paths
+- no collector exception propagates to workflow execution
 
-- usage_aggregates
-  - workspace_id
-  - product
-  - period_type (daily | weekly | monthly)
-  - period_start
-  - metric
-  - consumed
-  - updated_at
+### Phase 1: Real-Time Usage Storage GA in Orbyt (3-5 days)
 
-Unique key:
+Deliverables:
 
-- (workspace_id, product, period_type, period_start, metric)
+- keep `FileSpoolUsageCollector` as default collector
+- ensure archive + pending/sent/failed handling is stable
+- add CLI/admin command to inspect spool health summary
+- add retention policy knobs for sent/failed archives
 
-## Implementation Guidance for Orbyt
+Acceptance criteria:
 
-1. Add `OrbytUsageCollector` that implements core `UsageCollector`.
-2. Wire collector at engine lifecycle points where `UsageEvent` is already available.
-3. Persist raw events immediately (append-only).
-4. Add lightweight aggregator worker for counters.
-5. Add billing fetch jobs:
-   - daily as default
-   - weekly optional
-   - monthly close
-6. Add enforcement API that reads current counters and entitlements before execution.
+- events persist locally during endpoint outages
+- retries move entries from pending to sent or failed deterministically
+- engine shutdown flush is verified by test
 
-## Recommended Default Policy
+### Phase 2: Aggregation Foundation (Daily First) (3-5 days)
 
-- Real-time ingestion: enabled
-- Billing fetch: daily (primary)
-- Weekly fetch: enabled for analytics/sanity checks
-- Monthly fetch: invoice closure and reconciliation
-- Hard enforcement: enabled for free/pro tiers
-- Enterprise override: policy-based (contract dependent)
+Deliverables:
 
-## Why Daily Billing Fetch Is Better
+- implement small aggregator worker/job (can run in-process or as sidecar)
+- compute daily counters from raw events
+- persist daily aggregate store and watermark table/file
+- expose read API for quota checks
 
-Daily fetch gives a strong balance between cost and correctness:
+Acceptance criteria:
 
-- much cheaper than per-request billing computation
-- fresher than weekly/monthly-only processing
-- operationally simpler incident recovery
-- faster alerting for abnormal spikes
+- rerunning aggregation job does not double count
+- watermark resumes correctly after restart
+- daily counters match sampled raw logs
 
-Keep storage real time, keep billing fetch periodic.
-That combination is the best practical architecture.
+### Phase 3: Restriction Enforcement in Execution Path (2-4 days)
+
+Deliverables:
+
+- add pre-execution quota check hook
+- return deterministic allow/deny decision
+- record deny reasons with policy code
+
+Acceptance criteria:
+
+- requests above hard limit are blocked
+- soft limit emits warning signals
+- decisions are auditable with counter snapshot
+
+### Phase 4: Weekly/Monthly Foundational Rollups (2-3 days)
+
+Deliverables:
+
+- optional weekly and monthly rollup jobs from daily aggregates
+- basic reporting endpoint for period summaries
+
+Acceptance criteria:
+
+- weekly/monthly numbers reconcile with daily totals
+- no direct invoice logic required in v1
+
+### Phase 5: Post-v1 Billing Engine Expansion
+
+Future work (not required for v1):
+
+- pricing catalog integration
+- money calculation and invoices
+- credits, overages, tax, and adjustments
+
+## Minimal Technical Backlog
+
+### Orbyt Engine
+
+- validate event completeness in usage factory
+- enforce workspace-aware emission for billable events
+- expose usage health diagnostics
+
+### Usage Ingestion/Aggregation Component
+
+- add idempotent upsert logic for aggregates
+- add watermark persistence and recovery
+- add late-event reprocessing path
+
+### Policy/Restriction Layer
+
+- plan entitlement resolver
+- limit evaluator
+- deny/warn response contract
+
+## Suggested Initial Defaults
+
+- `usageSpool.enabled = true`
+- `usageSpool.flushIntervalMs = 60000`
+- `usageSpool.batchSize = 200`
+- `usageSpool.maxRetryAttempts = 10`
+- aggregation cadence: daily every 24h (plus optional manual run)
+- lateness window: 72h
+
+## Operational KPIs for v1
+
+- usage record success path P95 < 50 ms
+- pending spool growth rate remains bounded under normal endpoint health
+- zero workflow failures due to usage collector errors
+- aggregate mismatch rate under 0.1% in validation samples
+
+## Risks and Mitigations
+
+- Missing workspace identity in events:
+  Mitigation: fail-safe mark as non-billable and emit high-priority warning.
+
+- Duplicate delivery during retries:
+  Mitigation: strict idempotency key and unique constraint at ingestion.
+
+- Spool disk growth:
+  Mitigation: retention and archival policy plus health alerts.
+
+- Premature billing complexity:
+  Mitigation: keep v1 on usage counting and restriction only.
+
+## Final Recommendation
+
+For v1, treat billing as a usage-accounting foundation, not a finance system.
+
+Build in this order:
+
+1. real-time durable usage events
+2. daily idempotent aggregation
+3. subscription-based restriction checks
+4. weekly/monthly rollups
+5. full billing logic after Orbyt engine and product behavior stabilize
