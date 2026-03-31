@@ -1,4 +1,4 @@
-import { Adapter, AdapterResult, ExitCodes, TriggerType as TriggerEnums, UsageCollector } from "@dev-ecosystem/core";
+import { Adapter, AdapterResult, BillingCalculationResult, BillingPricingCatalog, BillingUsageFetchBucket, BillingUsageFetchOptions, ExitCodes, TriggerType as TriggerEnums, UsageCollector } from "@dev-ecosystem/core";
 import { TimeoutError, TimeoutManager } from "../automation/TimeoutManager.js";
 import { BackoffStrategy } from "../automation/BackoffStrategy.js";
 import { RetryPolicy } from "../automation/RetryPolicy.js";
@@ -1389,6 +1389,7 @@ export interface WorkflowResult {
 
 export interface WorkflowQuotaMetadata {
   decision: QuotaDecision['decision'];
+  policyCode: QuotaDecision['policyCode'];
   reason: string;
   snapshot: QuotaDecisionSnapshot;
 }
@@ -2182,6 +2183,12 @@ export interface OrbytEngineConfig {
     pro?: QuotaPolicy;
     enterprise?: QuotaPolicy;
   };
+
+  /**
+   * Optional pricing catalog snapshot used for foundation-level cost estimation.
+   * This does not enable invoice or tax logic.
+   */
+  pricingCatalog?: BillingPricingCatalog;
 
   // === Logging & Observability ===
 
@@ -3716,6 +3723,103 @@ export interface UsagePeriodRollupQueryOptions {
   limit?: number;
 }
 
+export interface UsagePeriodSummaryQueryOptions {
+  periodType?: 'daily' | 'weekly' | 'monthly' | 'all';
+  periodStart?: string;
+  fromPeriodStart?: string;
+  toPeriodStart?: string;
+  workspaceId?: string;
+  product?: string;
+  limit?: number;
+  refreshBeforeRead?: boolean;
+}
+
+export interface UsagePeriodSummaryResult {
+  periodType: 'daily' | 'weekly' | 'monthly' | 'all';
+  generatedAt: number;
+  refreshedBeforeRead: boolean;
+  totalBuckets: number;
+  buckets: BillingUsageFetchBucket[];
+}
+
+export interface UsageBillingEstimateOptions extends BillingUsageFetchOptions {
+  /**
+   * If true, estimate ignores unsupported rule shapes and only uses
+   * per-event simple rules and fallback pricing.
+   */
+  strictSimpleRulesOnly?: boolean;
+}
+
+export interface UsageBillingEstimateComponent {
+  component: string;
+  bucketCount: number;
+  eventCount: number;
+  estimatedAmount: number;
+  pricingSource: 'component-simple-rule' | 'catalog-fallback' | 'unsupported';
+}
+
+export interface UsageBillingEstimateResult {
+  generatedAt: number;
+  periodType: 'daily' | 'weekly' | 'monthly';
+  currency: string;
+  estimatedAmount: number;
+  components: UsageBillingEstimateComponent[];
+  unsupportedComponents: string[];
+  notes: string[];
+}
+
+export interface UsageBillingCalculationOptions {
+  from?: number;
+  to?: number;
+  userId?: string;
+  workspaceId?: string;
+  product?: string;
+  eventType?: string;
+  adapterName?: string;
+  adapterType?: string;
+  limit?: number;
+  includeNonBillable?: boolean;
+}
+
+export interface UsageBillingCalculationResult {
+  generatedAt: number;
+  pricingVersion: string;
+  sourceEventCount: number;
+  includeNonBillable: boolean;
+  calculation: BillingCalculationResult;
+}
+
+export interface UsageRollupReconciliationQueryOptions {
+  periodType?: 'weekly' | 'monthly';
+  periodStart?: string;
+  workspaceId?: string;
+  product?: string;
+}
+
+export interface UsageRollupReconciliationMismatch {
+  periodType: 'weekly' | 'monthly';
+  periodStart: string;
+  workspaceId: string;
+  product: string;
+  expected: Pick<
+    PeriodUsageRollupBucket,
+    'workflowRuns' | 'stepExecutions' | 'adapterCalls' | 'computeMs' | 'billableEvents' | 'totalEvents'
+  >;
+  actual: Pick<
+    PeriodUsageRollupBucket,
+    'workflowRuns' | 'stepExecutions' | 'adapterCalls' | 'computeMs' | 'billableEvents' | 'totalEvents'
+  >;
+}
+
+export interface UsageRollupReconciliationResult {
+  periodType: 'weekly' | 'monthly';
+  checkedAt: number;
+  checkedBuckets: number;
+  mismatchCount: number;
+  matches: boolean;
+  mismatches: UsageRollupReconciliationMismatch[];
+}
+
 export type {
   BillingUsageFetchPeriod,
   BillingUsageFetchOptions,
@@ -3758,6 +3862,7 @@ export interface QuotaDecisionSnapshot {
 
 export interface QuotaDecision {
   decision: 'allow' | 'allow_with_warning' | 'deny_limit_reached';
+  policyCode: string;
   reason: string;
   snapshot: QuotaDecisionSnapshot;
 }

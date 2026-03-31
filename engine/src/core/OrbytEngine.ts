@@ -71,7 +71,7 @@ import { applyConfigDefaults, validateConfig } from './EngineConfig.js';
 import { createEngineContext } from './EngineContext.js';
 import { LoggerManager, type EngineLogger } from '../logging/index.js';
 import { LogCategoryEnum, WorkflowContext } from '../types/log-types.js';
-import { LogLevel as CoreLogLevel, type UsageCollector, type UsageEvent, type Adapter } from '@dev-ecosystem/core';
+import { BillingEngine, LogLevel as CoreLogLevel, type UsageCollector, type UsageEvent, type Adapter, type BillingPricingCatalog } from '@dev-ecosystem/core';
 import { ExecutionEngine } from '../execution/ExecutionEngine.js';
 import { StepExecutor } from '../execution/StepExecutor.js';
 import { WorkflowExecutor } from '../execution/WorkflowExecutor.js';
@@ -84,7 +84,7 @@ import { CLIAdapter, ShellAdapter, HTTPAdapter, FSAdapter } from '../adapters/bu
 import { InternalContextBuilder } from '../execution/InternalExecutionContext.js';
 import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
-import { BillingUsageFetchBucket, BillingUsageFetchCursor, BillingUsageFetchOptions, BillingUsageFetchProvider, BillingUsageFetchResult, BillingUsageIncrementalFetchOptions, BillingUsageIncrementalFetchResult, DailyUsageAggregateBucket, DailyUsageAggregationRunResult, DailyUsageAggregateQueryOptions, DailyUsageAggregateRebuildOptions, DailyUsageAggregateRebuildResult, DailyUsageAggregationState, EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, InternalExecutionContext, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, PeriodUsageRollupBucket, QuotaDecision, QuotaPolicy, QuotaStatusQueryOptions, QuotaStatusResult, QuotaUsageCounters, UsageAggregationPipelineRunResult, UsageCollectorHealthStatus, UsagePeriodRollupQueryOptions, UsagePeriodRollupRunResult, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowQuotaMetadata, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
+import { BillingUsageFetchBucket, BillingUsageFetchCursor, BillingUsageFetchOptions, BillingUsageFetchProvider, BillingUsageFetchResult, BillingUsageIncrementalFetchOptions, BillingUsageIncrementalFetchResult, DailyUsageAggregateBucket, DailyUsageAggregationRunResult, DailyUsageAggregateQueryOptions, DailyUsageAggregateRebuildOptions, DailyUsageAggregateRebuildResult, DailyUsageAggregationState, EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, InternalExecutionContext, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, PeriodUsageRollupBucket, QuotaDecision, QuotaPolicy, QuotaStatusQueryOptions, QuotaStatusResult, QuotaUsageCounters, UsageAggregationPipelineRunResult, UsageBillingCalculationOptions, UsageBillingCalculationResult, UsageBillingEstimateComponent, UsageBillingEstimateOptions, UsageBillingEstimateResult, UsageCollectorHealthStatus, UsagePeriodRollupQueryOptions, UsagePeriodRollupRunResult, UsagePeriodSummaryQueryOptions, UsagePeriodSummaryResult, UsageRollupReconciliationMismatch, UsageRollupReconciliationQueryOptions, UsageRollupReconciliationResult, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowQuotaMetadata, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -248,6 +248,7 @@ export class OrbytEngine {
   private adapterMetadataCache: AdapterMetadataCache;
   private runtimeArtifactStore: RuntimeArtifactStore;
   private usageCollector: UsageCollector;
+  private billingPricingCatalog?: BillingPricingCatalog;
   private readonly warnedMissingWorkspaceExecutions = new Set<string>();
 
   constructor(config: OrbytEngineConfig = {}) {
@@ -351,6 +352,7 @@ export class OrbytEngine {
         this.usageCollector = new NoOpUsageCollector();
       }
     }
+    this.billingPricingCatalog = this.config.pricingCatalog;
 
     // Ensure infrastructure directories exist before any persistence/caching.
     this.bootstrapRuntimeDirectories();
@@ -1161,6 +1163,7 @@ export class OrbytEngine {
     if (!isBillable || !policy) {
       return {
         decision: 'allow',
+        policyCode: !isBillable ? 'QUOTA_NOT_BILLABLE' : 'QUOTA_POLICY_NOT_ENFORCED',
         reason: !isBillable ? 'non-billable execution' : 'quota policy not enforced for subscription tier',
         snapshot: defaultSnapshot,
       };
@@ -1253,6 +1256,7 @@ export class OrbytEngine {
         enforced: false,
         decision: {
           decision: 'allow',
+          policyCode: 'QUOTA_POLICY_NOT_ENFORCED',
           reason: 'quota policy not enforced for subscription tier',
           snapshot,
         },
@@ -1309,6 +1313,7 @@ export class OrbytEngine {
   private createWorkflowQuotaMetadata(decision: QuotaDecision): WorkflowQuotaMetadata {
     return {
       decision: decision.decision,
+      policyCode: decision.policyCode,
       reason: decision.reason,
       snapshot: decision.snapshot,
     };
@@ -1320,6 +1325,7 @@ export class OrbytEngine {
     if (projected.workflowRuns > policy.workflowRuns) {
       return {
         decision: 'deny_limit_reached',
+        policyCode: 'QUOTA_DAILY_WORKFLOW_RUNS_LIMIT_REACHED',
         reason: 'daily workflow run quota reached',
         snapshot,
       };
@@ -1327,6 +1333,7 @@ export class OrbytEngine {
     if (projected.stepExecutions > policy.stepExecutions) {
       return {
         decision: 'deny_limit_reached',
+        policyCode: 'QUOTA_DAILY_STEP_EXECUTIONS_LIMIT_REACHED',
         reason: 'daily step execution quota reached',
         snapshot,
       };
@@ -1334,6 +1341,7 @@ export class OrbytEngine {
     if (projected.adapterCalls > policy.adapterCalls) {
       return {
         decision: 'deny_limit_reached',
+        policyCode: 'QUOTA_DAILY_ADAPTER_CALLS_LIMIT_REACHED',
         reason: 'daily adapter call quota reached',
         snapshot,
       };
@@ -1341,6 +1349,7 @@ export class OrbytEngine {
     if (projected.computeMs > policy.computeMs) {
       return {
         decision: 'deny_limit_reached',
+        policyCode: 'QUOTA_DAILY_COMPUTE_LIMIT_REACHED',
         reason: 'daily compute quota reached',
         snapshot,
       };
@@ -1361,6 +1370,7 @@ export class OrbytEngine {
     if (nearQuota) {
       return {
         decision: 'allow_with_warning',
+        policyCode: 'QUOTA_DAILY_NEAR_THRESHOLD',
         reason: 'daily usage near quota threshold',
         snapshot,
       };
@@ -1368,6 +1378,7 @@ export class OrbytEngine {
 
     return {
       decision: 'allow',
+      policyCode: 'QUOTA_DAILY_WITHIN_LIMIT',
       reason: 'within daily quota',
       snapshot,
     };
@@ -2088,7 +2099,7 @@ export class OrbytEngine {
 
     const pendingFiles = files.filter((name) => {
       const day = name.replace(/\.jsonl$/, '');
-      return !watermarkDay || day > watermarkDay;
+      return !watermarkDay || day >= watermarkDay;
     });
 
     let processedDays = 0;
@@ -2098,6 +2109,15 @@ export class OrbytEngine {
     for (const file of pendingFiles) {
       const day = file.replace(/\.jsonl$/, '');
       const filePath = join(eventsDir, file);
+
+      // Reprocess each selected day from scratch so reruns are idempotent and
+      // late events in the watermark day are included without double counting.
+      for (const key of Array.from(bucketMap.keys())) {
+        if (key.startsWith(`${day}|`)) {
+          bucketMap.delete(key);
+        }
+      }
+
       let content = '';
 
       try {
@@ -2439,6 +2459,200 @@ export class OrbytEngine {
   }
 
   /**
+   * Basic reporting API for daily/weekly/monthly summaries.
+   */
+  getUsagePeriodSummary(options: UsagePeriodSummaryQueryOptions = {}): UsagePeriodSummaryResult {
+    const refreshBeforeRead = options.refreshBeforeRead ?? true;
+    const periodType = options.periodType ?? 'all';
+
+    if (refreshBeforeRead) {
+      this.runUsageAggregationPipeline();
+    }
+
+    const collect = (type: 'daily' | 'weekly' | 'monthly'): BillingUsageFetchBucket[] => {
+      const result = this.getBillingUsageForPeriod({
+        periodType: type,
+        workspaceId: options.workspaceId,
+        product: options.product,
+        refreshBeforeFetch: false,
+      });
+
+      return result.buckets.filter((bucket) => {
+        if (options.periodStart && bucket.periodStart !== options.periodStart) return false;
+        if (options.fromPeriodStart && bucket.periodStart < options.fromPeriodStart) return false;
+        if (options.toPeriodStart && bucket.periodStart > options.toPeriodStart) return false;
+        return true;
+      });
+    };
+
+    const buckets = periodType === 'all'
+      ? [
+        ...collect('daily'),
+        ...collect('weekly'),
+        ...collect('monthly'),
+      ]
+      : collect(periodType);
+
+    const sorted = buckets.sort((a, b) => {
+      if (a.periodType !== b.periodType) return a.periodType.localeCompare(b.periodType);
+      if (a.periodStart !== b.periodStart) return a.periodStart.localeCompare(b.periodStart);
+      if (a.workspaceId !== b.workspaceId) return a.workspaceId.localeCompare(b.workspaceId);
+      return a.product.localeCompare(b.product);
+    });
+
+    const limit = options.limit && options.limit > 0 ? options.limit : undefined;
+    const finalBuckets = limit ? sorted.slice(0, limit) : sorted;
+
+    return {
+      periodType,
+      generatedAt: Date.now(),
+      refreshedBeforeRead: refreshBeforeRead,
+      totalBuckets: finalBuckets.length,
+      buckets: finalBuckets,
+    };
+  }
+
+  /**
+   * Verify weekly/monthly rollups reconcile against daily aggregates.
+   */
+  verifyUsageRollupReconciliation(
+    options: UsageRollupReconciliationQueryOptions = {},
+  ): UsageRollupReconciliationResult {
+    const periodType = options.periodType ?? 'weekly';
+
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const daily = this.readDailyAggregateBuckets(join(usageBaseDir, 'aggregates', 'daily.json'))
+      .filter((bucket) => (options.workspaceId ? bucket.workspaceId === options.workspaceId : true))
+      .filter((bucket) => (options.product ? bucket.product === options.product : true));
+
+    const expectedMap = new Map<string, PeriodUsageRollupBucket>();
+    for (const bucket of daily) {
+      const groupedPeriodStart = periodType === 'weekly'
+        ? this.getWeekStartDay(bucket.day)
+        : this.getMonthStartDay(bucket.day);
+
+      if (options.periodStart && groupedPeriodStart !== options.periodStart) {
+        continue;
+      }
+
+      const key = this.rollupBucketKey(periodType, groupedPeriodStart, bucket.workspaceId, bucket.product);
+      const existing = expectedMap.get(key) ?? {
+        periodType,
+        periodStart: groupedPeriodStart,
+        workspaceId: bucket.workspaceId,
+        product: bucket.product,
+        workflowRuns: 0,
+        stepExecutions: 0,
+        adapterCalls: 0,
+        computeMs: 0,
+        billableEvents: 0,
+        totalEvents: 0,
+        updatedAt: Date.now(),
+      };
+
+      existing.workflowRuns += bucket.workflowRuns;
+      existing.stepExecutions += bucket.stepExecutions;
+      existing.adapterCalls += bucket.adapterCalls;
+      existing.computeMs += bucket.computeMs;
+      existing.billableEvents += bucket.billableEvents;
+      existing.totalEvents += bucket.totalEvents;
+      expectedMap.set(key, existing);
+    }
+
+    const actualRollups = this.getUsagePeriodRollups({
+      periodType,
+      periodStart: options.periodStart,
+      workspaceId: options.workspaceId,
+      product: options.product,
+    });
+    const actualMap = new Map<string, PeriodUsageRollupBucket>();
+    for (const bucket of actualRollups) {
+      const key = this.rollupBucketKey(periodType, bucket.periodStart, bucket.workspaceId, bucket.product);
+      actualMap.set(key, bucket);
+    }
+
+    const allKeys = new Set<string>([
+      ...Array.from(expectedMap.keys()),
+      ...Array.from(actualMap.keys()),
+    ]);
+
+    const mismatches: UsageRollupReconciliationMismatch[] = [];
+    for (const key of allKeys) {
+      const expected = expectedMap.get(key);
+      const actual = actualMap.get(key);
+      if (!expected || !actual) {
+        const baseline = expected ?? actual;
+        if (!baseline) continue;
+        mismatches.push({
+          periodType,
+          periodStart: baseline.periodStart,
+          workspaceId: baseline.workspaceId,
+          product: baseline.product,
+          expected: {
+            workflowRuns: expected?.workflowRuns ?? 0,
+            stepExecutions: expected?.stepExecutions ?? 0,
+            adapterCalls: expected?.adapterCalls ?? 0,
+            computeMs: expected?.computeMs ?? 0,
+            billableEvents: expected?.billableEvents ?? 0,
+            totalEvents: expected?.totalEvents ?? 0,
+          },
+          actual: {
+            workflowRuns: actual?.workflowRuns ?? 0,
+            stepExecutions: actual?.stepExecutions ?? 0,
+            adapterCalls: actual?.adapterCalls ?? 0,
+            computeMs: actual?.computeMs ?? 0,
+            billableEvents: actual?.billableEvents ?? 0,
+            totalEvents: actual?.totalEvents ?? 0,
+          },
+        });
+        continue;
+      }
+
+      const same =
+        expected.workflowRuns === actual.workflowRuns
+        && expected.stepExecutions === actual.stepExecutions
+        && expected.adapterCalls === actual.adapterCalls
+        && expected.computeMs === actual.computeMs
+        && expected.billableEvents === actual.billableEvents
+        && expected.totalEvents === actual.totalEvents;
+
+      if (!same) {
+        mismatches.push({
+          periodType,
+          periodStart: expected.periodStart,
+          workspaceId: expected.workspaceId,
+          product: expected.product,
+          expected: {
+            workflowRuns: expected.workflowRuns,
+            stepExecutions: expected.stepExecutions,
+            adapterCalls: expected.adapterCalls,
+            computeMs: expected.computeMs,
+            billableEvents: expected.billableEvents,
+            totalEvents: expected.totalEvents,
+          },
+          actual: {
+            workflowRuns: actual.workflowRuns,
+            stepExecutions: actual.stepExecutions,
+            adapterCalls: actual.adapterCalls,
+            computeMs: actual.computeMs,
+            billableEvents: actual.billableEvents,
+            totalEvents: actual.totalEvents,
+          },
+        });
+      }
+    }
+
+    return {
+      periodType,
+      checkedAt: Date.now(),
+      checkedBuckets: allKeys.size,
+      mismatchCount: mismatches.length,
+      matches: mismatches.length === 0,
+      mismatches,
+    };
+  }
+
+  /**
    * Billing-facing fetch API over persisted usage aggregates.
    *
    * Supports daily/weekly/monthly pulls with optional pre-fetch refresh.
@@ -2575,6 +2789,175 @@ export class OrbytEngine {
         this.getBillingUsageForPeriod(options),
       fetchUsageForBillingIncremental: async (options: BillingUsageIncrementalFetchOptions = {}) =>
         this.getBillingUsageIncremental(options),
+    };
+  }
+
+  /**
+   * Foundation-only setter for pricing catalog snapshot.
+   */
+  setPricingCatalog(catalog: BillingPricingCatalog): void {
+    this.billingPricingCatalog = catalog;
+    this.log('debug', 'Pricing catalog snapshot set', {
+      version: catalog.version,
+      currency: catalog.currency,
+      componentCount: Object.keys(catalog.components || {}).length,
+    });
+  }
+
+  /**
+   * Read current pricing catalog snapshot used for estimates.
+   */
+  getPricingCatalog(): BillingPricingCatalog | undefined {
+    return this.billingPricingCatalog;
+  }
+
+  /**
+   * Foundation-level cost estimate from usage aggregate buckets.
+   *
+   * This intentionally avoids invoice/tax logic and only supports:
+   * - component simple count rule (single unscoped count rule)
+   * - catalog fallback per-event pricing
+   */
+  estimateUsageCost(options: UsageBillingEstimateOptions = {}): UsageBillingEstimateResult {
+    const periodType = options.periodType ?? 'daily';
+    const catalog = this.billingPricingCatalog;
+
+    if (!catalog) {
+      throw new Error('Pricing catalog not configured. Call setPricingCatalog() first.');
+    }
+
+    const fetched = this.getBillingUsageForPeriod({
+      periodType,
+      workspaceId: options.workspaceId,
+      product: options.product,
+      fromPeriodStart: options.fromPeriodStart,
+      toPeriodStart: options.toPeriodStart,
+      limit: options.limit,
+      refreshBeforeFetch: options.refreshBeforeFetch,
+    });
+
+    const byComponent = new Map<string, { bucketCount: number; eventCount: number }>();
+    for (const bucket of fetched.buckets) {
+      const existing = byComponent.get(bucket.product) ?? { bucketCount: 0, eventCount: 0 };
+      existing.bucketCount += 1;
+      existing.eventCount += bucket.totalEvents;
+      byComponent.set(bucket.product, existing);
+    }
+
+    const components: UsageBillingEstimateComponent[] = [];
+    const unsupportedComponents: string[] = [];
+    const strictSimple = options.strictSimpleRulesOnly ?? false;
+
+    for (const [component, counters] of byComponent.entries()) {
+      const componentPricing = catalog.components[component];
+      const fallback = catalog.defaults?.fallbackPricePerEvent;
+
+      let pricePerEvent: number | undefined;
+      let pricingSource: UsageBillingEstimateComponent['pricingSource'] = 'unsupported';
+
+      if (componentPricing) {
+        const simpleCountRules = componentPricing.rules.filter((rule) =>
+          rule.metric === 'count'
+          && !rule.eventType
+          && !rule.adapterType
+          && !rule.adapterName,
+        );
+
+        if (simpleCountRules.length === 1) {
+          pricePerEvent = simpleCountRules[0].pricePerUnit;
+          pricingSource = 'component-simple-rule';
+        } else if (!strictSimple && fallback !== undefined) {
+          pricePerEvent = fallback;
+          pricingSource = 'catalog-fallback';
+        }
+      } else if (fallback !== undefined) {
+        pricePerEvent = fallback;
+        pricingSource = 'catalog-fallback';
+      }
+
+      if (pricePerEvent === undefined) {
+        unsupportedComponents.push(component);
+        components.push({
+          component,
+          bucketCount: counters.bucketCount,
+          eventCount: counters.eventCount,
+          estimatedAmount: 0,
+          pricingSource: 'unsupported',
+        });
+        continue;
+      }
+
+      components.push({
+        component,
+        bucketCount: counters.bucketCount,
+        eventCount: counters.eventCount,
+        estimatedAmount: counters.eventCount * pricePerEvent,
+        pricingSource,
+      });
+    }
+
+    const estimatedAmount = components.reduce((sum, item) => sum + item.estimatedAmount, 0);
+    const notes = [
+      'Foundation estimate only: invoice/tax/credit logic is intentionally excluded.',
+      'Estimate is aggregate-based and may differ from event-level billing calculations.',
+    ];
+
+    return {
+      generatedAt: Date.now(),
+      periodType,
+      currency: catalog.currency,
+      estimatedAmount,
+      components: components.sort((a, b) => a.component.localeCompare(b.component)),
+      unsupportedComponents: Array.from(new Set(unsupportedComponents)).sort((a, b) => a.localeCompare(b)),
+      notes,
+    };
+  }
+
+  /**
+   * Phase 5 foundation (step-by-step): event-level billing calculation.
+   *
+   * Uses core BillingEngine with current pricing catalog and filtered usage events.
+   * Intentionally excludes invoice/tax/credits workflows.
+   */
+  async calculateUsageBilling(
+    options: UsageBillingCalculationOptions = {},
+  ): Promise<UsageBillingCalculationResult> {
+    const catalog = this.billingPricingCatalog;
+    if (!catalog) {
+      throw new Error('Pricing catalog not configured. Call setPricingCatalog() first.');
+    }
+
+    const usage = await this.getUsage({
+      from: options.from,
+      to: options.to,
+      userId: options.userId,
+      workspaceId: options.workspaceId,
+      product: options.product,
+      eventType: options.eventType,
+      adapterName: options.adapterName,
+      adapterType: options.adapterType,
+      groupBy: 'none',
+      limit: options.limit,
+      includeEvents: true,
+    });
+
+    const includeNonBillable = options.includeNonBillable === true;
+    const usageEvents: UsageEvent[] = (usage.events ?? [])
+      .map((event) => ({
+        ...event,
+        type: event.type as UsageEvent['type'],
+      }))
+      .filter((event) => includeNonBillable || event.billable !== false);
+
+    const billingEngine = new BillingEngine(catalog);
+    const calculation = billingEngine.calculateFromUsage(usageEvents);
+
+    return {
+      generatedAt: Date.now(),
+      pricingVersion: catalog.version,
+      sourceEventCount: usageEvents.length,
+      includeNonBillable,
+      calculation,
     };
   }
 

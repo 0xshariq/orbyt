@@ -20,7 +20,7 @@ const ORBYT_HOME = join(homedir(), '.orbyt');
  * @param config - User-provided configuration
  * @returns Configuration with defaults applied
  */
-export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Omit<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler' | 'distributed'>> & Pick<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler' | 'distributed'> {
+export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Omit<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler' | 'distributed' | 'pricingCatalog'>> & Pick<OrbytEngineConfig, 'queue' | 'retryPolicy' | 'timeoutManager' | 'adapters' | 'hooks' | 'metadata' | 'usageCollector' | 'usageSpool' | 'scheduler' | 'distributed' | 'pricingCatalog'> {
   return {
     maxConcurrentWorkflows: config.maxConcurrentWorkflows ?? 10,
     maxConcurrentSteps: config.maxConcurrentSteps ?? 10,
@@ -91,6 +91,7 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
       },
       enterprise: config.quotaPolicies?.enterprise,
     },
+    pricingCatalog: config.pricingCatalog,
   };
 }
 

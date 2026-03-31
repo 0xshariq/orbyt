@@ -221,7 +221,106 @@ Late event behavior:
 
 This section is the execution plan requested for engineering.
 
+## Implementation Status Snapshot (Current)
+
+This section tracks what is already implemented in code and what remains.
+
+### Implemented So Far
+
+- Phase 0 implemented:
+  - idempotency keys added in usage event factory paths
+  - workspace-aware billing guard (billable events missing workspace are forced non-billable)
+  - usage collector health telemetry wired
+  - `.orbyt/usage` semantics documented
+- Phase 1 implemented (engine-side):
+  - durable file spool collector is default
+  - `events/pending/sent/failed` flow present with retry handling
+  - retention knobs for sent/failed artifacts are available in config
+  - collector flush/close lifecycle integrated with engine
+- Phase 2 implemented:
+  - daily aggregation pipeline from raw events
+  - persisted daily aggregates + watermark state
+  - daily aggregate read API and targeted rebuild API
+  - watermark-day reprocessing behavior for late same-day events
+- Phase 3 implemented:
+  - pre-execution quota evaluation in run path
+  - deterministic `allow | allow_with_warning | deny_limit_reached`
+  - policy code + snapshot metadata stored for auditable decisions
+- Phase 4 implemented at foundation level:
+  - weekly/monthly rollup generation from daily aggregates
+  - period summary reporting API (daily/weekly/monthly/all)
+  - rollup reconciliation API (daily vs weekly/monthly consistency checks)
+  - billing-facing fetch APIs (full period and incremental cursor-based)
+
+### Implemented in Core Billing Foundation
+
+- billing fetch contracts moved to `ecosystem-core/src/billing/types`
+- billing engine includes provider wiring for period and incremental usage fetch delegation
+- collector-first billing foundation is in place (usage handled via `UsageCollector` contract)
+
+### Future Implementation (Remaining)
+
+- CLI/admin parity for newer engine APIs:
+  - expose summary and reconciliation outputs in CLI commands
+  - add operator-friendly views for incremental billing cursor state
+- harden operational behavior:
+  - broader tests for aggregation idempotency and reconciliation mismatch scenarios
+  - stress/soak tests for large spool growth and replay throughput
+- full post-v1 billing expansion (Phase 5 complete scope):
+  - event-level pricing rule execution across all rule shapes
+  - invoice generation lifecycle
+  - credits/overages/adjustments
+  - tax and region-aware finance concerns
+  - dispute and correction workflows
+
+## Post-v1 Implementation Remaining (Billing Engine Independence Plan)
+
+This section defines explicit post-v1 constraints and roadmap items.
+
+### Non-Negotiable Architecture Constraints
+
+- Billing Engine must remain component-agnostic.
+  - no dependency on Orbyt, Vaulta, DevForge, Dev Companion, or any specific product module
+- Billing Engine must remain ecosystem-agnostic.
+  - no direct dependency on ecosystem runtime assumptions or component internals
+- Billing Engine must be productizable as a standalone credit/billing product in future.
+
+### Post-v1 Work: Billing-Engine-Side Restrictions
+
+Restriction and credit protection must move to billing engine side (policy authority), not stay only in Orbyt engine:
+
+- billing engine evaluates credit/quota policy for all `UsageEventType` classes (treated as credit-consuming signals)
+- billing engine returns deterministic decision contract:
+  - `allow`
+  - `allow_with_warning`
+  - `deny_limit_reached`
+- billing engine becomes the source of truth for overuse prevention
+- Orbyt and other components consume this decision, not re-define policy logic independently
+
+### Post-v1 Work: Bridge Provider Integration
+
+Billing Engine will fetch tenant/user/account plan data through bridge providers (under `dev-ecosystem/bridges/`) using abstraction interfaces only.
+
+Required design rules:
+
+- billing core depends on provider contracts, not on bridge-specific implementations
+- each bridge integration stays in adapter/provider layer, outside billing core
+- provider contracts must support:
+  - user/workspace/account lookup
+  - plan and credit entitlement snapshot
+  - subscription status metadata
+  - policy versioning inputs for deterministic decisions
+
+### Dependency Direction (Required)
+
+- `billing-core` -> contracts/interfaces only
+- `bridge-adapters` -> implement contracts for concrete bridge sources
+- `components (orbyt/devforge/...)` -> call billing-core APIs
+- never reverse this dependency direction
+
 ### Phase 0: Hardening Existing Foundation (1-2 days)
+
+Status: Implemented
 
 Deliverables:
 
@@ -236,6 +335,8 @@ Acceptance criteria:
 - no collector exception propagates to workflow execution
 
 ### Phase 1: Real-Time Usage Storage GA in Orbyt (3-5 days)
+
+Status: Implemented (engine-side foundation)
 
 Deliverables:
 
@@ -252,6 +353,8 @@ Acceptance criteria:
 
 ### Phase 2: Aggregation Foundation (Daily First) (3-5 days)
 
+Status: Implemented
+
 Deliverables:
 
 - implement small aggregator worker/job (can run in-process or as sidecar)
@@ -267,6 +370,8 @@ Acceptance criteria:
 
 ### Phase 3: Restriction Enforcement in Execution Path (2-4 days)
 
+Status: Implemented
+
 Deliverables:
 
 - add pre-execution quota check hook
@@ -281,6 +386,8 @@ Acceptance criteria:
 
 ### Phase 4: Weekly/Monthly Foundational Rollups (2-3 days)
 
+Status: Implemented (foundation)
+
 Deliverables:
 
 - optional weekly and monthly rollup jobs from daily aggregates
@@ -293,11 +400,16 @@ Acceptance criteria:
 
 ### Phase 5: Post-v1 Billing Engine Expansion
 
+Status: Future
+
 Future work (not required for v1):
 
 - pricing catalog integration
 - money calculation and invoices
 - credits, overages, tax, and adjustments
+- billing-engine-side restriction authority for credit overuse prevention
+- bridge-provider-based user/plan/entitlement fetch via provider interfaces
+- strict agnostic packaging to enable standalone billing engine commercialization
 
 ## Minimal Technical Backlog
 
