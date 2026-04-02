@@ -321,7 +321,7 @@ export class OrbytEngine {
     } else {
       const usageSpool = this.config.usageSpool;
       const spoolEnabled = usageSpool?.enabled ?? true;
-      const spoolBaseDir = usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+      const spoolBaseDir = usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage');
       const allowNoOpForTesting =
         process.env.NODE_ENV === 'test' ||
         process.env.ORBYT_ALLOW_NOOP_USAGE_COLLECTOR === '1';
@@ -436,9 +436,13 @@ export class OrbytEngine {
   /**
    * Create all required engine directories under ~/.orbyt (or custom overrides).
    * This keeps later store/cache writes simple and predictable.
+   * 
+   * Usage storage is separated into ~/.billing/orbyt to enable billing engine
+   * to remain component-agnostic (doesn't know about Orbyt specifically).
    */
   private bootstrapRuntimeDirectories(): void {
     const orbytHome = join(homedir(), '.orbyt');
+    const billingHome = join(homedir(), '.billing', 'orbyt');
     const requiredDirs = [
       orbytHome,
       this.config.stateDir,
@@ -457,11 +461,12 @@ export class OrbytEngine {
       join(orbytHome, 'plugins'),
       join(orbytHome, 'metrics'),
       join(orbytHome, 'config'),
-      join(orbytHome, 'usage'),
-      join(orbytHome, 'usage', 'events'),
-      join(orbytHome, 'usage', 'pending'),
-      join(orbytHome, 'usage', 'sent'),
-      join(orbytHome, 'usage', 'failed'),
+      join(billingHome, 'usage'),
+      join(billingHome, 'usage', 'events'),
+      join(billingHome, 'usage', 'pending'),
+      join(billingHome, 'usage', 'sent'),
+      join(billingHome, 'usage', 'failed'),
+      join(billingHome, 'usage', 'aggregates'),
       join(orbytHome, 'tmp'),
       join(orbytHome, 'cloud-sync'),
     ];
@@ -1893,7 +1898,7 @@ export class OrbytEngine {
       throw new Error(`Invalid usage query range: from (${from}) must be <= to (${to})`);
     }
 
-    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage');
     const eventsDir = join(usageBaseDir, 'events');
     const filteredEvents: UsageEvent[] = [];
 
@@ -2062,7 +2067,7 @@ export class OrbytEngine {
    * Build persisted daily aggregate usage counters from raw usage archives.
    */
   runDailyUsageAggregation(): DailyUsageAggregationRunResult {
-    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage');
     const eventsDir = join(usageBaseDir, 'events');
     const aggregatesDir = join(usageBaseDir, 'aggregates');
     const aggregateFile = join(aggregatesDir, 'daily.json');
@@ -2205,7 +2210,7 @@ export class OrbytEngine {
    * Read persisted daily usage aggregate counters.
    */
   getDailyUsageAggregates(options: DailyUsageAggregateQueryOptions = {}): DailyUsageAggregateBucket[] {
-    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage');
     const aggregateFile = join(usageBaseDir, 'aggregates', 'daily.json');
     const buckets = this.readDailyAggregateBuckets(aggregateFile)
       .filter((bucket) => (options.day ? bucket.day === options.day : true))
@@ -2222,7 +2227,7 @@ export class OrbytEngine {
    * Used to repair counters when late/out-of-order events arrive.
    */
   rebuildDailyUsageAggregates(options: DailyUsageAggregateRebuildOptions = {}): DailyUsageAggregateRebuildResult {
-    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage');
     const eventsDir = join(usageBaseDir, 'events');
     const aggregateFile = join(usageBaseDir, 'aggregates', 'daily.json');
 
@@ -2337,7 +2342,7 @@ export class OrbytEngine {
    * Build weekly/monthly rollups from daily aggregate counters.
    */
   runUsagePeriodRollups(): UsagePeriodRollupRunResult {
-    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage');
     const aggregatesDir = join(usageBaseDir, 'aggregates');
     const weeklyFile = join(aggregatesDir, 'weekly.json');
     const monthlyFile = join(aggregatesDir, 'monthly.json');
@@ -2446,7 +2451,7 @@ export class OrbytEngine {
    * Read persisted weekly/monthly usage rollups.
    */
   getUsagePeriodRollups(options: UsagePeriodRollupQueryOptions): PeriodUsageRollupBucket[] {
-    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage');
     const file = join(usageBaseDir, 'aggregates', `${options.periodType}.json`);
     const rollups = this.readPeriodRollupBuckets(file)
       .filter((bucket) => bucket.periodType === options.periodType)
@@ -2520,7 +2525,7 @@ export class OrbytEngine {
   ): UsageRollupReconciliationResult {
     const periodType = options.periodType ?? 'weekly';
 
-    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage');
     const daily = this.readDailyAggregateBuckets(join(usageBaseDir, 'aggregates', 'daily.json'))
       .filter((bucket) => (options.workspaceId ? bucket.workspaceId === options.workspaceId : true))
       .filter((bucket) => (options.product ? bucket.product === options.product : true));
@@ -2660,7 +2665,7 @@ export class OrbytEngine {
   getBillingUsageForPeriod(options: BillingUsageFetchOptions = {}): BillingUsageFetchResult {
     const periodType = options.periodType ?? 'daily';
     const refreshBeforeFetch = options.refreshBeforeFetch ?? true;
-    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.orbyt', 'usage');
+    const usageBaseDir = this.config.usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage');
     const aggregatesDir = join(usageBaseDir, 'aggregates');
     const sourceFile = join(aggregatesDir, `${periodType}.json`);
     const watermarkFile = join(aggregatesDir, 'watermark.json');

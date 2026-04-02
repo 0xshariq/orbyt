@@ -98,7 +98,7 @@ Engine emits usage facts through the standardized core `UsageCollector` contract
 Default behavior when no custom collector is passed:
 
 - uses `FileSpoolUsageCollector`
-- stores local usage files under `~/.orbyt/usage`
+- stores local usage files under `~/.billing/orbyt/usage`
 - optionally pushes batches to a billing ingestion endpoint
 
 Event categories currently emitted:

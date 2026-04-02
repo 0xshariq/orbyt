@@ -2146,7 +2146,7 @@ export interface OrbytEngineConfig {
     /** Enable built-in spool collector (default: true) */
     enabled?: boolean;
 
-    /** Base path for usage storage (default: ~/.orbyt/usage) */
+    /** Base path for usage storage (default: ~/.billing/orbyt/usage) */
     baseDir?: string;
 
     /** Max events per outbound batch (default: 200) */

@@ -113,7 +113,7 @@ The engine emits usage facts through the `UsageCollector` interface from `@dev-e
 Default collector behavior when `usageCollector` is not provided:
 
 - uses built-in `FileSpoolUsageCollector`
-- writes durable local spool under `~/.orbyt/usage`
+- writes durable local spool under `~/.billing/orbyt/usage`
 - optionally sends periodic batches via HTTP transport
 
 Usage events emitted:
@@ -129,7 +129,7 @@ Usage events emitted:
 const engine = new OrbytEngine({
   usageSpool: {
     enabled: true,
-    baseDir: '/home/user/.orbyt/usage',
+    baseDir: '/home/user/.billing/orbyt/usage',
     batchSize: 200,
     flushIntervalMs: 60000,
     maxRetryAttempts: 10,

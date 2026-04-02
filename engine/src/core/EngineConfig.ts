@@ -64,7 +64,7 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
     usageCollector: config.usageCollector,
     usageSpool: {
       enabled: config.usageSpool?.enabled ?? true,
-      baseDir: config.usageSpool?.baseDir ?? join(ORBYT_HOME, 'usage'),
+      baseDir: config.usageSpool?.baseDir ?? join(homedir(), '.billing', 'orbyt', 'usage'),
       batchSize: config.usageSpool?.batchSize ?? 200,
       flushIntervalMs: config.usageSpool?.flushIntervalMs ?? 60_000,
       maxRetryAttempts: config.usageSpool?.maxRetryAttempts ?? 10,

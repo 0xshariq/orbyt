@@ -16,7 +16,7 @@ This plan intentionally keeps billing computation lightweight until Orbyt engine
 ### In Scope for v1
 
 - reliable real-time usage event capture
-- durable local spool under `.orbyt/usage`
+- durable local spool under `~/.billing/orbyt/usage`
 - optional HTTP transport for usage batch delivery
 - dedup/idempotency foundations
 - daily usage aggregation job foundation
@@ -39,7 +39,7 @@ Orbyt already has strong building blocks:
 - `UsageEventFactory` creates canonical usage events.
 - Engine records usage asynchronously and non-fatally.
 - Engine flushes/closes collector on shutdown.
-- Default spool path is `.orbyt/usage`.
+- Default spool path is `~/.billing/orbyt/usage`.
 
 Implementation references:
 
@@ -79,15 +79,15 @@ Every usage event is appended immediately to immutable event storage.
 
 For local/dev v1:
 
-- `.orbyt/usage/events/YYYY-MM-DD.jsonl`
+- `~/.billing/orbyt/usage/events/YYYY-MM-DD.jsonl`
 
 For delivery retry state:
 
-- `.orbyt/usage/pending/*.json`
-- `.orbyt/usage/sent/*.json`
-- `.orbyt/usage/failed/*.json`
+- `~/.billing/orbyt/usage/pending/*.json`
+- `~/.billing/orbyt/usage/sent/*.json`
+- `~/.billing/orbyt/usage/failed/*.json`
 
-### `.orbyt/usage` Directory Semantics
+### `~/.billing/orbyt/usage` Directory Semantics
 
 - `events/`
   - append-only JSONL archive partitioned by day
@@ -231,7 +231,7 @@ This section tracks what is already implemented in code and what remains.
   - idempotency keys added in usage event factory paths
   - workspace-aware billing guard (billable events missing workspace are forced non-billable)
   - usage collector health telemetry wired
-  - `.orbyt/usage` semantics documented
+  - `~/.billing/orbyt/usage` semantics documented
 - Phase 1 implemented (engine-side):
   - durable file spool collector is default
   - `events/pending/sent/failed` flow present with retry handling
@@ -327,7 +327,7 @@ Deliverables:
 - confirm `workspaceId` presence across all billable paths
 - add/verify `idempotencyKey` generation in event factory
 - add collector health telemetry wiring
-- add docs for `.orbyt/usage` directory semantics
+- add docs for `~/.billing/orbyt/usage` directory semantics
 
 Acceptance criteria:
 
