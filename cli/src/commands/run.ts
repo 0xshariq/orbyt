@@ -18,6 +18,11 @@
  *   - Separate state
  *   - Separate billing event
  *   This is CLI-level orchestration (engine remains unchanged).
+ *
+ * TODO(cli-vnext): Add currently documented but not yet implemented flags:
+ * - --step <stepId>
+ * - --until <stepId>
+ * - --fail-fast
  */
 
 import { readFile } from 'fs/promises';
@@ -68,7 +73,9 @@ export function registerRunCommand(program: Command): void {
     .option('--env-file <path>', 'Load environment variables from file')
     .option('-t, --timeout <seconds>', 'Workflow timeout in seconds', parseInt)
     .option('--continue-on-error', 'Continue execution even if steps fail')
+    // TODO(cli-vnext): add --fail-fast alias with explicit semantics distinct from --continue-on-error
     .option('--dry-run', 'Validate and plan without executing')
+    // TODO(cli-vnext): add --step <stepId> and --until <stepId> once engine-level step slicing contract is finalized
     .option('--mode <mode>', 'Multi-workflow mode (sequential|parallel|mixed)')
     .option('--max-concurrency <n>', 'Max concurrent workflows for parallel mode', parseInt)
     .option('--mixed-batch-size <n>', 'Workflows per wave in mixed mode', parseInt)
@@ -105,6 +112,9 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
   try {
     // Parse workflow paths (comma-separated)
     const workflowPaths = workflowPath.split(',').map(p => p.trim()).filter(p => p.length > 0);
+
+    // TODO(cli-vnext): when --step/--until are introduced, reject comma-separated multi-workflow input
+    // for those flags to avoid ambiguous execution boundaries.
 
     if (workflowPaths.length === 0) {
       formatter.showError(new Error('No workflow paths provided'));
@@ -175,6 +185,7 @@ async function runWorkflow(workflowPath: string, options: CliRunOptions): Promis
       env,
       timeout: options.timeout ? options.timeout * 1000 : undefined,
       continueOnError: options.continueOnError,
+      // TODO(cli-vnext): map --fail-fast to continueOnError=false with explicit precedence rules.
       dryRun: options.dryRun,
       executionMode: requestedMode,
       maxParallelWorkflows: options.maxConcurrency,
