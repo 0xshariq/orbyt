@@ -365,8 +365,12 @@ export class WorkflowLoader {
       return this.fromFile(source, options);
     }
 
-    // Otherwise parse as content
-    return await this.fromYAML(source, 'inline YAML', options.logger);
+    // Otherwise parse as content (YAML first, then JSON)
+    try {
+      return await this.fromYAML(source, 'inline YAML', options.logger);
+    } catch {
+      return await this.fromJSON(source, 'inline JSON', options.logger);
+    }
   }
 
   // ============================================================================
