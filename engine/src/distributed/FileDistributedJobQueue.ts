@@ -32,7 +32,7 @@ export class FileDistributedJobQueue implements DistributedJobQueue {
   constructor(options: FileDistributedJobQueueOptions) {
     this.adapter = new FileStorageAdapter(options.stateDir);
     this.leaseMs = options.leaseMs ?? 30_000;
-    this.stateFileName = options.stateFileName ?? 'distributed-queue.json';
+    this.stateFileName = options.stateFileName ?? 'distributed-queue.orbt';
     this.ensureState();
   }
 

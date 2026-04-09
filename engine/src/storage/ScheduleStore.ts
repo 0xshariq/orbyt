@@ -2,11 +2,11 @@
  * Schedule Store
  *
  * Persists workflow schedule state under .orbyt/schedules/.
- * One JSON file per schedule; enables restart recovery so the scheduler
+ * One .orbt file per schedule; enables restart recovery so the scheduler
  * can reload all known schedules without re-registration by callers.
  *
  * Layout:
- *   .orbyt/schedules/<scheduleId>.json
+ *   .orbyt/schedules/<scheduleId>.orbt
  *
  * Primary purposes:
  *   - Persist cron/interval schedules so they survive process restarts
@@ -246,11 +246,11 @@ export class ScheduleStore {
     try {
       this.adapter.ensureDir();
       return this.adapter
-        .list('', { suffix: '.json', filesOnly: true })
-        .filter(f => f.endsWith('.json'))
+        .list('', { suffix: '.orbt', filesOnly: true })
+        .filter(f => f.endsWith('.orbt'))
         .flatMap(f => {
           try {
-            const id = basename(f, '.json');
+            const id = basename(f, '.orbt');
             const record = this._getOrLoad(id);
             return record ? [record] : [];
           } catch {
@@ -296,7 +296,7 @@ export class ScheduleStore {
   }
 
   private _fileName(scheduleId: string): string {
-    return `${scheduleId}.json`;
+    return `${scheduleId}.orbt`;
   }
 
   private _write(scheduleId: string, record: PersistedSchedule): void {

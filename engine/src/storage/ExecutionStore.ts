@@ -1,7 +1,7 @@
 /**
  * Execution Store
  *
- * Persists workflow execution state as JSON files under .orbyt/executions/.
+ * Persists workflow execution state as .orbt files under .orbyt/executions/.
  *
  * Lifecycle:
  *   begin()      — called at workflow start; writes status:"running" immediately
@@ -75,7 +75,7 @@ export interface PersistedExecution {
 /**
  * File-based execution state store.
  *
- * One JSON file per execution run, stored in the configured directory.
+ * One .orbt file per execution run, stored in the configured directory.
  * An in-memory cache avoids re-reading the file on every step update.
  */
 export class ExecutionStore {
@@ -217,8 +217,8 @@ export class ExecutionStore {
     try {
       this.adapter.ensureDir();
       return this.adapter
-        .list('', { suffix: '.json', filesOnly: true })
-        .map(f => basename(f, '.json'))
+        .list('', { suffix: '.orbt', filesOnly: true })
+        .map(f => basename(f, '.orbt'))
         .sort()
         .reverse();
     } catch {
@@ -239,7 +239,7 @@ export class ExecutionStore {
   }
 
   private _fileName(executionId: string): string {
-    return `${executionId}.json`;
+    return `${executionId}.orbt`;
   }
 
   private _write(executionId: string, state: PersistedExecution): void {

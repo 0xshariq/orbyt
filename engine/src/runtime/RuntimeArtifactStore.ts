@@ -39,7 +39,7 @@ export class RuntimeArtifactStore {
   saveDagPlan(workflowId: string, plan: unknown): void {
     try {
       this.ensureDirs();
-      writeFileSync(join(this.dagDir, `${workflowId}.json`), JSON.stringify(plan, null, 2), 'utf-8');
+      writeFileSync(join(this.dagDir, `${workflowId}.orbt`), JSON.stringify(plan, null, 2), 'utf-8');
     } catch {
       // Non-fatal artifact write.
     }
@@ -47,7 +47,7 @@ export class RuntimeArtifactStore {
 
   loadDagPlan<T = unknown>(workflowId: string): T | null {
     try {
-      const filePath = join(this.dagDir, `${workflowId}.json`);
+      const filePath = join(this.dagDir, `${workflowId}.orbt`);
       if (!existsSync(filePath)) return null;
       return JSON.parse(readFileSync(filePath, 'utf-8')) as T;
     } catch {
@@ -59,7 +59,7 @@ export class RuntimeArtifactStore {
     try {
       this.ensureDirs();
       writeFileSync(
-        join(this.contextDir, `${snapshot.executionId}.json`),
+        join(this.contextDir, `${snapshot.executionId}.orbt`),
         JSON.stringify(snapshot, null, 2),
         'utf-8',
       );
@@ -70,7 +70,7 @@ export class RuntimeArtifactStore {
 
   loadContextSnapshot(executionId: string): RuntimeContextSnapshot | null {
     try {
-      const filePath = join(this.contextDir, `${executionId}.json`);
+      const filePath = join(this.contextDir, `${executionId}.orbt`);
       if (!existsSync(filePath)) return null;
       return JSON.parse(readFileSync(filePath, 'utf-8')) as RuntimeContextSnapshot;
     } catch {

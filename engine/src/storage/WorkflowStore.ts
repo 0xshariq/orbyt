@@ -5,8 +5,8 @@
  * Each workflow gets its own subdirectory; each save creates a new versioned file.
  *
  * Layout:
- *   .orbyt/workflows/<workflowName>/v1.json
- *   .orbyt/workflows/<workflowName>/v2.json
+ *   .orbyt/workflows/<workflowName>/v1.orbt
+ *   .orbyt/workflows/<workflowName>/v2.orbt
  *   ...
  *
  * Primary purpose: replay a failed run against the exact workflow definition
@@ -117,8 +117,8 @@ export class WorkflowStore {
     try {
       if (!this.adapter.exists(workflowId)) return [];
       return this.adapter
-        .list(workflowId, { suffix: '.json', filesOnly: true })
-        .filter(f => /^v\d+\.json$/.test(f))
+        .list(workflowId, { suffix: '.orbt', filesOnly: true })
+        .filter(f => /^v\d+\.orbt$/.test(f))
         .map(f => parseInt(f.slice(1, -5), 10))
         .sort((a, b) => b - a); // newest first
     } catch {
@@ -181,8 +181,8 @@ export class WorkflowStore {
 
     try {
       const existing = this.adapter
-        .list(workflowId, { suffix: '.json', filesOnly: true })
-        .filter(f => /^v\d+\.json$/.test(f))
+        .list(workflowId, { suffix: '.orbt', filesOnly: true })
+        .filter(f => /^v\d+\.orbt$/.test(f))
         .map(f => parseInt(f.slice(1, -5), 10));
       return existing.length === 0 ? 1 : Math.max(...existing) + 1;
     } catch {
@@ -195,6 +195,6 @@ export class WorkflowStore {
   }
 
   private _versionPath(workflowId: string, version: number): string {
-    return `${workflowId}/v${version}.json`;
+    return `${workflowId}/v${version}.orbt`;
   }
 }

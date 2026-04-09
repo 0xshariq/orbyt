@@ -56,7 +56,7 @@ export interface ExecutionCheckpointSnapshot {
 /**
  * File-backed checkpoint store.
  *
- * One JSON file per run ID. All operations are best-effort and non-fatal,
+ * One .orbt file per run ID. All operations are best-effort and non-fatal,
  * so checkpoint failures never break workflow execution.
  */
 export class CheckpointStore {
@@ -98,8 +98,8 @@ export class CheckpointStore {
       this.adapter.ensureDir();
       // Stable ordering simplifies operational tooling and tests.
       return this.adapter
-        .list('', { suffix: '.json', filesOnly: true })
-        .map((f) => basename(f, '.json'))
+        .list('', { suffix: '.orbt', filesOnly: true })
+        .map((f) => basename(f, '.orbt'))
         .sort();
     } catch {
       return [];
@@ -107,7 +107,7 @@ export class CheckpointStore {
   }
 
   private fileName(runId: string): string {
-    return `${runId}.json`;
+    return `${runId}.orbt`;
   }
 
   private sanitize(snapshot: ExecutionCheckpointSnapshot): ExecutionCheckpointSnapshot {
