@@ -59,6 +59,8 @@ import type { EngineLogger } from '../logging/EngineLogger.js';
 import { LoggerManager } from '../logging/index.js';
 import { ParsedWorkflow, SecurityErrorCode, WorkflowLoadOptions } from '../types/core-types.js';
 
+type WorkflowInputSource = 'auto' | 'file' | 'yaml' | 'json' | 'object' | 'diagram' | 'api' | 'sdk';
+
 /**
  * Workflow Loader
  * 
@@ -161,6 +163,8 @@ export class WorkflowLoader {
       throw err;
     }
 
+    workflowObject = this.normalizeSupportedInput(workflowObject, resolvedPath, 'file');
+
     // Step 4: SECURITY - Check for internal/reserved fields before any validation
     WorkflowLoader._validateSecurity(workflowObject);
 
@@ -208,7 +212,11 @@ export class WorkflowLoader {
 
     // PHASE 1: LOADING
     // Parse YAML syntax to plain object (no validation yet)
-    const workflowObject = this.parseYAMLToObject(yamlContent, location);
+    const workflowObject = this.normalizeSupportedInput(
+      this.parseYAMLToObject(yamlContent, location),
+      location,
+      'yaml'
+    );
 
     // PHASE 2: VALIDATION — Security check first, then schema
     WorkflowLoader._validateSecurity(workflowObject);
@@ -239,7 +247,11 @@ export class WorkflowLoader {
 
     // PHASE 1: LOADING
     // Parse JSON syntax to plain object (no validation yet)
-    const workflowObject = this.parseJSONToObject(jsonContent, location);
+    const workflowObject = this.normalizeSupportedInput(
+      this.parseJSONToObject(jsonContent, location),
+      location,
+      'json'
+    );
 
     // PHASE 2: VALIDATION — Security check first, then schema
     WorkflowLoader._validateSecurity(workflowObject);
@@ -262,10 +274,32 @@ export class WorkflowLoader {
    */
   static async fromObject(workflowObject: unknown, logger?: EngineLogger): Promise<ParsedWorkflow> {
     // Object is already loaded — run security check then schema validation
+    workflowObject = this.normalizeSupportedInput(workflowObject, 'workflow object', 'object');
     WorkflowLoader._validateSecurity(workflowObject);
     const parsed = this.validateAndParse(workflowObject, 'workflow object', logger);
     WorkflowLoader._setContext(parsed);
     return parsed;
+  }
+
+  /**
+   * Canonical input entry point.
+   *
+   * Supports supported input kinds today:
+   * - YAML / JSON text
+   * - SDK / API workflow objects
+   * - Diagram objects
+   *
+   * Future input kinds should be added by extending normalizeSupportedInput().
+   */
+  static async fromInput(
+    input: string | unknown,
+    options: WorkflowLoadOptions = {}
+  ): Promise<ParsedWorkflow> {
+    if (typeof input === 'string') {
+      return this.fromString(input, options);
+    }
+
+    return this.fromObject(input, options.logger);
   }
 
   /**
@@ -288,21 +322,7 @@ export class WorkflowLoader {
     source: string | unknown,
     logger?: EngineLogger
   ): Promise<ParsedWorkflow> {
-    if (typeof source === 'string') {
-      // Check if it's a file path
-      if (existsSync(source)) {
-        return await this.fromFile(source, { logger });
-      } else {
-        // Try parsing as YAML/JSON
-        try {
-          return this.fromYAML(source, undefined, logger);
-        } catch {
-          return this.fromJSON(source, undefined, logger);
-        }
-      }
-    } else {
-      return this.fromObject(source, logger);
-    }
+    return this.fromInput(source, { logger });
   }
 
   /**
@@ -316,6 +336,8 @@ export class WorkflowLoader {
       str.endsWith('.yaml') ||
       str.endsWith('.yml') ||
       str.endsWith('.json') ||
+      str.endsWith('.orbyt') ||
+      str.endsWith('.orbt') ||
       str.includes('/') ||
       str.includes('\\') ||
       str.startsWith('./')
@@ -407,6 +429,244 @@ export class WorkflowLoader {
       tags: parsed.tags ?? parsed.metadata?.tags,
       filePath,
     });
+  }
+
+  /**
+   * Normalize supported input kinds into a workflow schema object.
+   *
+   * This is the single conversion gate for YAML, JSON, SDK objects, API
+   * objects, and diagram objects. Future input kinds should be added here.
+   */
+  private static normalizeSupportedInput(
+    input: unknown,
+    location: string,
+    sourceType: WorkflowInputSource = 'auto'
+  ): unknown {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return input;
+    }
+
+    const source = input as Record<string, any>;
+
+    if (this.isDiagramInput(source)) {
+      return this.convertDiagramToWorkflowObject(source, location);
+    }
+
+    if (sourceType === 'diagram' && this.isPlainObject(source.diagram)) {
+      return this.convertDiagramToWorkflowObject(source.diagram, location);
+    }
+
+    // API/SDK objects are accepted as-is when already shaped like the
+    // ecosystem-core workflow schema.
+    if (this.isWorkflowSchemaLike(source)) {
+      return source;
+    }
+
+    // Backward-compatible bridge: some SDKs may emit a top-level steps array.
+    if (Array.isArray(source.steps) && !source.workflow) {
+      const normalized = structuredClone(source);
+      normalized.workflow = { steps: structuredClone(source.steps) };
+      delete normalized.steps;
+      return normalized;
+    }
+
+    return source;
+  }
+
+  private static isWorkflowSchemaLike(value: Record<string, any>): boolean {
+    return this.isPlainObject(value.workflow) || Array.isArray(value.steps);
+  }
+
+  private static isDiagramInput(value: Record<string, any>): boolean {
+    return Array.isArray(value.nodes) && Array.isArray(value.edges);
+  }
+
+  private static convertDiagramToWorkflowObject(
+    diagram: Record<string, any>,
+    location: string
+  ): Record<string, any> {
+    const nodes = Array.isArray(diagram.nodes) ? diagram.nodes : [];
+    const edges = Array.isArray(diagram.edges) ? diagram.edges : [];
+
+    if (nodes.length === 0) {
+      throw new Error(`Invalid diagram input at ${location}: nodes array is required`);
+    }
+
+    const startNodes = nodes.filter((node: any) => node?.type === 'start');
+    if (startNodes.length !== 1) {
+      throw new Error(`Invalid diagram input at ${location}: exactly one start node is required`);
+    }
+
+    const endNodes = nodes.filter((node: any) => node?.type === 'end');
+    if (endNodes.length === 0) {
+      throw new Error(`Invalid diagram input at ${location}: at least one end node is required`);
+    }
+
+    const nodeMap = new Map<string, any>();
+    for (const node of nodes) {
+      if (!this.isPlainObject(node) || typeof node.id !== 'string') {
+        throw new Error(`Invalid diagram input at ${location}: every node must have a string id`);
+      }
+      nodeMap.set(node.id, node);
+    }
+
+    const incomingEdgesByTarget = new Map<string, any[]>();
+    const outgoingEdgesBySource = new Map<string, any[]>();
+
+    for (const edge of edges) {
+      if (!this.isPlainObject(edge) || typeof edge.source !== 'string' || typeof edge.target !== 'string') {
+        throw new Error(`Invalid diagram input at ${location}: every edge must have string source and target`);
+      }
+
+      if (!nodeMap.has(edge.source) || !nodeMap.has(edge.target)) {
+        throw new Error(`Invalid diagram input at ${location}: edge ${edge.id ?? `${edge.source}->${edge.target}`} references unknown nodes`);
+      }
+
+      const incoming = incomingEdgesByTarget.get(edge.target) ?? [];
+      incoming.push(edge);
+      incomingEdgesByTarget.set(edge.target, incoming);
+
+      const outgoing = outgoingEdgesBySource.get(edge.source) ?? [];
+      outgoing.push(edge);
+      outgoingEdgesBySource.set(edge.source, outgoing);
+    }
+
+    const executableNodes = nodes.filter((node: any) => node?.type === 'step' || node?.type === 'condition');
+    const reachable = new Set<string>();
+    const walk = (nodeId: string): void => {
+      if (reachable.has(nodeId)) return;
+      reachable.add(nodeId);
+      for (const edge of outgoingEdgesBySource.get(nodeId) ?? []) {
+        walk(edge.target);
+      }
+    };
+
+    walk(startNodes[0].id);
+
+    for (const node of executableNodes) {
+      if (!reachable.has(node.id)) {
+        throw new Error(`Invalid diagram input at ${location}: executable node "${node.id}" is not reachable from the start node`);
+      }
+    }
+
+    for (const node of nodes) {
+      if (node?.type === 'condition') {
+        const outgoing = outgoingEdgesBySource.get(node.id) ?? [];
+        if (outgoing.length < 2) {
+          throw new Error(`Invalid diagram input at ${location}: condition node "${node.id}" must have at least two outgoing edges`);
+        }
+      }
+    }
+
+    const steps = executableNodes.map((node: any) => {
+      const incoming = incomingEdgesByTarget.get(node.id) ?? [];
+      const edgeConditions = incoming
+        .map((edge: any) => typeof edge.condition === 'string' ? edge.condition.trim() : '')
+        .filter((condition: string) => condition.length > 0);
+
+      const nodeCondition = typeof node.data?.when === 'string' ? node.data.when.trim() : '';
+      const when = this.mergeDiagramConditions(nodeCondition, edgeConditions);
+
+      const adapter = typeof node.data?.adapter === 'string' && node.data.adapter.trim().length > 0
+        ? node.data.adapter.trim()
+        : node.type === 'condition'
+          ? 'control'
+          : undefined;
+
+      const action = typeof node.data?.action === 'string' && node.data.action.trim().length > 0
+        ? node.data.action.trim()
+        : node.type === 'condition'
+          ? 'condition.evaluate'
+          : undefined;
+
+      if (!adapter || !action) {
+        throw new Error(`Invalid diagram input at ${location}: step node "${node.id}" must define adapter and action`);
+      }
+
+      const step: Record<string, any> = {
+        id: node.id,
+        name: node.data?.label ?? node.id,
+        uses: `${adapter}.${action}`,
+        with: this.isPlainObject(node.data?.config) ? structuredClone(node.data.config) : {},
+        needs: incoming.map((edge: any) => edge.source).filter((sourceId: string) => nodeMap.has(sourceId)),
+        continueOnError: Boolean(node.data?.continueOnError ?? false),
+      };
+
+      if (when) {
+        step.when = when;
+      }
+
+      if (this.isPlainObject(node.data?.env)) {
+        step.env = structuredClone(node.data.env);
+      }
+
+      if (this.isPlainObject(node.data?.outputs)) {
+        step.outputs = structuredClone(node.data.outputs);
+      }
+
+      if (this.isPlainObject(node.data?.retry)) {
+        step.retry = structuredClone(node.data.retry);
+      }
+
+      if (typeof node.data?.timeout === 'string') {
+        step.timeout = node.data.timeout;
+      }
+
+      return step;
+    });
+
+    return {
+      version: typeof diagram.version === 'string' ? diagram.version : '1.0',
+      kind: typeof diagram.kind === 'string' ? diagram.kind : 'workflow',
+      name: diagram.metadata?.name ?? diagram.name,
+      description: diagram.metadata?.description ?? diagram.description,
+      metadata: this.isPlainObject(diagram.metadata)
+        ? structuredClone(diagram.metadata)
+        : undefined,
+      workflow: { steps },
+      inputs: this.isPlainObject(diagram.inputs) ? structuredClone(diagram.inputs) : undefined,
+      context: this.isPlainObject(diagram.context) ? structuredClone(diagram.context) : undefined,
+      secrets: this.isPlainObject(diagram.secrets) ? structuredClone(diagram.secrets) : undefined,
+      triggers: Array.isArray(diagram.triggers) ? structuredClone(diagram.triggers) : undefined,
+      defaults: this.isPlainObject(diagram.defaults) ? structuredClone(diagram.defaults) : undefined,
+      policies: this.isPlainObject(diagram.policies) ? structuredClone(diagram.policies) : undefined,
+      permissions: diagram.permissions,
+      resources: diagram.resources,
+      outputs: this.isPlainObject(diagram.outputs) ? structuredClone(diagram.outputs) : undefined,
+      strategy: this.isPlainObject(diagram.strategy) ? structuredClone(diagram.strategy) : undefined,
+      execution: this.isPlainObject(diagram.execution) ? structuredClone(diagram.execution) : undefined,
+      usage: this.isPlainObject(diagram.usage) ? structuredClone(diagram.usage) : undefined,
+      limits: this.isPlainObject(diagram.limits) ? structuredClone(diagram.limits) : undefined,
+      tags: Array.isArray(diagram.tags) ? structuredClone(diagram.tags) : diagram.metadata?.tags,
+      owner: typeof diagram.owner === 'string' ? diagram.owner : diagram.metadata?.owner,
+      annotations: this.isPlainObject(diagram.annotations) ? structuredClone(diagram.annotations) : undefined,
+    };
+  }
+
+  private static mergeDiagramConditions(
+    nodeCondition: string,
+    edgeConditions: string[]
+  ): string | undefined {
+    const normalizedNodeCondition = nodeCondition.trim();
+    const normalizedEdgeConditions = edgeConditions.map(condition => condition.trim()).filter(Boolean);
+
+    if (normalizedNodeCondition && normalizedEdgeConditions.length > 0) {
+      return `${normalizedNodeCondition} && (${normalizedEdgeConditions.map(condition => `(${condition})`).join(' || ')})`;
+    }
+
+    if (normalizedNodeCondition) {
+      return normalizedNodeCondition;
+    }
+
+    if (normalizedEdgeConditions.length > 1) {
+      return normalizedEdgeConditions.map(condition => `(${condition})`).join(' || ');
+    }
+
+    return normalizedEdgeConditions[0];
+  }
+
+  private static isPlainObject(value: unknown): value is Record<string, any> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
   }
 
   /**
