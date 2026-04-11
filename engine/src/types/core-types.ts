@@ -646,7 +646,7 @@ export type TriggerType = TriggerEnums.Cron | TriggerEnums.Interval | TriggerEnu
  * Workflow execution job payload
  */
 export interface WorkflowExecutionPayload {
-  /** Workflow definition (YAML string or parsed object) */
+  /** Workflow source string (.orbt path/content, YAML/JSON text) or parsed object */
   workflow: string | ParsedWorkflow;
 
   /** Execution options */

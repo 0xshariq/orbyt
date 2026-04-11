@@ -239,13 +239,13 @@ export interface EngineLoggerConfig {
  *   kind:              workflow.kind,
  *   description:       workflow.description,
  *   stepCount:         workflow.steps.length,
- *   filePath:          '/user/project/deploy.yaml',
+ *   filePath:          '/user/project/deploy.orbt',
  *   tags:              workflow.tags,
  * });
  * ```
  */
 export interface WorkflowContext {
-  /** Workflow name from the YAML file (e.g. "deploy-api") */
+  /** Workflow name from the .orbt workflow object file (e.g. "deploy-api") */
   name?: string;
   /** Engine-generated execution ID used to isolate logs per workflow run */
   executionId?: string;
@@ -259,7 +259,7 @@ export interface WorkflowContext {
   description?: string;
   /** Total number of declared steps */
   stepCount?: number;
-  /** Absolute path to the source YAML/JSON file */
+  /** Absolute path to the source .orbt workflow object file */
   filePath?: string;
   /** Tags from workflow metadata */
   tags?: string[];
