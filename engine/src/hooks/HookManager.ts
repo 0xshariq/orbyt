@@ -113,7 +113,8 @@ export class HookManager {
                     await (hookFn as any)(ctx, error);
                 } else if (type === 'onRetry' && 'attempt' in ctx) {
                     const stepCtx = ctx as StepHookContext;
-                    await (hookFn as any)(ctx, stepCtx.attempt, 3); // TODO: get maxAttempts from config
+                    const maxAttempts = stepCtx.maxAttempts ?? stepCtx.attempt;
+                    await (hookFn as any)(ctx, stepCtx.attempt, maxAttempts);
                 } else {
                     await (hookFn as any)(ctx);
                 }
@@ -127,7 +128,14 @@ export class HookManager {
                     hookName: hook.constructor?.name || 'AnonymousHook',
                 });
 
-                console.error(`[HookManager] Hook '${type}' failed:`, hookError);
+                LoggerManager.getLogger().error(
+                    `Hook '${String(type)}' failed`,
+                    hookError,
+                    {
+                        hookType: String(type),
+                        hookName: hook.constructor?.name || 'AnonymousHook',
+                    }
+                );
 
                 // If configured to fail on hook errors, rethrow
                 if (this.failOnHookError) {
@@ -222,10 +230,23 @@ export class HookManager {
      */
     getImplementedHooks(): (keyof LifecycleHook)[] {
         const implemented = new Set<keyof LifecycleHook>();
+        const hookTypes: (keyof LifecycleHook)[] = [
+            'beforeWorkflow',
+            'afterWorkflow',
+            'beforeStep',
+            'afterStep',
+            'onError',
+            'onRetry',
+            'onPause',
+            'onResume',
+        ];
 
         for (const hook of this.hooks) {
-            const keys = Object.keys(hook) as (keyof LifecycleHook)[];
-            keys.forEach((key) => implemented.add(key));
+            for (const hookType of hookTypes) {
+                if (typeof hook[hookType] === 'function') {
+                    implemented.add(hookType);
+                }
+            }
         }
 
         return Array.from(implemented);

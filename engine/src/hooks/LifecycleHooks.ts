@@ -45,6 +45,7 @@ export interface StepHookContext {
   stepName: string;
   adapterType: string;
   attempt: number;
+  maxAttempts?: number;
   inputs?: Record<string, any>;
   outputs?: Record<string, any>;
   startTime: number;
