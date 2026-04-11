@@ -126,21 +126,26 @@ export class WorkflowGuard {
    * @throws {Error} If circular dependency exists
    */
   static getExecutionOrder(steps: ParsedStep[]): ParsedStep[] {
-    // Build adjacency map and in-degree count
-    const graph = new Map<string, string[]>();
+    // Build dependency/dependent maps and in-degree count.
+    const dependenciesByStep = new Map<string, string[]>();
+    const dependentsByStep = new Map<string, string[]>();
     const inDegree = new Map<string, number>();
     const stepMap = new Map<string, ParsedStep>();
 
     for (const step of steps) {
       stepMap.set(step.id, step);
-      graph.set(step.id, step.needs);
-      inDegree.set(step.id, 0);
+      dependenciesByStep.set(step.id, step.needs);
+      dependentsByStep.set(step.id, []);
+      inDegree.set(step.id, step.needs.length);
     }
 
-    // Count in-degrees
+    // Build reverse links: dependency -> dependents
     for (const step of steps) {
       for (const depId of step.needs) {
-        inDegree.set(depId, (inDegree.get(depId) || 0) + 1);
+        const dependents = dependentsByStep.get(depId);
+        if (dependents) {
+          dependents.push(step.id);
+        }
       }
     }
 
@@ -154,6 +159,7 @@ export class WorkflowGuard {
         queue.push(stepId);
       }
     }
+    queue.sort();
 
     while (queue.length > 0) {
       const stepId = queue.shift()!;
@@ -161,16 +167,16 @@ export class WorkflowGuard {
       result.push(step);
 
       // Process dependents
-      for (const [otherId, deps] of graph.entries()) {
-        if (deps.includes(stepId)) {
-          const newDegree = (inDegree.get(otherId) || 0) - 1;
-          inDegree.set(otherId, newDegree);
-          
-          if (newDegree === 0) {
-            queue.push(otherId);
-          }
+      const dependents = dependentsByStep.get(stepId) || [];
+      for (const dependentId of dependents) {
+        const newDegree = (inDegree.get(dependentId) || 0) - 1;
+        inDegree.set(dependentId, newDegree);
+
+        if (newDegree === 0) {
+          queue.push(dependentId);
         }
       }
+      queue.sort();
     }
 
     // Check if all steps were processed
