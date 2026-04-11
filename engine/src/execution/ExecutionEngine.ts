@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { WorkflowParser } from '../parser/WorkflowParser.js';
+import { WorkflowLoader } from '../loader/WorkflowLoader.js';
 import { WorkflowExecutor } from './WorkflowExecutor.js';
 import { StepExecutor } from './StepExecutor.js';
 import { Scheduler } from '../scheduling/Scheduler.js';
@@ -248,7 +248,7 @@ export class ExecutionEngine {
 
     // Parse workflow if needed
     const parsedWorkflow = typeof workflow === 'string'
-      ? WorkflowParser.parse(workflow)
+      ? await WorkflowLoader.toWorkflowObject(workflow)
       : workflow;
 
     // Track execution
@@ -443,7 +443,7 @@ export class ExecutionEngine {
     try {
       // Parse workflow if needed
       const parsedWorkflow = typeof payload.workflow === 'string'
-        ? WorkflowParser.parse(payload.workflow)
+        ? await WorkflowLoader.toWorkflowObject(payload.workflow)
         : payload.workflow;
 
       const workflowName = parsedWorkflow.metadata?.name || parsedWorkflow.name || 'unnamed';

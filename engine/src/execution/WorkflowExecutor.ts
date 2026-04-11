@@ -59,8 +59,8 @@ export class WorkflowExecutor {
   }
 
   /**
-   * Set the directory where execution state JSON files are written.
-   * Defaults to <cwd>/.orbyt/executions
+  * Set the directory where execution state .orbt files are written.
+  * Defaults to <cwd>/.orbyt/executions
    */
   setStateDir(dir: string): void {
     this.stateDir = dir;
