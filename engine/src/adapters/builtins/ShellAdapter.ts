@@ -239,9 +239,8 @@ export class ShellAdapter extends BaseAdapter {
           `Command completed with exit code ${code} in ${duration}ms`
         );
 
-        // Check if we should throw on non-zero exit
-        const throwOnError = true; // Default behavior
-        if (throwOnError && code !== 0) {
+        // Treat non-zero exits as command failures.
+        if (code !== 0) {
           const error = new Error(
             `Command failed with exit code ${code}\n` +
             `Command: ${result.command}\n` +

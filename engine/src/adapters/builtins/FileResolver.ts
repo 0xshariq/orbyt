@@ -5,6 +5,7 @@
  */
 
 import path from 'node:path';
+import { existsSync, readdirSync } from 'node:fs';
 
 export interface FileResolverOptions {
   /**
@@ -60,15 +61,38 @@ export class FileResolver {
     // Interpolate variables
     const interpolated = this.interpolateVariables(pattern);
 
-    // Simple glob implementation: check if pattern contains wildcards
+    // Simple glob implementation: support * and ? in file name segment.
     if (!interpolated.includes('*') && !interpolated.includes('?')) {
       // No wildcards, just return the path
       return [path.isAbsolute(interpolated) ? interpolated : path.resolve(this.baseDir, interpolated)];
     }
 
-    // For now, return the pattern itself if it has wildcards
-    // A full implementation would require a glob library
-    return [path.isAbsolute(interpolated) ? interpolated : path.resolve(this.baseDir, interpolated)];
+    const absolutePattern = path.isAbsolute(interpolated)
+      ? interpolated
+      : path.resolve(this.baseDir, interpolated);
+
+    const dir = path.dirname(absolutePattern);
+    const filePattern = path.basename(absolutePattern);
+
+    if (!existsSync(dir)) {
+      return [];
+    }
+
+    const regex = this.globToRegExp(filePattern);
+    const matches = readdirSync(dir)
+      .filter((entry) => regex.test(entry))
+      .map((entry) => path.join(dir, entry))
+      .sort();
+
+    return matches;
+  }
+
+  private globToRegExp(pattern: string): RegExp {
+    const escaped = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '.*')
+      .replace(/\?/g, '.');
+    return new RegExp(`^${escaped}$`);
   }
 
   /**

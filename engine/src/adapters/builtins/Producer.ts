@@ -4,6 +4,8 @@
  * Publishes messages to a queue.
  */
 
+import { randomUUID } from 'node:crypto';
+
 export interface MessageOptions {
   /**
    * Message priority (higher = more important)
@@ -90,6 +92,7 @@ export abstract class Producer {
 export class MemoryProducer extends Producer {
   private connected = false;
   private messages: Array<{ message: unknown; options?: MessageOptions; timestamp: number }> = [];
+  private sequence = 0;
 
   async connect(): Promise<void> {
     this.connected = true;
@@ -105,7 +108,8 @@ export class MemoryProducer extends Producer {
     }
 
     const timestamp = Date.now();
-    const messageId = options?.messageId || `msg_${timestamp}_${Math.random().toString(36).substring(7)}`;
+    this.sequence += 1;
+    const messageId = options?.messageId || `msg_${timestamp}_${this.sequence}_${randomUUID().slice(0, 8)}`;
 
     this.messages.push({ message, options, timestamp });
 

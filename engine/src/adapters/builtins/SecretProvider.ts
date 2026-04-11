@@ -74,7 +74,7 @@ export class MemorySecretProvider implements SecretProvider {
   }
 
   async list(): Promise<string[]> {
-    return Array.from(this.secrets.keys());
+    return Array.from(this.secrets.keys()).sort();
   }
 
   async cleanup(): Promise<void> {
@@ -106,7 +106,8 @@ export class EnvSecretProvider implements SecretProvider {
   }
 
   async delete(key: string): Promise<boolean> {
-    if (process.env[this.prefix + key]) {
+    const envKey = this.prefix + key;
+    if (process.env[envKey] !== undefined) {
       delete process.env[this.prefix + key];
       return true;
     }
@@ -120,7 +121,8 @@ export class EnvSecretProvider implements SecretProvider {
   async list(): Promise<string[]> {
     return Object.keys(process.env)
       .filter(key => key.startsWith(this.prefix))
-      .map(key => key.substring(this.prefix.length));
+      .map(key => key.substring(this.prefix.length))
+      .sort();
   }
 
   async cleanup(): Promise<void> {

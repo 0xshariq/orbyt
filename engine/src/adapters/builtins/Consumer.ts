@@ -4,6 +4,8 @@
  * Consumes messages from a queue.
  */
 
+import { randomUUID } from 'node:crypto';
+
 export interface Message<T = unknown> {
   /**
    * Message ID
@@ -114,6 +116,7 @@ export abstract class Consumer {
 export class MemoryConsumer extends Consumer {
   private connected = false;
   private consuming = false;
+  private sequence = 0;
   private messages: Array<{
     id: string;
     body: unknown;
@@ -156,8 +159,9 @@ export class MemoryConsumer extends Consumer {
    * Add a message to the queue (for testing)
    */
   addMessage(body: unknown, headers?: Record<string, string>): void {
+    this.sequence += 1;
     this.messages.push({
-      id: `msg_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+      id: `msg_${Date.now()}_${this.sequence}_${randomUUID().slice(0, 8)}`,
       body,
       headers,
       timestamp: Date.now(),

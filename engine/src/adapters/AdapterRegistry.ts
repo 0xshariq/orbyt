@@ -31,23 +31,6 @@ export class AdapterNotFoundError extends OrbytError {
 }
 
 /**
- * Duplicate adapter error
- */
-export class DuplicateAdapterError extends OrbytError {
-  constructor(adapterName: string) {
-    super({
-      code: OrbytErrorCode.VALIDATION_DUPLICATE_ID,
-      message: `Adapter '${adapterName}' is already registered`,
-      severity: ErrorSeverity.ERROR,
-      hint: 'Use a different adapter name or unregister the existing one first',
-      context: {
-        adapterName,
-      },
-    });
-  }
-}
-
-/**
  * Adapter Registry
  * 
  * Manages the lifecycle and resolution of adapters.
@@ -61,7 +44,9 @@ export class AdapterRegistry {
    * Register an adapter
    * 
    * @param adapter - Adapter to register
-   * @throws {DuplicateAdapterError} If adapter name already registered
+    *
+    * Idempotent behavior:
+    * - If adapter name already exists, registration is skipped.
    */
   register(adapter: Adapter): void {
     const logger = LoggerManager.getLogger();

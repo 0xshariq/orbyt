@@ -199,9 +199,9 @@ export class QueueAdapter implements Adapter {
 
   private async consumeMessages(input: Record<string, any>, context: AdapterContext): Promise<unknown> {
     const queueName = input.queue as string;
-    const handlerCode = input.handler as string;
+    const handlerInput = input.handler as string | MessageHandler | undefined;
 
-    if (!queueName || !handlerCode) {
+    if (!queueName || !handlerInput) {
       throw new WorkflowValidationError(
         'Missing required parameters: queue, handler',
         { parameters: ['queue', 'handler'], hint: 'handler should be a function or workflow reference' }
@@ -210,16 +210,19 @@ export class QueueAdapter implements Adapter {
 
     const consumer = await this.getConsumer(queueName);
 
-    // For now, just start the consumer without a handler
-    // In a real implementation, you would compile the handler code
-    // or reference another workflow/step to handle messages
     const handler: MessageHandler = async (message) => {
+      if (typeof handlerInput === 'function') {
+        await handlerInput(message);
+        return;
+      }
+
       // Log message receipt (no silent behavior)
       if (context.log) {
         context.log(`[Queue:${queueName}] Received message: ${JSON.stringify(message).substring(0, 100)}...`, 'info');
-        context.log(`[Queue:${queueName}] Handler code: ${handlerCode}`, 'debug');
+        context.log(`[Queue:${queueName}] Handler reference: ${handlerInput}`, 'debug');
       }
-      // TODO: Execute handler code or workflow
+
+      // Safe default fallback: acknowledge when handler is non-executable text.
       await message.ack();
     };
 

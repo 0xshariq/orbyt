@@ -5,6 +5,7 @@
  */
 
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 
 export interface CommandResolution {
   /**
@@ -46,19 +47,29 @@ export class CLICommandResolver {
    * Resolve a CLI command
    */
   async resolve(command: string, args: string[] = []): Promise<CommandResolution> {
-    // Try to find the command in PATH
+    // Try to find the command on disk or in PATH.
     let absolutePath: string | undefined;
     let found = false;
 
-    // For now, assume command exists if it's in PATH or is a path
+    // Explicit path: resolve against cwd and verify existence.
     if (command.includes('/') || command.includes('\\')) {
       const resolvedPath = path.resolve(this.cwd, command);
-      absolutePath = resolvedPath;
-      found = true;
+      if (existsSync(resolvedPath)) {
+        absolutePath = resolvedPath;
+        found = true;
+      }
     } else {
-      // Assume command is in PATH
-      absolutePath = command;
-      found = true;
+      // Lookup command in PATH directories.
+      const pathValue = this.env.PATH || process.env.PATH || '';
+      const pathDirs = pathValue.split(path.delimiter).filter(Boolean);
+      for (const dir of pathDirs) {
+        const candidate = path.join(dir, command);
+        if (existsSync(candidate)) {
+          absolutePath = candidate;
+          found = true;
+          break;
+        }
+      }
     }
 
     // Resolve arguments (expand variables)
