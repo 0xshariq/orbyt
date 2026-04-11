@@ -7,6 +7,7 @@
  */
 
 import { LoggerManager } from '../logging/LoggerManager.js';
+import { freemem } from 'node:os';
 
 /**
  * Startup check result
@@ -122,7 +123,7 @@ export class StartupManager {
 
     // Check memory availability
     manager.registerCheck('Memory availability', () => {
-      const freeMem = process.memoryUsage().heapTotal;
+      const freeMem = freemem();
       const minRequired = 100 * 1024 * 1024; // 100MB
       
       if (freeMem < minRequired) {

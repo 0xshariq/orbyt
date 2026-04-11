@@ -56,10 +56,11 @@ export class ShutdownManager {
     });
 
     for (const { name, handler } of this.handlers) {
+      let timeoutHandle: NodeJS.Timeout | undefined;
       try {
         const handlerPromise = handler();
         const timeoutPromise = new Promise<void>((_, reject) => {
-          setTimeout(() => {
+          timeoutHandle = setTimeout(() => {
             reject(new Error(`Timeout after ${timeoutMs}ms`));
           }, timeoutMs);
         });
@@ -70,6 +71,10 @@ export class ShutdownManager {
         const message = error instanceof Error ? error.message : String(error);
         logger.error(`  ✗ ${name}: ${message}`);
         // Continue with other handlers even if one fails
+      } finally {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
       }
     }
 

@@ -7,6 +7,8 @@
  * @module lifecycle
  */
 
+import { LoggerManager } from '../logging/LoggerManager.js';
+
 /**
  * Engine lifecycle state
  */
@@ -191,8 +193,9 @@ export class EngineLifecycle {
    */
   async gracefulShutdown(timeoutMs: number = 30000): Promise<void> {
     const shutdownPromise = this.stop();
+    let timeoutHandle: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
+      timeoutHandle = setTimeout(() => {
         reject(new Error(
           `Engine shutdown timed out after ${timeoutMs}ms`
         ));
@@ -206,6 +209,10 @@ export class EngineLifecycle {
       // Force state to stopped
       this.state = EngineState.STOPPED;
       throw error;
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
@@ -269,7 +276,12 @@ export class EngineLifecycle {
    * Emit log message to console
    */
   private emit(level: 'info' | 'error', message: string): void {
-    const prefix = level === 'error' ? '❌' : '✓';
-    console.log(`${prefix} [Lifecycle] ${message}`);
+    const logger = LoggerManager.getLogger();
+    if (level === 'error') {
+      logger.error(`[Lifecycle] ${message}`);
+      return;
+    }
+
+    logger.info(`[Lifecycle] ${message}`);
   }
 }
