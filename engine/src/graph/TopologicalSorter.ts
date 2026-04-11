@@ -2,13 +2,13 @@
  * TopologicalSorter
  * 
  * Performs topological sorting on a dependency graph using Kahn's algorithm.
- * This is what makes parallel execution possible.
+ * This is the planning step that enables safe parallel execution.
  * 
  * Purpose:
  * - Convert DAG into execution phases
  * - Group independent steps into phases (parallelization!)
  * - Ensure dependencies are satisfied before execution
- * - This is "the moment Orbyt becomes real" - we go from sequential to parallel
+ * - Produce deterministic phase plans for runtime and diagnostics
  * 
  * Algorithm: Kahn's Algorithm (BFS-based)
  * 1. Start with all nodes that have no dependencies (in-degree = 0)
@@ -70,6 +70,9 @@ export class TopologicalSorter {
           currentPhase.push(stepId);
         }
       }
+
+      // Keep phase output deterministic across runs.
+      currentPhase.sort();
 
       // If no nodes are ready but we haven't processed everything,
       // there must be a cycle

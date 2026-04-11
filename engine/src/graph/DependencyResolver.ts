@@ -12,7 +12,7 @@
  * 
  * What it does NOT do:
  * - Does NOT check for cycles (that's CycleDetector's job)
- * - Does NOT order steps (that's TopologicalSort's job)
+ * - Does NOT order steps (that's TopologicalSorter job)
  * - Does NOT execute anything (that's StepExecutor's job)
  * - Does NOT manage state (that's ExecutionState's job)
  * 
@@ -69,7 +69,7 @@ export class DependencyResolver {
             {
               stepId: node.stepId,
               missingDependency: dependency,
-              availableSteps: Array.from(nodeMap.keys()),
+              availableSteps: Array.from(nodeMap.keys()).sort(),
               hint: `Check that "${dependency}" is spelled correctly and exists in the workflow`,
             }
           );
@@ -135,7 +135,7 @@ export class DependencyResolver {
       }
     }
 
-    return entryPoints;
+    return entryPoints.sort();
   }
 
   /**
@@ -154,7 +154,7 @@ export class DependencyResolver {
       }
     }
 
-    return exitPoints;
+    return exitPoints.sort();
   }
 
   /**

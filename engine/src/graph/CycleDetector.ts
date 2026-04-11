@@ -17,7 +17,7 @@
  * A cycle exists if we encounter a GRAY node during traversal.
  * 
  * What it does NOT do:
- * - Does NOT order the graph (that's TopologicalSort's job)
+ * - Does NOT order the graph (that's TopologicalSorter job)
  * - Does NOT execute anything (that's StepExecutor's job)
  * - Does NOT schedule steps (that's WorkflowExecutor's job)
  */
@@ -40,14 +40,15 @@ export class CycleDetector {
   static detect(graph: DependencyGraph): CycleDetectionResult {
     const visitState = new Map<string, VisitState>();
     const parent = new Map<string, string>();
+    const nodeIds = Array.from(graph.nodes.keys()).sort();
     
     // Initialize all nodes as unvisited
-    for (const stepId of graph.nodes.keys()) {
+    for (const stepId of nodeIds) {
       visitState.set(stepId, VisitState.WHITE);
     }
 
     // Try DFS from each unvisited node
-    for (const stepId of graph.nodes.keys()) {
+    for (const stepId of nodeIds) {
       if (visitState.get(stepId) === VisitState.WHITE) {
         const result = this.dfs(stepId, graph, visitState, parent);
         if (result.hasCycle) {
@@ -78,7 +79,7 @@ export class CycleDetector {
     visitState.set(nodeId, VisitState.GRAY);
 
     // Visit all dependencies (outgoing edges)
-    const dependencies = graph.adjacencyList.get(nodeId) || [];
+    const dependencies = [...(graph.adjacencyList.get(nodeId) || [])].sort();
     
     for (const dependency of dependencies) {
       const state = visitState.get(dependency);
@@ -182,7 +183,8 @@ export class CycleDetector {
     const sccs: string[][] = [];
     let currentIndex = 0;
 
-    for (const nodeId of graph.nodes.keys()) {
+    const nodeIds = Array.from(graph.nodes.keys()).sort();
+    for (const nodeId of nodeIds) {
       if (!index.has(nodeId)) {
         this.strongConnect(
           nodeId,
@@ -197,7 +199,7 @@ export class CycleDetector {
       }
     }
 
-    return sccs;
+    return sccs.map(component => component.slice().sort());
   }
 
   /**
@@ -221,7 +223,7 @@ export class CycleDetector {
     onStack.set(nodeId, true);
 
     // Visit all dependencies
-    const dependencies = graph.adjacencyList.get(nodeId) || [];
+    const dependencies = [...(graph.adjacencyList.get(nodeId) || [])].sort();
     for (const dependency of dependencies) {
       if (!index.has(dependency)) {
         // Successor has not been visited; recurse
