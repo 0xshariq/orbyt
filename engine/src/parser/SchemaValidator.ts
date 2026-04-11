@@ -1,7 +1,7 @@
 /**
  * Schema Validator
  * 
- * Validates workflow YAML/JSON against Zod schema from @dev-ecosystem/core.
+ * Validates workflow .orbt/YAML/JSON inputs against Zod schema from @dev-ecosystem/core.
  * Provides enhanced error diagnostics with typo detection and helpful suggestions.
  * 
  * @module parser
@@ -24,10 +24,13 @@ import type { WorkflowLimitsPolicy, WorkflowUsagePolicy } from '../types/core-ty
  * Enhanced schema validator with diagnostic capabilities
  */
 export class SchemaValidator {
+  private static readonly FREE_FORM_PATHS = ['annotations', 'context', 'secrets', 'inputs'] as const;
+  private static readonly FREE_FORM_FIELDS = ['annotations', 'context', 'with', 'outputs', 'env', 'secrets', 'inputs'] as const;
+
   /**
    * Validate raw workflow data against Zod schema
    * 
-   * @param rawWorkflow - Raw workflow object from YAML/JSON
+    * @param rawWorkflow - Raw workflow object from .orbt/YAML/JSON
    * @returns Validated and typed workflow definition
    * @throws {OrbytError} If validation fails with detailed diagnostics
    */
@@ -37,16 +40,16 @@ export class SchemaValidator {
     try {
       logger.validationStarted('workflow', 'schema');
 
+      // Normalize first so ParsedWorkflow-shaped .orbt objects are accepted by
+      // root field validation and the core schema parser.
+      const normalizedForCore = this.normalizeForCoreSchema(rawWorkflow);
+
       // First, check for unknown fields at root level
-      this.validateUnknownFields(rawWorkflow as Record<string, any>, 'root');
+      this.validateUnknownFields(normalizedForCore as Record<string, any>, 'root');
 
       // Phase-2 foundation validation for usage/limits schema blocks.
       // This is engine-local and warning-policy focused.
       this.validateUsageAndLimits(rawWorkflow);
-
-      // Normalize engine-local additions before core schema parse so we remain
-      // forward-compatible while ecosystem-core schema evolves.
-      const normalizedForCore = this.normalizeForCoreSchema(rawWorkflow);
 
       // Use Zod schema from ecosystem-core for structural validation
       const validated = OrbytWorkflowSchema.parse(normalizedForCore);
@@ -141,6 +144,10 @@ export class SchemaValidator {
 
     const normalized = structuredClone(rawWorkflow as Record<string, any>);
 
+    // Accept canonical .orbt ParsedWorkflow shape by converting it back into
+    // the core schema shape expected by OrbytWorkflowSchema.
+    this.normalizeParsedWorkflowShape(normalized);
+
     // limits is an engine-local foundation block and not yet part of
     // ecosystem-core root schema.
     if ('limits' in normalized) {
@@ -165,6 +172,59 @@ export class SchemaValidator {
     }
 
     return normalized;
+  }
+
+  private static normalizeParsedWorkflowShape(normalized: Record<string, any>): void {
+    if (!Array.isArray(normalized.steps) || this.isPlainObject(normalized.workflow)) {
+      return;
+    }
+
+    const normalizedSteps = normalized.steps.map((step: any) => this.normalizeParsedStepShape(step));
+    normalized.workflow = { steps: normalizedSteps };
+    delete normalized.steps;
+
+    if (!this.isPlainObject(normalized.metadata)) {
+      normalized.metadata = {};
+    }
+
+    if (typeof normalized.name === 'string' && !normalized.metadata.name) {
+      normalized.metadata.name = normalized.name;
+    }
+    if (typeof normalized.description === 'string' && !normalized.metadata.description) {
+      normalized.metadata.description = normalized.description;
+    }
+    if (Array.isArray(normalized.tags) && !normalized.metadata.tags) {
+      normalized.metadata.tags = normalized.tags;
+    }
+    if (typeof normalized.owner === 'string' && !normalized.metadata.owner) {
+      normalized.metadata.owner = normalized.owner;
+    }
+  }
+
+  private static normalizeParsedStepShape(step: any): Record<string, any> {
+    if (!this.isPlainObject(step)) {
+      return step;
+    }
+
+    const normalizedStep: Record<string, any> = { ...step };
+
+    if (typeof normalizedStep.action === 'string' && !normalizedStep.uses) {
+      normalizedStep.uses = normalizedStep.action;
+    }
+
+    if (this.isPlainObject(normalizedStep.input) && !this.isPlainObject(normalizedStep.with)) {
+      normalizedStep.with = normalizedStep.input;
+    }
+
+    delete normalizedStep.action;
+    delete normalizedStep.adapter;
+    delete normalizedStep.input;
+
+    if (!Array.isArray(normalizedStep.needs)) {
+      normalizedStep.needs = [];
+    }
+
+    return normalizedStep;
   }
 
   private static validateUsageAndLimits(rawWorkflow: unknown): void {
@@ -290,8 +350,7 @@ export class SchemaValidator {
     }
 
     // Free-form field paths - these can contain any user-defined keys
-    const FREE_FORM_PATHS = ['annotations', 'context', 'secrets', 'inputs'];
-    const isFreeFormPath = FREE_FORM_PATHS.some(fp => path === fp || path.endsWith('.' + fp));
+    const isFreeFormPath = this.FREE_FORM_PATHS.some(fp => path === fp || path.endsWith('.' + fp));
 
     // Skip validation for free-form paths (user can define any fields)
     if (isFreeFormPath) {
@@ -334,12 +393,11 @@ export class SchemaValidator {
 
       // Recursively validate nested objects
       // Skip validation for free-form fields (user-defined content)
-      const FREE_FORM_FIELDS = ['annotations', 'context', 'with', 'outputs', 'env', 'secrets', 'inputs'];
       const value = obj[field];
 
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         // Don't validate contents of free-form fields (they can contain any keys)
-        if (!FREE_FORM_FIELDS.includes(field)) {
+        if (!this.FREE_FORM_FIELDS.includes(field as (typeof this.FREE_FORM_FIELDS)[number])) {
           const nestedPath = path === 'root' ? field : `${path}.${field}`;
           this.validateUnknownFields(value, nestedPath);
         }

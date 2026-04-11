@@ -16,6 +16,26 @@ import type { ParsedStep } from '../types/core-types.js';
  * Parses individual workflow steps with enhanced validation
  */
 export class StepParser {
+  private static readonly BUILTIN_ADAPTERS = [
+    'http',
+    'shell',
+    'cli',
+    'fs',
+    'webhook',
+    'db',
+    'queue',
+    'secrets',
+    'control',
+  ] as const;
+
+  private static isBuiltInAdapter(prefix: string): boolean {
+    return this.BUILTIN_ADAPTERS.includes(prefix as (typeof this.BUILTIN_ADAPTERS)[number]);
+  }
+
+  private static getStepIndex(steps: ParsedStep[], stepId: string): number {
+    return steps.findIndex((s) => s.id === stepId);
+  }
+
   /**
    * Parse a step definition into internal representation
    * Enhanced with better validation
@@ -61,7 +81,7 @@ export class StepParser {
       adapter,
       action: stepDef.uses,
       input: stepDef.with || {},
-      needs: stepDef.needs || [],
+      needs: Array.from(new Set(stepDef.needs || [])),
       name: stepDef.name,
       when: stepDef.when,
       continueOnError: stepDef.continueOnError || false,
@@ -100,6 +120,16 @@ export class StepParser {
    * @returns Adapter type string
    */
   static resolveAdapter(uses: string, stepPath?: string): string {
+    if (uses.trim() !== uses) {
+      throw new SchemaError({
+        code: 'ORB-S-006' as any,
+        message: `Invalid action format: "${uses}"`,
+        path: stepPath ? `${stepPath}.uses` : 'step.uses',
+        hint: 'Action value must not contain leading/trailing spaces.',
+        severity: 'error' as any,
+      });
+    }
+
     // Validate format: must contain at least one dot
     if (!uses.includes('.')) {
       throw new SchemaError({
@@ -113,17 +143,17 @@ export class StepParser {
 
     // Extract prefix before first dot
     const prefix = uses.split('.')[0];
+    const normalizedPrefix = prefix.toLowerCase();
 
     // Built-in adapter types
-    const builtInAdapters = ['http', 'shell', 'cli', 'fs', 'webhook'];
-
-    if (builtInAdapters.includes(prefix)) {
-      return prefix;
+    if (this.isBuiltInAdapter(normalizedPrefix)) {
+      return normalizedPrefix;
     }
 
     // Check for common typos in built-in adapters
-    const closestAdapter = findClosestMatch(prefix, builtInAdapters, 0.7);
-    if (closestAdapter && isLikelyTypo(prefix, closestAdapter)) {
+    const builtInAdapters = [...this.BUILTIN_ADAPTERS];
+    const closestAdapter = findClosestMatch(normalizedPrefix, builtInAdapters, 0.7);
+    if (closestAdapter && isLikelyTypo(normalizedPrefix, closestAdapter)) {
       throw new SchemaError({
         code: 'ORB-V-008' as any,
         message: `Unknown adapter: "${prefix}"`,
@@ -240,6 +270,16 @@ export class StepParser {
 
     steps.forEach((step, index) => {
       for (const dependency of step.needs) {
+        if (dependency === step.id) {
+          throw new ValidationError({
+            code: 'ORB-V-005' as any,
+            message: `Step "${step.id}" cannot depend on itself`,
+            path: `workflow.steps[${index}].needs`,
+            hint: `Remove "${step.id}" from its own "needs" array.`,
+            severity: 'error' as any,
+          });
+        }
+
         if (!stepIds.has(dependency)) {
           // Try to find similar step IDs
           const suggestion = findClosestMatch(dependency, allStepIds, 0.6);
@@ -370,16 +410,28 @@ export class StepParser {
 
       // Check if output values reference other steps
       for (const [outputKey, outputValue] of Object.entries(step.outputs)) {
+        if (typeof outputValue !== 'string') {
+          const stepIndex = this.getStepIndex(steps, stepId);
+          throw new ValidationError({
+            code: 'ORB-S-002' as any,
+            message: `Invalid output mapping for "${outputKey}": expected string expression`,
+            path: `workflow.steps[${stepIndex}].outputs.${outputKey}`,
+            hint: 'Output mappings must be string expressions, e.g. "${steps.fetch.outputs.body}".',
+            severity: 'error' as any,
+          });
+        }
+
         // Look for ${steps.X.outputs.Y} patterns
         const stepRefs = outputValue.match(/\$\{steps\.([^.]+)\./g);
         if (stepRefs) {
           for (const ref of stepRefs) {
             const referencedStepId = ref.match(/steps\.([^.]+)/)?.[1];
             if (referencedStepId && !executed.has(referencedStepId)) {
+              const stepIndex = this.getStepIndex(steps, stepId);
               throw new ValidationError({
                 code: 'ORB-V-005' as any,
                 message: `Step "${stepId}" references output from "${referencedStepId}" which hasn't executed yet`,
-                path: `workflow.steps[${steps.findIndex(s => s.id === stepId)}].outputs.${outputKey}`,
+                path: `workflow.steps[${stepIndex}].outputs.${outputKey}`,
                 hint: `Add "${referencedStepId}" to the "needs" array of step "${stepId}".`,
                 severity: 'error' as any,
               });

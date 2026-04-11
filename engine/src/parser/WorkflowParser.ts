@@ -1,7 +1,7 @@
 /**
  * Workflow Parser
  * 
- * Main entry point for parsing workflows from YAML/JSON.
+ * Main entry point for parsing workflows from .orbt/YAML/JSON.
  * Orchestrates schema validation and step parsing.
  * 
  * @module parser
@@ -18,8 +18,43 @@ import { ParsedWorkflow } from '../types/core-types.js';
  * Main workflow parser class
  */
 export class WorkflowParser {
+  private static ensureNonEmptyContent(content: string, format: string): void {
+    if (content.trim().length === 0) {
+      throw new Error(`${format} parsing failed: content is empty`);
+    }
+  }
+
+  private static inferInlineFormat(content: string): 'json' | 'yaml' {
+    const trimmed = content.trimStart();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return 'json';
+    }
+    return 'yaml';
+  }
+
+  private static parseTextContent(
+    content: string,
+    formatLabel: 'YAML' | 'JSON' | 'ORBT',
+    parserType: 'yaml' | 'json' | 'orbt',
+    parseFn: (raw: string) => unknown,
+  ): ParsedWorkflow {
+    const logger = LoggerManager.getLogger();
+    try {
+      logger.parsingStarted(formatLabel, parserType);
+      this.ensureNonEmptyContent(content, formatLabel);
+      const parsed = parseFn(content);
+      return this.parse(parsed);
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.parsingFailed(formatLabel, error);
+        throw new Error(`${formatLabel} parsing failed: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
   /**
-   * Parse workflow from raw object (already parsed YAML/JSON)
+    * Parse workflow from raw object (already parsed .orbt/JSON/YAML content)
    * 
    * @param rawWorkflow - Raw workflow object
    * @returns Parsed workflow ready for execution
@@ -113,18 +148,7 @@ export class WorkflowParser {
    * @returns Parsed workflow
    */
   static fromYAML(yamlContent: string): ParsedWorkflow {
-    const logger = LoggerManager.getLogger();
-    try {
-      logger.parsingStarted('YAML', 'yaml');
-      const parsed = YAML.parse(yamlContent);
-      return this.parse(parsed);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.parsingFailed('YAML', error);
-        throw new Error(`YAML parsing failed: ${error.message}`);
-      }
-      throw error;
-    }
+    return this.parseTextContent(yamlContent, 'YAML', 'yaml', (raw) => YAML.parse(raw));
   }
 
   /**
@@ -134,18 +158,16 @@ export class WorkflowParser {
    * @returns Parsed workflow
    */
   static fromJSON(jsonContent: string): ParsedWorkflow {
-    const logger = LoggerManager.getLogger();
-    try {
-      logger.parsingStarted('JSON', 'json');
-      const parsed = JSON.parse(jsonContent);
-      return this.parse(parsed);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.parsingFailed('JSON', error);
-        throw new Error(`JSON parsing failed: ${error.message}`);
-      }
-      throw error;
-    }
+    return this.parseTextContent(jsonContent, 'JSON', 'json', (raw) => JSON.parse(raw));
+  }
+
+  /**
+   * Parse workflow from .orbt content.
+   *
+   * .orbt is treated as canonical JSON workflow object format.
+   */
+  static fromORBT(orbtContent: string): ParsedWorkflow {
+    return this.parseTextContent(orbtContent, 'ORBT', 'orbt', (raw) => JSON.parse(raw));
   }
 
   /**
@@ -156,21 +178,28 @@ export class WorkflowParser {
    * @returns Parsed workflow
    */
   static fromFile(content: string, filename?: string): ParsedWorkflow {
+    this.ensureNonEmptyContent(content, 'Workflow file');
+
     // Try to detect format from filename
     if (filename) {
-      if (filename.endsWith('.yaml') || filename.endsWith('.yml')) {
+      const lowerFileName = filename.toLowerCase();
+      if (lowerFileName.endsWith('.yaml') || lowerFileName.endsWith('.yml')) {
         return this.fromYAML(content);
       }
-      if (filename.endsWith('.json')) {
+      if (lowerFileName.endsWith('.json')) {
         return this.fromJSON(content);
+      }
+      if (lowerFileName.endsWith('.orbt')) {
+        return this.fromORBT(content);
       }
     }
 
-    // Auto-detect: try YAML first (more common), then JSON
+    // Auto-detect inline content for unknown extensions.
+    const inferred = this.inferInlineFormat(content);
     try {
-      return this.fromYAML(content);
+      return inferred === 'json' ? this.fromJSON(content) : this.fromYAML(content);
     } catch {
-      return this.fromJSON(content);
+      return inferred === 'json' ? this.fromYAML(content) : this.fromJSON(content);
     }
   }
 
