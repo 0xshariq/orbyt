@@ -40,9 +40,15 @@ export class TimeoutManager {
     config: TimeoutConfig
   ): Promise<T> {
     const startTime = Date.now();
-    
+    let finished = false;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+
     const timeoutPromise = new Promise<never>((_, reject) => {
-      const timeout = setTimeout(async () => {
+      timeoutHandle = setTimeout(async () => {
+        if (finished) {
+          return;
+        }
+
         const elapsedMs = Date.now() - startTime;
         const error = new TimeoutError(
           config.operation 
@@ -72,11 +78,16 @@ export class TimeoutManager {
       }, config.timeoutMs);
 
       // Ensure timeout is cleared if operation completes
-      timeout.unref?.();
+      timeoutHandle.unref?.();
     });
 
     try {
       const result = await Promise.race([operation(), timeoutPromise]);
+      finished = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+
       // Add successful execution time for monitoring
       const executionTime = Date.now() - startTime;
       if (result && typeof result === 'object' && result !== null) {
@@ -84,6 +95,11 @@ export class TimeoutManager {
       }
       return result;
     } catch (error) {
+      finished = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+
       // If it's our timeout error, re-throw
       if (error instanceof TimeoutError) {
         throw error;

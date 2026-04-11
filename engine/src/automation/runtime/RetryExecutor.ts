@@ -166,7 +166,7 @@ export class RetryExecutor {
         await listeners?.onRetry?.(err, delayMs, context);
         
         const retryStartTime = Date.now();
-        await BackoffTimer.wait(policy.getBackoffStrategy(), attempt);
+        await BackoffTimer.sleep(delayMs);
         totalRetryTimeMs += Date.now() - retryStartTime;
       }
     }
@@ -262,16 +262,16 @@ export class RetryExecutor {
     listeners?: RetryListeners<T>
   ): Promise<RetryResult<T>> {
     return this.execute(
-      async () => {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), timeoutMs);
-        
-        try {
-          return await operation();
-        } finally {
-          clearTimeout(timeout);
-        }
-      },
+      async () => Promise.race<T>([
+        operation(),
+        new Promise<T>((_, reject) => {
+          const timeout = setTimeout(() => {
+            clearTimeout(timeout);
+            reject(new Error(`Operation timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+          timeout.unref?.();
+        }),
+      ]),
       policy,
       listeners
     );
