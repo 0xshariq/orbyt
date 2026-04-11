@@ -92,6 +92,7 @@ export function createStepExecuteEvent(options: {
   idempotencyKey?: string;
 }): UsageEvent {
   const id = generateUsageEventId();
+  const success = options.success ?? !options.error;
   return {
     id,
     type: CoreUsageEventType.STEP_EXECUTE,
@@ -111,7 +112,7 @@ export function createStepExecuteEvent(options: {
     metadata: {
       ...options.metadata,
       durationMs: options.durationMs,
-      success: options.success ?? true,
+      success,
       retries: options.retries ?? 0,
       ...(options.error && { error: options.error }),
     },
@@ -139,6 +140,7 @@ export function createAdapterCallEvent(options: {
   idempotencyKey?: string;
 }): UsageEvent {
   const id = generateUsageEventId();
+  const success = options.success ?? !options.error;
   return {
     id,
     type: CoreUsageEventType.ADAPTER_CALL,
@@ -158,7 +160,7 @@ export function createAdapterCallEvent(options: {
     metadata: {
       ...options.metadata,
       durationMs: options.durationMs,
-      success: options.success ?? true,
+      success,
       retries: options.retries ?? 0,
       ...(options.error && { error: options.error }),
     },
