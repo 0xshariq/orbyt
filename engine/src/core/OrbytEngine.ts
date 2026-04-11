@@ -31,7 +31,7 @@
  * 
  * These components must integrate via:
  *   - Custom adapters (Adapter interface)
- *   - Workflow definitions (YAML)
+ *   - Workflow source files (YAML, JSON, diagram files)
  *   - SDK/client libraries
  * 
  * They CANNOT:
@@ -107,99 +107,42 @@ import {
 
 /**
  * OrbytEngine - Main public API
- * 
- * ARCHITECTURE & TRUST BOUNDARIES
- * =================
- * 
- * This class defines the ONLY public API surface for the Orbyt Engine.
- * It establishes clear trust boundaries between different consumers:
- * 
- * TRUSTED FIRST-PARTY CONSUMERS (Direct Access):
- * -----------------------------------------------
- * - @orbyt/cli (Official CLI)
- * - @orbyt/api (Official API Server)
- * 
- * These components may import and use:
- *   - OrbytEngine class
- *   - Public types (WorkflowResult, WorkflowRunOptions)
- *   - Event bus for observability
- * 
- * They MUST NOT:
- *   - Import internal execution modules
- *   - Bypass security validation
- *   - Directly manipulate internal state
- * 
- * EXTERNAL ECOSYSTEM COMPONENTS (Adapter/SDK Access):
- * ----------------------------------------------------
- * - MediaProc, DevForge, Voxa, etc.
- * - Third-party plugins
- * - Marketplace extensions
- * 
- * These components must integrate via:
- *   - Custom adapters (Adapter interface)
- *   - Workflow definitions (YAML)
- *   - SDK/client libraries
- * 
- * They CANNOT:
- *   - Import engine internals
- *   - Access ExecutionEngine directly
- *   - Manipulate billing/security context
- * 
- * SECURITY GUARANTEES:
- * --------------------
- * 1. Users cannot specify reserved internal fields in workflows
- *    (Validated at parse time - workflow is rejected if found)
- * 
- * 2. Internal context is ALWAYS engine-generated
- *    (executionId, billing, ownership, audit fields)
- * 
- * 3. CLI/API can pass ownership context but cannot forge billing
- *    (Ownership from trusted auth, billing from engine pricing snapshot)
- * 
- * 4. All workflow execution goes through this single entry point
- *    (No backdoor execution paths)
- * 
- * WHY THIS MATTERS:
- * -----------------
- * - Billing integrity: Users cannot manipulate usage tracking
- * - Audit trail: All executions are properly logged
- * - Refactor safety: Internal changes don't break integrations
- * - Security: Clear separation of trusted vs untrusted code
- * 
- * User-facing engine class that provides a clean, intuitive API for running workflows.
- * Wraps the internal ExecutionEngine with a simpler interface.
- * 
- * This is the primary interface for working with Orbyt workflows.
- * Provides a clean, user-friendly API that abstracts internal complexity.
- * 
- * SECURITY & ARCHITECTURE:
- * =================
- * This class is the SINGLE ENTRY POINT for all workflow execution.
- * All execution paths (run, validate, dryRun) go through this engine.
- * 
- * INTERNAL CONTEXT INJECTION:
- * - Engine ALWAYS creates internal execution context
- * - Users CANNOT override billing, identity, or ownership fields
- * - Context sanitization removes any injection attempts
- * - Billing tracking is engine-controlled, never user-controlled
- * 
- * FIELDS THAT ARE NEVER USER-CONTROLLED:
- * - executionId, runId, traceId (identity)
- * - userId, workspaceId, subscriptionId (ownership)
- * - billingId, pricingTier, costCalculated (billing)
- * - usage counters, step counts, duration (metrics)
- * - security policies, permissions (access control)
- * 
- * WORKFLOW YAML vs ENGINE RUNTIME:
- * - User controls: business logic, step definitions, parameters
- * - Engine controls: billing, identity, execution tracking, security
- * - Clear separation prevents billing manipulation and security bypass
+ *
+ * This is the main class that users call when they want to work with workflows.
+ * It provides the public methods for running, validating, and explaining workflows.
+ *
+ * Main role in the system:
+ * - Accept workflow input from trusted app layers (CLI/API/SDK/tests).
+ * - Ensure the workflow is parsed and validated before any execution starts.
+ * - Apply engine-side preflight checks (version, adapter capability, runtime rules).
+ * - Coordinate execution through internal runtime/executor components.
+ *
+ * End-to-end input and execution flow:
+ * 1. Caller passes workflow source (file path, text, or object).
+ * 2. WorkflowLoader resolves the source and returns a validated ParsedWorkflow.
+ * 3. OrbytEngine applies preflight safety checks.
+ * 4. Engine builds internal runtime context (identity/ownership/billing metadata).
+ * 5. Workflow execution is delegated to execution components.
+ * 6. Engine records lifecycle telemetry, usage, and persistence artifacts.
+ *
+ * Trust and safety boundaries:
+ * - This class is the single public execution entry point.
+ * - Internal fields are not user-controlled (identity, billing, usage internals).
+ * - Reserved-field protection is enforced before execution.
+ * - Runtime/billing tracking is engine-managed to preserve integrity.
+ *
+ * Why this design is useful:
+ * - One consistent execution path for every caller.
+ * - Clear separation of concerns (loader/parser vs orchestration vs runtime).
+ * - Better maintainability: internal refactors do not break public API usage.
+ * - Easier diagnostics: all major operations pass through one place.
  * 
  * @example
  * ```ts
  * // Basic usage
  * const engine = new OrbytEngine();
- * const result = await engine.run('./workflow.yaml');
+ * const workflow = await WorkflowLoader.fromFile('./workflow.yaml');
+ * const result = await engine.run(workflow);
  * 
  * // With configuration
  * const engine = new OrbytEngine({
@@ -210,14 +153,16 @@ import {
  * });
  * 
  * // With options
- * const result = await engine.run('./workflow.yaml', {
+ * const workflow = await WorkflowLoader.fromFile('./workflow.json');
+ * const result = await engine.run(workflow, {
  *   variables: { inputFile: './data.json' },
  *   timeout: 60000,
  *   dryRun: false
  * });
  * 
  * // From bridge/API with ownership context
- * const result = await engine.run('./workflow.yaml', {
+ * const workflow = await WorkflowLoader.fromYAML(requestBody);
+ * const result = await engine.run(workflow, {
  *   variables: { input: 'data' },
  *   _ownershipContext: {
  *     userId: 'user_123',
@@ -607,7 +552,7 @@ export class OrbytEngine {
    * ARCHITECTURE NOTE:
    * ==================
    * This method is I/O-AGNOSTIC - it does NOT read files or touch filesystem.
-   * File loading is handled byWorkflowLoader (separate utility layer).
+  * File loading is handled by WorkflowLoader (separate utility layer).
    * 
    * This keeps the engine:
    * - Testable (no file dependencies)
@@ -616,7 +561,7 @@ export class OrbytEngine {
    * 
    * Main method for executing workflows.
    * 
-   * @param workflow - Parsed workflow object OR YAML string content
+   * @param workflow - Parsed workflow object or a source input handled by WorkflowLoader
    * @param options - Execution options
    * @returns Workflow execution result
    * 
@@ -805,25 +750,9 @@ export class OrbytEngine {
    * Resolve any accepted workflow input to a parsed workflow and run preflight checks.
    */
   private async resolveWorkflowInput(workflow: string | ParsedWorkflow): Promise<ParsedWorkflow> {
-    let parsedWorkflow: ParsedWorkflow;
-
-    if (typeof workflow === 'string') {
-      if (WorkflowLoader.looksLikeFilePath(workflow) && existsSync(workflow)) {
-        parsedWorkflow = await WorkflowLoader.fromFile(workflow);
-      } else {
-        try {
-          parsedWorkflow = await WorkflowLoader.fromYAML(workflow);
-        } catch {
-          parsedWorkflow = await WorkflowLoader.fromJSON(workflow);
-        }
-      }
-    } else if (typeof workflow === 'object' && workflow !== null) {
-      parsedWorkflow = this.isParsedWorkflowInput(workflow)
-        ? (workflow as ParsedWorkflow)
-        : await WorkflowLoader.fromObject(workflow);
-    } else {
-      throw new Error('Invalid workflow input: must be file path, YAML/JSON string, or object');
-    }
+    const parsedWorkflow = typeof workflow === 'string'
+      ? await WorkflowLoader.toWorkflowObject(workflow)
+      : workflow;
 
     this.assertWorkflowVersionSupported(parsedWorkflow);
     this.assertAdapterCapabilities(parsedWorkflow);
@@ -1645,8 +1574,9 @@ export class OrbytEngine {
     workflow: string | ParsedWorkflow,
     options?: { _ownershipContext?: Partial<OwnershipContext>; logger?: EngineLogger }
   ): Promise<boolean> {
-    // Use WorkflowLoader.validate to check workflow validity, passing logger if present
-    const parsed = await WorkflowLoader.validate(workflow, options?.logger);
+    const parsed = typeof workflow === 'string'
+      ? await WorkflowLoader.toWorkflowObject(workflow, { logger: options?.logger })
+      : workflow;
     this.assertWorkflowVersionSupported(parsed);
 
     // Context was set in WorkflowLoader — clear it now that validation is done
@@ -1673,13 +1603,9 @@ export class OrbytEngine {
     workflow: string | ParsedWorkflow,
     options?: { _ownershipContext?: Partial<OwnershipContext>; logger?: EngineLogger }
   ): Promise<ExecutionExplanation> {
-    // Accept already loaded/validated workflow object
-    let parsedWorkflow: ParsedWorkflow;
-    if (typeof workflow === 'string') {
-      parsedWorkflow = await WorkflowLoader.validate(workflow, options?.logger);
-    } else {
-      parsedWorkflow = workflow;
-    }
+    const parsedWorkflow = typeof workflow === 'string'
+      ? await WorkflowLoader.toWorkflowObject(workflow, { logger: options?.logger })
+      : workflow;
 
     this.assertWorkflowVersionSupported(parsedWorkflow);
     // Generate explanation
@@ -3245,23 +3171,4 @@ export class OrbytEngine {
     }
   }
 
-  /**
-   * Detect already-parsed workflow objects passed by trusted callers (CLI/API).
-   */
-  private isParsedWorkflowInput(value: unknown): value is ParsedWorkflow {
-    if (!value || typeof value !== 'object') return false;
-    const candidate = value as ParsedWorkflow;
-    return (
-      typeof candidate.version === 'string' &&
-      typeof candidate.kind === 'string' &&
-      Array.isArray(candidate.steps) &&
-      candidate.steps.every(
-        (step) =>
-          step &&
-          typeof step.id === 'string' &&
-          typeof step.action === 'string' &&
-          typeof step.adapter === 'string'
-      )
-    );
-  }
 }
