@@ -1196,6 +1196,34 @@ export interface WorkflowLimitsPolicy {
   maxAdapters?: Record<string, number>;
 }
 
+/**
+ * Workflow compatibility constraints.
+ */
+export interface WorkflowCompatibilityPolicy {
+  /** Minimum supported version */
+  minVersion?: string;
+
+  /** Maximum supported version */
+  maxVersion?: string;
+
+  /** Whether the workflow is deprecated */
+  deprecated?: boolean;
+}
+
+/**
+ * Workflow deprecation metadata.
+ */
+export interface WorkflowDeprecationInfo {
+  /** Human-readable deprecation message */
+  message: string;
+
+  /** Version where removal is planned */
+  removedIn?: string;
+
+  /** Replacement workflow or field path */
+  replacementPath?: string;
+}
+
 export interface ParsedWorkflow {
   /** Workflow metadata */
   name?: string;
@@ -1296,6 +1324,12 @@ export interface ParsedWorkflow {
 
   /** Workflow limits intent (warning-only in current phase) */
   limits?: WorkflowLimitsPolicy;
+
+  /** Workflow compatibility constraints */
+  compatibility?: WorkflowCompatibilityPolicy;
+
+  /** Workflow deprecation metadata */
+  deprecationInfo?: WorkflowDeprecationInfo;
 }
 
 /**
