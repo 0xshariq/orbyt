@@ -3132,6 +3132,77 @@ export class OrbytEngine {
         `Supported versions: ${OrbytEngine.SUPPORTED_WORKFLOW_MAJOR}.x`
       );
     }
+
+    if (workflow.compatibility) {
+      const engineVersion = this.parseVersionTuple(this.version, 'engine version');
+
+      if (workflow.compatibility.minVersion) {
+        const minVersion = this.parseVersionTuple(workflow.compatibility.minVersion, 'compatibility.minVersion');
+        if (this.compareVersionTuples(engineVersion, minVersion) < 0) {
+          throw new Error(
+            `UNSUPPORTED_WORKFLOW_VERSION: Engine version ${this.version} is below workflow minimum compatibility ${workflow.compatibility.minVersion}.`
+          );
+        }
+      }
+
+      if (workflow.compatibility.maxVersion) {
+        const maxVersion = this.parseVersionTuple(workflow.compatibility.maxVersion, 'compatibility.maxVersion');
+        if (this.compareVersionTuples(engineVersion, maxVersion) > 0) {
+          throw new Error(
+            `UNSUPPORTED_WORKFLOW_VERSION: Engine version ${this.version} exceeds workflow maximum compatibility ${workflow.compatibility.maxVersion}.`
+          );
+        }
+      }
+
+      if (workflow.compatibility.deprecated || workflow.deprecationInfo) {
+        this.logger?.warn(
+          '[OrbytEngine] Workflow compatibility metadata marks this workflow as deprecated.',
+          {
+            workflowVersion: workflow.version,
+            compatibility: workflow.compatibility,
+            deprecationInfo: workflow.deprecationInfo,
+          },
+        );
+      }
+    } else if (workflow.deprecationInfo) {
+      this.logger?.warn(
+        '[OrbytEngine] Workflow deprecation metadata detected.',
+        {
+          workflowVersion: workflow.version,
+          deprecationInfo: workflow.deprecationInfo,
+        },
+      );
+    }
+  }
+
+  private parseVersionTuple(version: string, label: string): { major: number; minor: number; patch: number } {
+    const trimmed = String(version || '').trim();
+    const match = trimmed.match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/);
+
+    if (!match) {
+      throw new Error(`UNSUPPORTED_WORKFLOW_VERSION: Invalid ${label} format "${trimmed}".`);
+    }
+
+    return {
+      major: Number(match[1]),
+      minor: Number(match[2] ?? '0'),
+      patch: Number(match[3] ?? '0'),
+    };
+  }
+
+  private compareVersionTuples(
+    left: { major: number; minor: number; patch: number },
+    right: { major: number; minor: number; patch: number },
+  ): number {
+    if (left.major !== right.major) {
+      return left.major - right.major;
+    }
+
+    if (left.minor !== right.minor) {
+      return left.minor - right.minor;
+    }
+
+    return left.patch - right.patch;
   }
 
   /**
