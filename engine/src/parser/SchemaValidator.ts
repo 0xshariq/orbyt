@@ -18,7 +18,12 @@ import {
 } from '../errors/index.js';
 import { getValidFields, isValidField } from '../errors/FieldRegistry.js';
 import { LoggerManager } from '../logging/LoggerManager.js';
-import type { WorkflowLimitsPolicy, WorkflowUsagePolicy } from '../types/core-types.js';
+import type {
+  WorkflowCompatibilityPolicy,
+  WorkflowDeprecationInfo,
+  WorkflowLimitsPolicy,
+  WorkflowUsagePolicy,
+} from '../types/core-types.js';
 
 /**
  * Enhanced schema validator with diagnostic capabilities
@@ -50,6 +55,9 @@ export class SchemaValidator {
       // Phase-2 foundation validation for usage/limits schema blocks.
       // This is engine-local and warning-policy focused.
       this.validateUsageAndLimits(rawWorkflow);
+
+      // Phase-A foundation validation for compatibility/deprecation metadata.
+      this.validateCompatibilityAndDeprecation(rawWorkflow);
 
       // Use Zod schema from ecosystem-core for structural validation
       const validated = OrbytWorkflowSchema.parse(normalizedForCore);
@@ -152,6 +160,14 @@ export class SchemaValidator {
     // ecosystem-core root schema.
     if ('limits' in normalized) {
       delete normalized.limits;
+    }
+
+    if ('compatibility' in normalized) {
+      delete normalized.compatibility;
+    }
+
+    if ('deprecationInfo' in normalized) {
+      delete normalized.deprecationInfo;
     }
 
     // usage.mode is an engine-local alias. Map it to track for compatibility,
@@ -312,6 +328,172 @@ export class SchemaValidator {
         }
       }
     }
+  }
+
+  private static validateCompatibilityAndDeprecation(rawWorkflow: unknown): void {
+    if (!rawWorkflow || typeof rawWorkflow !== 'object' || Array.isArray(rawWorkflow)) {
+      return;
+    }
+
+    const root = rawWorkflow as Record<string, any>;
+    const compatibility = root.compatibility;
+    if (compatibility !== undefined) {
+      if (!this.isPlainObject(compatibility)) {
+        throw new SchemaError({
+          code: 'ORB-S-002' as any,
+          message: 'Invalid type for compatibility: expected object',
+          path: 'compatibility',
+          hint: 'Use an object such as compatibility: { minVersion, maxVersion, deprecated }',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      this.validateOptionalSemver(compatibility.minVersion, 'compatibility.minVersion');
+      this.validateOptionalSemver(compatibility.maxVersion, 'compatibility.maxVersion');
+
+      if (compatibility.deprecated !== undefined && typeof compatibility.deprecated !== 'boolean') {
+        throw new SchemaError({
+          code: 'ORB-S-002' as any,
+          message: 'Invalid type for compatibility.deprecated: expected boolean',
+          path: 'compatibility.deprecated',
+          hint: 'Use true or false',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      if (
+        typeof compatibility.minVersion === 'string'
+        && typeof compatibility.maxVersion === 'string'
+        && this.compareSemver(this.parseSemverLike(compatibility.minVersion), this.parseSemverLike(compatibility.maxVersion)) > 0
+      ) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: 'compatibility.minVersion must be less than or equal to compatibility.maxVersion',
+          path: 'compatibility',
+          hint: 'Swap the values or remove one bound',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+    }
+
+    const deprecationInfo = root.deprecationInfo;
+    if (deprecationInfo !== undefined) {
+      if (!this.isPlainObject(deprecationInfo)) {
+        throw new SchemaError({
+          code: 'ORB-S-002' as any,
+          message: 'Invalid type for deprecationInfo: expected object',
+          path: 'deprecationInfo',
+          hint: 'Use an object such as deprecationInfo: { message, removedIn, replacementPath }',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      if (typeof deprecationInfo.message !== 'string' || deprecationInfo.message.trim().length === 0) {
+        throw new SchemaError({
+          code: 'ORB-S-002' as any,
+          message: 'Invalid deprecationInfo.message: expected non-empty string',
+          path: 'deprecationInfo.message',
+          hint: 'Provide a human-readable deprecation message',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      this.validateOptionalSemver(deprecationInfo.removedIn, 'deprecationInfo.removedIn');
+
+      if (deprecationInfo.replacementPath !== undefined && typeof deprecationInfo.replacementPath !== 'string') {
+        throw new SchemaError({
+          code: 'ORB-S-002' as any,
+          message: 'Invalid type for deprecationInfo.replacementPath: expected string',
+          path: 'deprecationInfo.replacementPath',
+          hint: 'Use a string path or workflow reference',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+    }
+  }
+
+  private static validateOptionalSemver(value: unknown, path: string): void {
+    if (value === undefined) {
+      return;
+    }
+
+    if (typeof value !== 'string') {
+      throw new SchemaError({
+        code: 'ORB-S-002' as any,
+        message: `Invalid type for ${path}: expected string`,
+        path,
+        hint: 'Use a semantic version string like 1.0 or 1.0.0',
+        severity: ErrorSeverity.ERROR,
+      });
+    }
+
+    this.parseSemverLike(value, path);
+  }
+
+  private static parseSemverLike(value: string, path = 'version'): { major: number; minor: number; patch: number } {
+    const trimmed = value.trim();
+    const match = trimmed.match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/);
+
+    if (!match) {
+      throw new SchemaError({
+        code: 'ORB-S-004' as any,
+        message: `Invalid semantic version in ${path}: ${value}`,
+        path,
+        hint: 'Use semantic version format like 1.0 or 1.0.0',
+        severity: ErrorSeverity.ERROR,
+      });
+    }
+
+    return {
+      major: Number(match[1]),
+      minor: Number(match[2] ?? '0'),
+      patch: Number(match[3] ?? '0'),
+    };
+  }
+
+  private static compareSemver(
+    left: { major: number; minor: number; patch: number },
+    right: { major: number; minor: number; patch: number },
+  ): number {
+    if (left.major !== right.major) {
+      return left.major - right.major;
+    }
+
+    if (left.minor !== right.minor) {
+      return left.minor - right.minor;
+    }
+
+    return left.patch - right.patch;
+  }
+
+  static extractCompatibilityAndDeprecation(
+    rawWorkflow: unknown,
+  ): { compatibility?: WorkflowCompatibilityPolicy; deprecationInfo?: WorkflowDeprecationInfo } {
+    if (!rawWorkflow || typeof rawWorkflow !== 'object' || Array.isArray(rawWorkflow)) {
+      return {};
+    }
+
+    const root = rawWorkflow as Record<string, any>;
+
+    const compatibility = this.isPlainObject(root.compatibility)
+      ? {
+          minVersion: typeof root.compatibility.minVersion === 'string' ? root.compatibility.minVersion.trim() : undefined,
+          maxVersion: typeof root.compatibility.maxVersion === 'string' ? root.compatibility.maxVersion.trim() : undefined,
+          deprecated: typeof root.compatibility.deprecated === 'boolean' ? root.compatibility.deprecated : undefined,
+        }
+      : undefined;
+
+    const deprecationInfo = this.isPlainObject(root.deprecationInfo)
+      ? {
+          message: typeof root.deprecationInfo.message === 'string' ? root.deprecationInfo.message.trim() : '',
+          removedIn: typeof root.deprecationInfo.removedIn === 'string' ? root.deprecationInfo.removedIn.trim() : undefined,
+          replacementPath: typeof root.deprecationInfo.replacementPath === 'string'
+            ? root.deprecationInfo.replacementPath.trim()
+            : undefined,
+        }
+      : undefined;
+
+    return { compatibility, deprecationInfo };
   }
 
   private static validatePositiveInt(value: unknown, path: string): void {
