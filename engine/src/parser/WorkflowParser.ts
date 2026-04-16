@@ -77,6 +77,7 @@ export class WorkflowParser {
 
       // Step 4: Build parsed workflow
       const { usage, limits } = SchemaValidator.extractUsageAndLimits(rawWorkflow, validated);
+      const { compatibility, deprecationInfo } = SchemaValidator.extractCompatibilityAndDeprecation(rawWorkflow);
       const parsed: ParsedWorkflow = {
         name: validated.metadata?.name,
         description: validated.metadata?.description,
@@ -96,9 +97,12 @@ export class WorkflowParser {
         execution: (validated as any).execution,
         usage,
         limits,
+        compatibility,
+        deprecationInfo,
       };
 
       this.emitUsageLimitsDisclaimer(logger, parsed);
+      this.emitCompatibilityDisclaimer(logger, parsed);
 
       const duration = Date.now() - startTime;
       logger.parsingCompleted('workflow', duration, {
@@ -137,6 +141,31 @@ export class WorkflowParser {
         usageMode: parsed.usage?.mode,
         usageScope: parsed.usage?.scope,
         limits: parsed.limits,
+      },
+    );
+  }
+
+  /**
+   * Emit Phase A compatibility/deprecation warnings without blocking parse.
+   */
+  private static emitCompatibilityDisclaimer(
+    logger: ReturnType<typeof LoggerManager.getLogger>,
+    parsed: ParsedWorkflow,
+  ): void {
+    if (!parsed.compatibility && !parsed.deprecationInfo) {
+      return;
+    }
+
+    logger.warn(
+      '[WorkflowParser] Compatibility/deprecation metadata detected. Backward compatibility is deferred until stable v1, but the metadata is preserved for release planning and warnings.',
+      {
+        hasCompatibility: !!parsed.compatibility,
+        minVersion: parsed.compatibility?.minVersion,
+        maxVersion: parsed.compatibility?.maxVersion,
+        deprecated: parsed.compatibility?.deprecated,
+        hasDeprecationInfo: !!parsed.deprecationInfo,
+        removedIn: parsed.deprecationInfo?.removedIn,
+        replacementPath: parsed.deprecationInfo?.replacementPath,
       },
     );
   }
