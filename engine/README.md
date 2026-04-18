@@ -5,7 +5,7 @@ Orbyt's TypeScript automation runtime.
 ## Package Info
 
 - Name: `@orbytautomation/engine`
-- Version: `0.8.4`
+- Version: `0.10.0`
 - Node: `>=22`
 
 ## Install
@@ -26,6 +26,8 @@ npm install @orbytautomation/engine
 - Usage telemetry emission through standardized `UsageCollector`
 - Durable local usage spool with optional periodic billing push
 - Checkpoint snapshots and resume support (`resumeFromRunId`)
+- Loader-boundary enforcement with source metadata tagging and deterministic adapter resolution
+- Integration tests for Phase B (loader boundary) and Phase C (normalization determinism)
 
 ## Primary APIs
 
@@ -54,6 +56,7 @@ Accepted workflow input formats:
 - YAML string
 - JSON string
 - parsed workflow object
+- diagram object (converted to canonical workflow object at loader boundary)
 
 ### Resume a workflow run
 
@@ -105,6 +108,24 @@ const explanation = await engine.explain('./workflow.yaml');
 
 - `validate` returns `true` or throws
 - `explain` returns execution analysis without running steps
+
+## Development and Testing
+
+From `products/orbyt/engine`:
+
+```bash
+pnpm run build
+pnpm run test:phase-c
+pnpm run test:phase-b
+pnpm run test:distributed
+pnpm run test:integration
+```
+
+Current integration coverage highlights:
+
+- `test:phase-c`: equivalent input normalization determinism checks
+- `test:phase-b`: loader boundary enforcement and adapter error envelope behavior
+- `test:distributed`: distributed runtime smoke coverage
 
 ## Usage and Billing Telemetry
 
@@ -193,18 +214,24 @@ engine.registerHook({
 At startup, engine prepares directories under `~/.orbyt` (or configured equivalents), including:
 
 - `state/` (executions, checkpoints, schedules, workflows)
+- `logs/`
 - `cache/`
 - `runtime/`
-- `usage/`
 - `config/`
 
 On first use, engine also creates `~/.orbyt/config/config.json`.
+
+Usage spool defaults are separate and stored under `~/.billing/orbyt/usage` unless overridden.
 
 ## Related Docs
 
 - `../README.md`
 - `../docs/execution-modes.md`
 - `../WORKFLOW_SCHEMA.md`
+- `./docs/INTEGRATION_GUIDE.md`
+- `./docs/USAGE_EXAMPLES.md`
+- `./docs/VERSIONING_AND_DEPRECATION.md`
+- `./docs/Error-System.md`
 
 ## License
 
