@@ -39,6 +39,9 @@ export class AdapterNotFoundError extends OrbytError {
 export class AdapterRegistry {
   private adapters: Map<string, Adapter> = new Map();
   private initialized: Set<string> = new Set();
+  private priorities: Map<string, number> = new Map();
+  private registrationOrder: Map<string, number> = new Map();
+  private nextRegistrationOrder = 0;
 
   /**
    * Register an adapter
@@ -48,7 +51,7 @@ export class AdapterRegistry {
     * Idempotent behavior:
     * - If adapter name already exists, registration is skipped.
    */
-  register(adapter: Adapter): void {
+  register(adapter: Adapter, priority?: number): void {
     const logger = LoggerManager.getLogger();
     
     if (this.adapters.has(adapter.name)) {
@@ -57,6 +60,13 @@ export class AdapterRegistry {
     }
 
     this.adapters.set(adapter.name, adapter);
+    const resolvedPriority = Number.isFinite(priority)
+      ? Number(priority)
+      : Number.isFinite((adapter as any).priority)
+        ? Number((adapter as any).priority)
+        : 50;
+    this.priorities.set(adapter.name, resolvedPriority);
+    this.registrationOrder.set(adapter.name, this.nextRegistrationOrder++);
     
     logger.info(`[AdapterRegistry] Adapter registered: ${adapter.name}`, {
       adapterName: adapter.name,
@@ -91,6 +101,8 @@ export class AdapterRegistry {
         });
       }
       this.initialized.delete(adapterName);
+      this.priorities.delete(adapterName);
+      this.registrationOrder.delete(adapterName);
       return this.adapters.delete(adapterName);
     }
     return false;
@@ -104,19 +116,34 @@ export class AdapterRegistry {
    * @throws {AdapterNotFoundError} If no adapter supports the action
    */
   resolve(action: string): Adapter {
-    // Try to find adapter by exact name match first
     const [namespace] = action.split('.');
-    const adapter = this.adapters.get(namespace);
-    
-    if (adapter && adapter.supports(action)) {
-      return adapter;
-    }
 
-    // Search all adapters for support
-    for (const adapter of this.adapters.values()) {
-      if (adapter.supports(action)) {
-        return adapter;
-      }
+    const candidates = Array.from(this.adapters.values()).filter(adapter => adapter.supports(action));
+    if (candidates.length > 0) {
+      candidates.sort((left, right) => {
+        const leftNamespaceMatch = left.name === namespace ? 1 : 0;
+        const rightNamespaceMatch = right.name === namespace ? 1 : 0;
+        if (leftNamespaceMatch !== rightNamespaceMatch) {
+          return rightNamespaceMatch - leftNamespaceMatch;
+        }
+
+        const leftPriority = this.priorities.get(left.name) ?? 50;
+        const rightPriority = this.priorities.get(right.name) ?? 50;
+        if (leftPriority !== rightPriority) {
+          return rightPriority - leftPriority;
+        }
+
+        const byName = left.name.localeCompare(right.name);
+        if (byName !== 0) {
+          return byName;
+        }
+
+        const leftOrder = this.registrationOrder.get(left.name) ?? Number.MAX_SAFE_INTEGER;
+        const rightOrder = this.registrationOrder.get(right.name) ?? Number.MAX_SAFE_INTEGER;
+        return leftOrder - rightOrder;
+      });
+
+      return candidates[0];
     }
 
     // No adapter found - build helpful error
@@ -235,6 +262,9 @@ export class AdapterRegistry {
   clear(): void {
     this.adapters.clear();
     this.initialized.clear();
+    this.priorities.clear();
+    this.registrationOrder.clear();
+    this.nextRegistrationOrder = 0;
   }
 
   /**
@@ -248,6 +278,7 @@ export class AdapterRegistry {
       version: string;
       supportedActions: string[];
       isInitialized: boolean;
+      priority: number;
     }>;
   } {
     return {
@@ -258,6 +289,7 @@ export class AdapterRegistry {
         version: adapter.version,
         supportedActions: adapter.supportedActions,
         isInitialized: this.initialized.has(adapter.name),
+        priority: this.priorities.get(adapter.name) ?? 50,
       })),
     };
   }
