@@ -1224,6 +1224,20 @@ export interface WorkflowDeprecationInfo {
   replacementPath?: string;
 }
 
+/**
+ * Loader source metadata attached at boundary conversion time.
+ */
+export interface WorkflowSourceMetadata {
+  /** Canonical source type recognized by loader */
+  sourceType: 'file' | 'yaml' | 'json' | 'object' | 'diagram' | 'api' | 'sdk' | 'inline' | 'unknown';
+
+  /** Human-readable source origin (path/id/endpoint/etc.) */
+  sourceOrigin?: string;
+
+  /** Loader adapter/strategy name used for parsing */
+  loaderAdapter?: string;
+}
+
 export interface ParsedWorkflow {
   /** Workflow metadata */
   name?: string;
@@ -1330,6 +1344,9 @@ export interface ParsedWorkflow {
 
   /** Workflow deprecation metadata */
   deprecationInfo?: WorkflowDeprecationInfo;
+
+  /** Source metadata added by WorkflowLoader at boundary */
+  sourceMetadata?: WorkflowSourceMetadata;
 }
 
 /**
