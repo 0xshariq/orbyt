@@ -215,6 +215,13 @@ export class SchemaValidator {
     if (typeof normalized.owner === 'string' && !normalized.metadata.owner) {
       normalized.metadata.owner = normalized.owner;
     }
+
+    // ParsedWorkflow legacy/root metadata aliases are not part of the strict
+    // core schema root. Preserve values in metadata and strip root aliases.
+    delete normalized.name;
+    delete normalized.description;
+    delete normalized.tags;
+    delete normalized.owner;
   }
 
   private static normalizeParsedStepShape(step: any): Record<string, any> {
