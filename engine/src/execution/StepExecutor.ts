@@ -28,6 +28,7 @@ import { LoggerManager } from '../logging/LoggerManager.js';
 import { DriverContext, DriverStep, EngineEventType, ParsedStep, ResolutionContext, StepAdapter, StepResult } from '../types/core-types.js';
 import { ResourceValidator } from '../security/ResourceValidator.js';
 import { StepError, StepErrorCode } from '../errors/StepError.js';
+import { OrbytError } from '../errors/OrbytError.js';
 
 /**
  * Step executor with retry and timeout logic
@@ -392,12 +393,22 @@ export class StepExecutor {
 
         // Enhance error with step context
         if (lastError.message && !lastError.message.includes(step.id)) {
-          lastError = new Error(
-            `Step '${step.id}' failed: ${lastError.message}`
-          );
-          // Preserve original stack trace
-          if (error instanceof Error && error.stack) {
-            lastError.stack = error.stack;
+          if (lastError instanceof OrbytError) {
+            lastError = new OrbytError({
+              ...lastError.diagnostic,
+              message: `Step '${step.id}' failed: ${lastError.message}`,
+            });
+            if (error instanceof Error && error.stack) {
+              lastError.stack = error.stack;
+            }
+          } else {
+            lastError = new Error(
+              `Step '${step.id}' failed: ${lastError.message}`
+            );
+            // Preserve original stack trace
+            if (error instanceof Error && error.stack) {
+              lastError.stack = error.stack;
+            }
           }
         }
 
