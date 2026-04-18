@@ -81,7 +81,7 @@ export class StepParser {
       adapter,
       action: stepDef.uses,
       input: stepDef.with || {},
-      needs: Array.from(new Set(stepDef.needs || [])),
+      needs: Array.from(new Set(stepDef.needs || [])).sort((left, right) => left.localeCompare(right)),
       name: stepDef.name,
       when: stepDef.when,
       continueOnError: stepDef.continueOnError || false,
