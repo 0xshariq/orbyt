@@ -57,6 +57,7 @@ import { logErrorToEngineWithContext } from '../errors/ErrorFormatter.js';
 import type { EngineLogger } from '../logging/EngineLogger.js';
 import { LoggerManager } from '../logging/index.js';
 import { ParsedWorkflow, SecurityErrorCode, WorkflowLoadOptions } from '../types/core-types.js';
+import { OrbytErrorCode, ErrorSeverity } from '../errors/ErrorCodes.js';
 
 type WorkflowInputSource = 'auto' | 'file' | 'yaml' | 'json' | 'object' | 'diagram' | 'api' | 'sdk';
 
@@ -143,6 +144,11 @@ export class WorkflowLoader {
 
     // Step 7: Apply variables if provided
     parsed = this.applyVariables(parsed, options.variables);
+    parsed = this.attachSourceMetadata(parsed, {
+      sourceType: this.inferFileSourceType(resolvedPath),
+      sourceOrigin: resolvedPath,
+      loaderAdapter: `file:${this.inferFileSourceType(resolvedPath)}`,
+    });
 
     // Set workflow context so all downstream logs (runtime, analysis, security)
     // are automatically enriched — cleared by OrbytEngine after the operation.
@@ -179,8 +185,13 @@ export class WorkflowLoader {
     } catch (error) {
       throw this.toOrbytError(error, location, logger);
     }
-    WorkflowLoader._setContext(parsed, filePath);
-    return parsed;
+    const withSource = this.attachSourceMetadata(parsed, {
+      sourceType: 'yaml',
+      sourceOrigin: filePath || 'inline:yaml',
+      loaderAdapter: 'inline:yaml',
+    });
+    WorkflowLoader._setContext(withSource, filePath);
+    return withSource;
   }
 
   /**
@@ -208,8 +219,13 @@ export class WorkflowLoader {
     } catch (error) {
       throw this.toOrbytError(error, location, logger);
     }
-    WorkflowLoader._setContext(parsed, filePath);
-    return parsed;
+    const withSource = this.attachSourceMetadata(parsed, {
+      sourceType: 'json',
+      sourceOrigin: filePath || 'inline:json',
+      loaderAdapter: 'inline:json',
+    });
+    WorkflowLoader._setContext(withSource, filePath);
+    return withSource;
   }
 
   /**
@@ -225,12 +241,26 @@ export class WorkflowLoader {
    * @throws OrbytError with proper error code and debug info
    */
   static async fromObject(workflowObject: unknown, logger?: EngineLogger): Promise<ParsedWorkflow> {
+    if (!this.isPlainObject(workflowObject)) {
+      throw this.unsupportedInputError('workflow object', 'object', 'Expected a plain object workflow payload', {
+        actualType: Array.isArray(workflowObject) ? 'array' : typeof workflowObject,
+      });
+    }
+
+    const original = workflowObject as Record<string, any>;
+    const inputSourceType: WorkflowInputSource = this.isDiagramInput(original) ? 'diagram' : 'object';
+
     // Object is already loaded — run security check then schema validation
-    workflowObject = this.normalizeSupportedInput(workflowObject, 'workflow object', 'object');
+    workflowObject = this.normalizeSupportedInput(workflowObject, 'workflow object', inputSourceType);
     WorkflowLoader._validateSecurity(workflowObject);
     const parsed = this.validateAndParse(workflowObject, 'workflow object', logger);
-    WorkflowLoader._setContext(parsed);
-    return parsed;
+    const withSource = this.attachSourceMetadata(parsed, {
+      sourceType: inputSourceType,
+      sourceOrigin: `inline:${inputSourceType}`,
+      loaderAdapter: `object:${inputSourceType}`,
+    });
+    WorkflowLoader._setContext(withSource);
+    return withSource;
   }
 
   /**
@@ -264,7 +294,12 @@ export class WorkflowLoader {
     if (typeof input !== 'string') {
       const normalized = this.normalizeSupportedInput(input, 'workflow object', 'object');
       const parsed = this.validateAndParse(normalized, 'workflow object', options.logger);
-      const withVariables = this.applyVariables(parsed, options.variables);
+      let withVariables = this.applyVariables(parsed, options.variables);
+      withVariables = this.attachSourceMetadata(withVariables, {
+        sourceType: 'object',
+        sourceOrigin: 'inline:object',
+        loaderAdapter: 'object:workflow',
+      });
       WorkflowLoader._setContext(withVariables);
       return withVariables;
     }
@@ -339,8 +374,25 @@ export class WorkflowLoader {
     options: WorkflowLoadOptions = {}
   ): Promise<ParsedWorkflow> {
     // Strategy: Check if it's a file path first
-    if (this.looksLikeFilePath(source) && existsSync(source)) {
-      return this.fromFile(source, options);
+    if (this.looksLikeFilePath(source)) {
+      if (existsSync(source)) {
+        return this.fromFile(source, options);
+      }
+
+      throw new OrbytError({
+        code: OrbytErrorCode.RUNTIME_FILE_NOT_FOUND,
+        message: `Workflow file not found: ${source}`,
+        path: source,
+        severity: ErrorSeverity.ERROR,
+        hint: 'Provide an existing file path or pass inline YAML/JSON/.orbt workflow content.',
+        context: { source },
+      });
+    }
+
+    if (!this.looksLikeStructuredWorkflowContent(source)) {
+      throw this.unsupportedInputError('inline content', 'auto', 'Input does not look like workflow content', {
+        sample: source.slice(0, 80),
+      });
     }
 
     // Otherwise parse as inline content using parser format detection.
@@ -351,7 +403,12 @@ export class WorkflowLoader {
       throw this.toOrbytError(error, 'inline content', options.logger);
     }
 
-    const withVariables = this.applyVariables(parsed, options.variables);
+    let withVariables = this.applyVariables(parsed, options.variables);
+    withVariables = this.attachSourceMetadata(withVariables, {
+      sourceType: this.inferInlineSourceType(source),
+      sourceOrigin: 'inline:text',
+      loaderAdapter: `inline:${this.inferInlineSourceType(source)}`,
+    });
     WorkflowLoader._setContext(withVariables);
     return withVariables;
   }
@@ -444,6 +501,11 @@ export class WorkflowLoader {
     sourceType: WorkflowInputSource = 'auto'
   ): unknown {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      if (sourceType === 'object' || sourceType === 'api' || sourceType === 'sdk' || sourceType === 'diagram') {
+        throw this.unsupportedInputError(location, sourceType, 'Expected object-like workflow payload', {
+          actualType: Array.isArray(input) ? 'array' : typeof input,
+        });
+      }
       return input;
     }
 
@@ -471,7 +533,86 @@ export class WorkflowLoader {
       return normalized;
     }
 
+    if (sourceType === 'object' || sourceType === 'api' || sourceType === 'sdk' || sourceType === 'diagram') {
+      throw this.unsupportedInputError(location, sourceType, 'Object payload is not a supported workflow or diagram shape', {
+        topLevelKeys: Object.keys(source).slice(0, 20),
+      });
+    }
+
     return source;
+  }
+
+  private static inferFileSourceType(path: string): 'file' | 'yaml' | 'json' {
+    const lower = path.toLowerCase();
+    if (lower.endsWith('.yaml') || lower.endsWith('.yml')) {
+      return 'yaml';
+    }
+    if (lower.endsWith('.json') || lower.endsWith('.orbt')) {
+      return 'json';
+    }
+    return 'file';
+  }
+
+  private static inferInlineSourceType(source: string): 'yaml' | 'json' | 'inline' {
+    const trimmed = source.trimStart();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return 'json';
+    }
+    if (source.includes(':') || source.includes('\n') || source.includes('\r\n')) {
+      return 'yaml';
+    }
+    return 'inline';
+  }
+
+  private static looksLikeStructuredWorkflowContent(source: string): boolean {
+    const trimmed = source.trimStart();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return true;
+    }
+
+    if (source.includes('\n') || source.includes('\r\n')) {
+      return true;
+    }
+
+    if (source.includes(':')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private static attachSourceMetadata(
+    parsed: ParsedWorkflow,
+    metadata: { sourceType: 'file' | 'yaml' | 'json' | 'object' | 'diagram' | 'api' | 'sdk' | 'inline' | 'unknown'; sourceOrigin?: string; loaderAdapter?: string },
+  ): ParsedWorkflow {
+    return {
+      ...parsed,
+      sourceMetadata: {
+        ...parsed.sourceMetadata,
+        sourceType: metadata.sourceType,
+        sourceOrigin: metadata.sourceOrigin,
+        loaderAdapter: metadata.loaderAdapter,
+      },
+    };
+  }
+
+  private static unsupportedInputError(
+    location: string,
+    sourceType: WorkflowInputSource,
+    reason: string,
+    extraContext: Record<string, unknown> = {},
+  ): OrbytError {
+    return new OrbytError({
+      code: OrbytErrorCode.VALIDATION_UNSUPPORTED_INPUT,
+      message: `Unsupported workflow input at ${location}: ${reason}`,
+      path: location,
+      severity: ErrorSeverity.ERROR,
+      hint: 'Provide a supported input: existing file path, inline YAML/JSON/.orbt content, or canonical workflow object.',
+      context: {
+        sourceType,
+        ...extraContext,
+      },
+    });
   }
 
   private static isWorkflowSchemaLike(value: Record<string, any>): boolean {
