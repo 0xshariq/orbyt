@@ -102,6 +102,9 @@ export enum OrbytErrorCode {
   /** Invalid condition expression syntax */
   VALIDATION_INVALID_CONDITION = 'ORB-V-010',
 
+  /** Unsupported input shape or source at loader boundary */
+  VALIDATION_UNSUPPORTED_INPUT = 'ORB-V-011',
+
   // ============================================================================
   // EXECUTION ERRORS (E) - Runtime failures
   // Exit Code: ExitCodes.WORKFLOW_FAILED (300), ExitCodes.STEP_FAILED (301)
@@ -236,6 +239,7 @@ export function getErrorDescription(code: OrbytErrorCode): string {
     [OrbytErrorCode.VALIDATION_UNKNOWN_ADAPTER]: 'Adapter or action does not exist. Verify the "uses" field references a valid adapter.',
     [OrbytErrorCode.VALIDATION_EMPTY_WORKFLOW]: 'Workflow has no steps defined. At least one step is required.',
     [OrbytErrorCode.VALIDATION_INVALID_CONDITION]: 'Condition expression has invalid syntax. Check operators and variable references.',
+    [OrbytErrorCode.VALIDATION_UNSUPPORTED_INPUT]: 'Input is not supported by WorkflowLoader. Provide a valid workflow file, workflow text, or workflow object.',
 
     // Execution Errors
     [OrbytErrorCode.EXECUTION_STEP_FAILED]: 'Step execution failed during runtime. Check step configuration and adapter logs.',
@@ -412,6 +416,7 @@ export function getSuggestedAction(code: OrbytErrorCode): string {
     [OrbytErrorCode.VALIDATION_UNKNOWN_ADAPTER]: 'Install adapter or fix "uses" field',
     [OrbytErrorCode.VALIDATION_EMPTY_WORKFLOW]: 'Add at least one step to workflow',
     [OrbytErrorCode.VALIDATION_INVALID_CONDITION]: 'Fix condition syntax or check variable references',
+    [OrbytErrorCode.VALIDATION_UNSUPPORTED_INPUT]: 'Provide a supported workflow input (file path, YAML/JSON/.orbt text, or workflow object)',
 
     // Execution Errors
     [OrbytErrorCode.EXECUTION_STEP_FAILED]: 'Check step configuration and logs',
