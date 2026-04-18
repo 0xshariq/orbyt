@@ -55,6 +55,8 @@ interface DetailedValidationError {
  * Register the validate command
  */
 export function registerValidateCommand(program: Command): void {
+  // TODO(orbyt-cli): Add `validate schema <input>` subcommand after schema tooling is finalized.
+  // Keep this command focused on workflow validation until schema-level validation UX is defined.
   program
     .command('validate <workflow>')
     .description('Validate one or more workflows without executing (comma-separated for multiple)')
