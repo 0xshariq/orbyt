@@ -24,7 +24,7 @@ function createBaseWorkflow(): Record<string, unknown> {
   };
 }
 
-async function assertCompatibilityMetadataPreserved(): Promise<void> {
+async function assertCompatibilityMetadataPreserved(_engine: OrbytEngine): Promise<void> {
   const workflow = {
     ...createBaseWorkflow(),
     compatibility: {
@@ -49,61 +49,62 @@ async function assertCompatibilityMetadataPreserved(): Promise<void> {
   assert.equal(parsed.deprecationInfo?.replacementPath, 'workflows.v2.phase-a-contract-versioning');
 }
 
-async function assertVersionCompatibilityGate(): Promise<void> {
-  const engine = new OrbytEngine({ enableScheduler: false });
+async function assertVersionCompatibilityGate(engine: OrbytEngine): Promise<void> {
+  const supportedWorkflow = {
+    ...createBaseWorkflow(),
+    compatibility: {
+      minVersion: '0.1.0',
+      maxVersion: '0.2.0',
+    },
+  };
 
-  try {
-    const supportedWorkflow = {
-      ...createBaseWorkflow(),
-      compatibility: {
-        minVersion: '0.1.0',
-        maxVersion: '0.2.0',
-      },
-    };
+  const parsedSupportedWorkflow = await WorkflowLoader.toWorkflowObject(supportedWorkflow);
+  const isValid = await engine.validate(parsedSupportedWorkflow);
+  assert.equal(isValid, true, 'Expected supported compatibility range to pass validation');
 
-    const parsedSupportedWorkflow = await WorkflowLoader.toWorkflowObject(supportedWorkflow);
-    const isValid = await engine.validate(parsedSupportedWorkflow);
-    assert.equal(isValid, true, 'Expected supported compatibility range to pass validation');
+  const minTooHigh = {
+    ...createBaseWorkflow(),
+    compatibility: {
+      minVersion: '9.0.0',
+    },
+  };
 
-    const minTooHigh = {
-      ...createBaseWorkflow(),
-      compatibility: {
-        minVersion: '9.0.0',
-      },
-    };
+  await assert.rejects(
+    async () => {
+      const parsedMinTooHigh = await WorkflowLoader.toWorkflowObject(minTooHigh);
+      await engine.validate(parsedMinTooHigh);
+    },
+    /UNSUPPORTED_WORKFLOW_VERSION/,
+    'Expected validation failure when workflow minVersion exceeds engine version',
+  );
 
-    await assert.rejects(
-      async () => {
-        const parsedMinTooHigh = await WorkflowLoader.toWorkflowObject(minTooHigh);
-        await engine.validate(parsedMinTooHigh);
-      },
-      /UNSUPPORTED_WORKFLOW_VERSION/,
-      'Expected validation failure when workflow minVersion exceeds engine version',
-    );
+  const maxTooLow = {
+    ...createBaseWorkflow(),
+    compatibility: {
+      maxVersion: '0.0.1',
+    },
+  };
 
-    const maxTooLow = {
-      ...createBaseWorkflow(),
-      compatibility: {
-        maxVersion: '0.0.1',
-      },
-    };
-
-    await assert.rejects(
-      async () => {
-        const parsedMaxTooLow = await WorkflowLoader.toWorkflowObject(maxTooLow);
-        await engine.validate(parsedMaxTooLow);
-      },
-      /UNSUPPORTED_WORKFLOW_VERSION/,
-      'Expected validation failure when workflow maxVersion is below engine version',
-    );
-  } finally {
-    await engine.stop();
-  }
+  await assert.rejects(
+    async () => {
+      const parsedMaxTooLow = await WorkflowLoader.toWorkflowObject(maxTooLow);
+      await engine.validate(parsedMaxTooLow);
+    },
+    /UNSUPPORTED_WORKFLOW_VERSION/,
+    'Expected validation failure when workflow maxVersion is below engine version',
+  );
 }
 
 async function run(): Promise<void> {
-  await assertCompatibilityMetadataPreserved();
-  await assertVersionCompatibilityGate();
+  const engine = new OrbytEngine({ enableScheduler: false });
+
+  try {
+    await engine.start();
+    await assertCompatibilityMetadataPreserved(engine);
+    await assertVersionCompatibilityGate(engine);
+  } finally {
+    await engine.stop();
+  }
 
   console.log('[phase-a-contract-versioning] PASS: contract metadata and version compatibility checks succeeded');
 }
