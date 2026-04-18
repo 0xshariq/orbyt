@@ -11,6 +11,8 @@ import { BaseDriver } from './ExecutionDriver.js';
 import type { AdapterRegistry } from '../../adapters/AdapterRegistry.js';
 import type { AdapterResult, AdapterContext } from '@dev-ecosystem/core';
 import { DriverContext, DriverStep } from '../../types/core-types.js';
+import { OrbytError } from '../../errors/OrbytError.js';
+import { ErrorSeverity, OrbytErrorCode } from '../../errors/ErrorCodes.js';
 
 /**
  * Adapter Driver
@@ -70,10 +72,32 @@ export class AdapterDriver extends BaseDriver {
     // Execute adapter
     context.log(`Executing with adapter: ${adapter.name}`);
     
-    return adapter.execute(
-      step.uses,
-      step.with || {},
-      adapterContext
-    );
+    try {
+      return await adapter.execute(
+        step.uses,
+        step.with || {},
+        adapterContext
+      );
+    } catch (error) {
+      const originalError = error instanceof Error ? error : new Error(String(error));
+
+      throw new OrbytError({
+        code: OrbytErrorCode.EXECUTION_ADAPTER_ERROR,
+        message: `Adapter '${adapter.name}' failed while executing '${step.uses}'`,
+        severity: ErrorSeverity.ERROR,
+        path: `workflow.steps.${step.id}`,
+        hint: 'Check adapter configuration, action input, and adapter logs for root cause.',
+        context: {
+          stepId: step.id,
+          action: step.uses,
+          adapterName: adapter.name,
+          adapterVersion: adapter.version,
+          executionId: context.executionId,
+          workflowName: context.workflowName,
+          originalErrorMessage: originalError.message,
+          originalErrorName: originalError.name,
+        },
+      });
+    }
   }
 }
