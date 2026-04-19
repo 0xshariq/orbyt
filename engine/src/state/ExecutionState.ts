@@ -26,32 +26,7 @@ export class ExecutionStateManager {
     stepIds: string[],
     context?: { env?: Record<string, any>; inputs?: Record<string, any> }
   ): WorkflowExecutionState {
-    const now = Date.now();
-    
-    const steps: Record<string, StepExecutionState> = {};
-    for (const stepId of stepIds) {
-      steps[stepId] = {
-        stepId,
-        status: StepStatus.PENDING,
-        attempts: 0,
-        updatedAt: now,
-      };
-    }
-    
-    const state: WorkflowExecutionState = {
-      executionId,
-      workflowId,
-      status: WorkflowStatus.QUEUED,
-      steps,
-      metadata: {
-        totalSteps: stepIds.length,
-        completedSteps: 0,
-        failedSteps: 0,
-        skippedSteps: 0,
-      },
-      updatedAt: now,
-      context,
-    };
+    const state = createWorkflowExecutionState(executionId, workflowId, stepIds, context);
     
     this.states.set(executionId, state);
     return state;
@@ -264,4 +239,44 @@ export class ExecutionStateManager {
       s => s.status === StepStatus.SKIPPED
     ).length;
   }
+}
+
+export function createStepExecutionState(stepId: string): StepExecutionState {
+  const now = Date.now();
+
+  return {
+    stepId,
+    status: StepStatus.PENDING,
+    attempts: 0,
+    updatedAt: now,
+  };
+}
+
+export function createWorkflowExecutionState(
+  executionId: string,
+  workflowId: string,
+  stepIds: string[],
+  context?: { env?: Record<string, any>; inputs?: Record<string, any> }
+): WorkflowExecutionState {
+  const now = Date.now();
+  const steps: Record<string, StepExecutionState> = {};
+
+  for (const stepId of stepIds) {
+    steps[stepId] = createStepExecutionState(stepId);
+  }
+
+  return {
+    executionId,
+    workflowId,
+    status: WorkflowStatus.QUEUED,
+    steps,
+    metadata: {
+      totalSteps: stepIds.length,
+      completedSteps: 0,
+      failedSteps: 0,
+      skippedSteps: 0,
+    },
+    updatedAt: now,
+    context,
+  };
 }
