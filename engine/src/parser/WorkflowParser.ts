@@ -8,11 +8,21 @@
  */
 
 import YAML from 'yaml';
+import { createHash } from 'node:crypto';
 import { SchemaValidator } from './SchemaValidator.js';
 import { StepParser } from './StepParser.js';
 import type { WorkflowDefinitionZod } from '@dev-ecosystem/core';
 import { LoggerManager } from '../logging/LoggerManager.js';
 import { ParsedWorkflow } from '../types/core-types.js';
+
+type WorkflowParseCache = {
+  load(source: string, sourceHash: string): { workflow: ParsedWorkflow } | null;
+  save(source: string, sourceHash: string, workflow: ParsedWorkflow): void;
+};
+
+interface WorkflowParseOptions {
+  cache?: WorkflowParseCache;
+}
 
 /**
  * Main workflow parser class
@@ -37,13 +47,22 @@ export class WorkflowParser {
     formatLabel: 'YAML' | 'JSON' | 'ORBT',
     parserType: 'yaml' | 'json' | 'orbt',
     parseFn: (raw: string) => unknown,
+    options: WorkflowParseOptions = {},
   ): ParsedWorkflow {
     const logger = LoggerManager.getLogger();
+    const sourceHash = this.buildCacheHash({ content, formatLabel });
+    const cached = this.readFromCache(options.cache, `${parserType}:${formatLabel}`, sourceHash);
+    if (cached) {
+      return cached;
+    }
+
     try {
       logger.parsingStarted(formatLabel, parserType);
       this.ensureNonEmptyContent(content, formatLabel);
       const parsed = parseFn(content);
-      return this.parse(parsed);
+      const workflow = this.parse(parsed, options);
+      this.writeToCache(options.cache, `${parserType}:${formatLabel}`, sourceHash, workflow);
+      return workflow;
     } catch (error) {
       if (error instanceof Error) {
         logger.parsingFailed(formatLabel, error);
@@ -60,9 +79,14 @@ export class WorkflowParser {
    * @returns Parsed workflow ready for execution
    * @throws {SecurityError} If reserved fields are detected
    */
-  static parse(rawWorkflow: unknown): ParsedWorkflow {
+  static parse(rawWorkflow: unknown, options: WorkflowParseOptions = {}): ParsedWorkflow {
     const logger = LoggerManager.getLogger();
     const startTime = Date.now();
+    const sourceHash = this.buildCacheHash(rawWorkflow);
+    const cached = this.readFromCache(options.cache, 'object:workflow', sourceHash);
+    if (cached) {
+      return cached;
+    }
     
     try {
       // Step 1: Validate against schema (with enhanced diagnostics)
@@ -110,6 +134,8 @@ export class WorkflowParser {
         hasInputs: !!validated.inputs,
         hasTriggers: !!validated.triggers,
       });
+
+      this.writeToCache(options.cache, 'object:workflow', sourceHash, parsed);
 
       return parsed;
     } catch (error) {
@@ -176,8 +202,8 @@ export class WorkflowParser {
    * @param yamlContent - YAML string content
    * @returns Parsed workflow
    */
-  static fromYAML(yamlContent: string): ParsedWorkflow {
-    return this.parseTextContent(yamlContent, 'YAML', 'yaml', (raw) => YAML.parse(raw));
+  static fromYAML(yamlContent: string, options: WorkflowParseOptions = {}): ParsedWorkflow {
+    return this.parseTextContent(yamlContent, 'YAML', 'yaml', (raw) => YAML.parse(raw), options);
   }
 
   /**
@@ -186,8 +212,8 @@ export class WorkflowParser {
    * @param jsonContent - JSON string content
    * @returns Parsed workflow
    */
-  static fromJSON(jsonContent: string): ParsedWorkflow {
-    return this.parseTextContent(jsonContent, 'JSON', 'json', (raw) => JSON.parse(raw));
+  static fromJSON(jsonContent: string, options: WorkflowParseOptions = {}): ParsedWorkflow {
+    return this.parseTextContent(jsonContent, 'JSON', 'json', (raw) => JSON.parse(raw), options);
   }
 
   /**
@@ -195,8 +221,8 @@ export class WorkflowParser {
    *
    * .orbt is treated as canonical JSON workflow object format.
    */
-  static fromORBT(orbtContent: string): ParsedWorkflow {
-    return this.parseTextContent(orbtContent, 'ORBT', 'orbt', (raw) => JSON.parse(raw));
+  static fromORBT(orbtContent: string, options: WorkflowParseOptions = {}): ParsedWorkflow {
+    return this.parseTextContent(orbtContent, 'ORBT', 'orbt', (raw) => JSON.parse(raw), options);
   }
 
   /**
@@ -206,29 +232,29 @@ export class WorkflowParser {
    * @param filename - Optional filename for format detection
    * @returns Parsed workflow
    */
-  static fromFile(content: string, filename?: string): ParsedWorkflow {
+  static fromFile(content: string, filename?: string, options: WorkflowParseOptions = {}): ParsedWorkflow {
     this.ensureNonEmptyContent(content, 'Workflow file');
 
     // Try to detect format from filename
     if (filename) {
       const lowerFileName = filename.toLowerCase();
       if (lowerFileName.endsWith('.yaml') || lowerFileName.endsWith('.yml')) {
-        return this.fromYAML(content);
+        return this.fromYAML(content, options);
       }
       if (lowerFileName.endsWith('.json')) {
-        return this.fromJSON(content);
+        return this.fromJSON(content, options);
       }
       if (lowerFileName.endsWith('.orbt')) {
-        return this.fromORBT(content);
+        return this.fromORBT(content, options);
       }
     }
 
     // Auto-detect inline content for unknown extensions.
     const inferred = this.inferInlineFormat(content);
     try {
-      return inferred === 'json' ? this.fromJSON(content) : this.fromYAML(content);
+      return inferred === 'json' ? this.fromJSON(content, options) : this.fromYAML(content, options);
     } catch {
-      return inferred === 'json' ? this.fromYAML(content) : this.fromJSON(content);
+      return inferred === 'json' ? this.fromYAML(content, options) : this.fromJSON(content, options);
     }
   }
 
@@ -269,5 +295,27 @@ export class WorkflowParser {
       kind: validated.kind,
       stepCount: validated.workflow.steps.length,
     };
+  }
+
+  private static buildCacheHash(payload: unknown): string {
+    return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  }
+
+  private static readFromCache(
+    cache: WorkflowParseCache | undefined,
+    source: string,
+    sourceHash: string,
+  ): ParsedWorkflow | null {
+    if (!cache) return null;
+    return cache.load(source, sourceHash)?.workflow ?? null;
+  }
+
+  private static writeToCache(
+    cache: WorkflowParseCache | undefined,
+    source: string,
+    sourceHash: string,
+    workflow: ParsedWorkflow,
+  ): void {
+    cache?.save(source, sourceHash, workflow);
   }
 }
