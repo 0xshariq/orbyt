@@ -242,6 +242,14 @@ export interface WorkflowBatchResult {
  */
 export interface WorkflowLoadOptions {
   /**
+   * Optional parse cache used to short-circuit repeated workflow loads.
+   */
+  cache?: {
+    load(source: string, sourceHash: string): { workflow: ParsedWorkflow } | null;
+    save(source: string, sourceHash: string, workflow: ParsedWorkflow): void;
+  };
+
+  /**
    * Base directory for resolving relative paths
    * Defaults to dirname of the loaded file
    */
