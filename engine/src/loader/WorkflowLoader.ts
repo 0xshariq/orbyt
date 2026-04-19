@@ -130,31 +130,20 @@ export class WorkflowLoader {
       throw new Error(`Failed to read workflow file: ${errorMsg}`);
     }
 
-    // Step 3-5: Delegate file parsing + validation to parser layer.
-    let parsed: ParsedWorkflow;
     try {
-      parsed = WorkflowParser.fromFile(content, resolvedPath);
+      const parsed = WorkflowParser.fromFile(content, resolvedPath, { cache: options.cache });
+      const withVariables = this.applyVariables(parsed, options.variables);
+      const withSource = this.attachSourceMetadata(withVariables, {
+        sourceType: this.inferFileSourceType(resolvedPath),
+        sourceOrigin: resolvedPath,
+        loaderAdapter: `file:${this.inferFileSourceType(resolvedPath)}`,
+      });
+
+      WorkflowLoader._setContext(withSource, resolvedPath);
+      return withSource;
     } catch (error) {
       throw this.toOrbytError(error, resolvedPath, options.logger);
     }
-
-    // Step 6: Inject internal fields (engine-only, after validation)
-    // Example: parsed._internal = InternalContextBuilder.build(...);
-    // (Actual injection logic should be implemented here as needed)
-
-    // Step 7: Apply variables if provided
-    parsed = this.applyVariables(parsed, options.variables);
-    parsed = this.attachSourceMetadata(parsed, {
-      sourceType: this.inferFileSourceType(resolvedPath),
-      sourceOrigin: resolvedPath,
-      loaderAdapter: `file:${this.inferFileSourceType(resolvedPath)}`,
-    });
-
-    // Set workflow context so all downstream logs (runtime, analysis, security)
-    // are automatically enriched — cleared by OrbytEngine after the operation.
-    WorkflowLoader._setContext(parsed, resolvedPath);
-
-    return parsed;
   }
 
   /**
@@ -176,22 +165,22 @@ export class WorkflowLoader {
   static async fromYAML(
     yamlContent: string,
     filePath?: string,
-    logger?: EngineLogger
+    logger?: EngineLogger,
+    options: WorkflowLoadOptions = {}
   ): Promise<ParsedWorkflow> {
     const location = filePath || 'YAML content';
-    let parsed: ParsedWorkflow;
     try {
-      parsed = WorkflowParser.fromYAML(yamlContent);
+      const parsed = WorkflowParser.fromYAML(yamlContent, { cache: options.cache });
+      const withSource = this.attachSourceMetadata(parsed, {
+        sourceType: 'yaml',
+        sourceOrigin: filePath || 'inline:yaml',
+        loaderAdapter: 'inline:yaml',
+      });
+      WorkflowLoader._setContext(withSource, filePath);
+      return withSource;
     } catch (error) {
       throw this.toOrbytError(error, location, logger);
     }
-    const withSource = this.attachSourceMetadata(parsed, {
-      sourceType: 'yaml',
-      sourceOrigin: filePath || 'inline:yaml',
-      loaderAdapter: 'inline:yaml',
-    });
-    WorkflowLoader._setContext(withSource, filePath);
-    return withSource;
   }
 
   /**
@@ -210,22 +199,22 @@ export class WorkflowLoader {
   static async fromJSON(
     jsonContent: string,
     filePath?: string,
-    logger?: EngineLogger
+    logger?: EngineLogger,
+    options: WorkflowLoadOptions = {}
   ): Promise<ParsedWorkflow> {
     const location = filePath || 'JSON content';
-    let parsed: ParsedWorkflow;
     try {
-      parsed = WorkflowParser.fromJSON(jsonContent);
+      const parsed = WorkflowParser.fromJSON(jsonContent, { cache: options.cache });
+      const withSource = this.attachSourceMetadata(parsed, {
+        sourceType: 'json',
+        sourceOrigin: filePath || 'inline:json',
+        loaderAdapter: 'inline:json',
+      });
+      WorkflowLoader._setContext(withSource, filePath);
+      return withSource;
     } catch (error) {
       throw this.toOrbytError(error, location, logger);
     }
-    const withSource = this.attachSourceMetadata(parsed, {
-      sourceType: 'json',
-      sourceOrigin: filePath || 'inline:json',
-      loaderAdapter: 'inline:json',
-    });
-    WorkflowLoader._setContext(withSource, filePath);
-    return withSource;
   }
 
   /**
@@ -240,7 +229,7 @@ export class WorkflowLoader {
    * @returns Parsed and validated workflow
    * @throws OrbytError with proper error code and debug info
    */
-  static async fromObject(workflowObject: unknown, logger?: EngineLogger): Promise<ParsedWorkflow> {
+  static async fromObject(workflowObject: unknown, options: WorkflowLoadOptions = {}): Promise<ParsedWorkflow> {
     if (!this.isPlainObject(workflowObject)) {
       throw this.unsupportedInputError('workflow object', 'object', 'Expected a plain object workflow payload', {
         actualType: Array.isArray(workflowObject) ? 'array' : typeof workflowObject,
@@ -252,9 +241,11 @@ export class WorkflowLoader {
 
     // Object is already loaded — run security check then schema validation
     workflowObject = this.normalizeSupportedInput(workflowObject, 'workflow object', inputSourceType);
+
     WorkflowLoader._validateSecurity(workflowObject);
-    const parsed = this.validateAndParse(workflowObject, 'workflow object', logger);
-    const withSource = this.attachSourceMetadata(parsed, {
+    const parsed = WorkflowParser.parse(workflowObject, { cache: options.cache });
+    const withVariables = this.applyVariables(parsed, options.variables);
+    const withSource = this.attachSourceMetadata(withVariables, {
       sourceType: inputSourceType,
       sourceOrigin: `inline:${inputSourceType}`,
       loaderAdapter: `object:${inputSourceType}`,
@@ -281,7 +272,7 @@ export class WorkflowLoader {
       return this.fromString(input, options);
     }
 
-    return this.fromObject(input, options.logger);
+    return this.fromObject(input, options);
   }
 
   /**
@@ -293,7 +284,7 @@ export class WorkflowLoader {
   ): Promise<ParsedWorkflow> {
     if (typeof input !== 'string') {
       const normalized = this.normalizeSupportedInput(input, 'workflow object', 'object');
-      const parsed = this.validateAndParse(normalized, 'workflow object', options.logger);
+      const parsed = WorkflowParser.parse(normalized, { cache: options.cache });
       let withVariables = this.applyVariables(parsed, options.variables);
       withVariables = this.attachSourceMetadata(withVariables, {
         sourceType: 'object',
@@ -395,22 +386,20 @@ export class WorkflowLoader {
       });
     }
 
-    // Otherwise parse as inline content using parser format detection.
-    let parsed: ParsedWorkflow;
+    const sourceType = this.inferInlineSourceType(source);
     try {
-      parsed = WorkflowParser.fromFile(source);
+      const parsed = WorkflowParser.fromFile(source, undefined, { cache: options.cache });
+      const withVariables = this.applyVariables(parsed, options.variables);
+      const withSource = this.attachSourceMetadata(withVariables, {
+        sourceType,
+        sourceOrigin: 'inline:text',
+        loaderAdapter: `inline:${sourceType}`,
+      });
+      WorkflowLoader._setContext(withSource);
+      return withSource;
     } catch (error) {
       throw this.toOrbytError(error, 'inline content', options.logger);
     }
-
-    let withVariables = this.applyVariables(parsed, options.variables);
-    withVariables = this.attachSourceMetadata(withVariables, {
-      sourceType: this.inferInlineSourceType(source),
-      sourceOrigin: 'inline:text',
-      loaderAdapter: `inline:${this.inferInlineSourceType(source)}`,
-    });
-    WorkflowLoader._setContext(withVariables);
-    return withVariables;
   }
 
   // ============================================================================
@@ -852,45 +841,6 @@ export class WorkflowLoader {
    * @throws OrbytError if validation fails (with debug info attached)
    * @private
    */
-  private static validateAndParse(
-    workflowObject: unknown,
-    location: string,
-    logger?: EngineLogger
-  ): ParsedWorkflow {
-    try {
-      // Delegate schema + step parsing/validation to the parser layer.
-      return WorkflowParser.parse(workflowObject);
-    } catch (error) {
-      // Convert to OrbytError if not already
-      // ErrorDetector automatically enriches with debug info
-      let orbytError: OrbytError;
-
-      if (error instanceof OrbytError) {
-        orbytError = error;
-      } else {
-        // Use enhanced detection so line/col are extracted for parse errors
-        orbytError = ErrorDetector.detectFromExceptionEnhanced(
-          error instanceof Error ? error : new Error(String(error)),
-          location
-        );
-      }
-
-      // 1. Log to EngineLogger — use context-aware variant so sourceFile,
-      //    workflowName, and stepCount are attached to the log entry.
-      if (logger) {
-        logErrorToEngineWithContext(orbytError, logger);
-      }
-
-      // 2. Display detailed debug info that was attached by ErrorDetector
-      //    The debug output includes: explanation, cause, fix steps, examples
-      const debugOutput = (orbytError as any).__debugOutput;
-      if (debugOutput) {
-        console.error('\n' + debugOutput + '\n');
-      }
-
-      throw orbytError;
-    }
-  }
   // Exported static methods for engine and external use
   static loadFromFile = WorkflowLoader.fromFile;
   static loadFromYAML = WorkflowLoader.fromYAML;
