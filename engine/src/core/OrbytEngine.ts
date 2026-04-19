@@ -313,6 +313,7 @@ export class OrbytEngine {
     this.runtimeArtifactStore = new RuntimeArtifactStore(this.config.runtimeDir);
     this.runtimeArtifactStore.ensureDirs();
     this.workflowExecutor.setStateDir(join(storeRoot, 'executions'));
+    this.executionEngine.setWorkflowParseCache(this.workflowParseCache);
 
     // Register built-in adapters
     this.registerBuiltinAdapters();
@@ -751,7 +752,7 @@ export class OrbytEngine {
    */
   private async resolveWorkflowInput(workflow: string | ParsedWorkflow): Promise<ParsedWorkflow> {
     const parsedWorkflow = typeof workflow === 'string'
-      ? await WorkflowLoader.toWorkflowObject(workflow)
+      ? await WorkflowLoader.toWorkflowObject(workflow, { cache: this.workflowParseCache })
       : workflow;
 
     this.assertWorkflowVersionSupported(parsedWorkflow);
