@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { WorkflowLoader } from '../loader/WorkflowLoader.js';
+import { WorkflowParser } from '../parser/WorkflowParser.js';
 import { WorkflowExecutor } from './WorkflowExecutor.js';
 import { StepExecutor } from './StepExecutor.js';
 import { Scheduler } from '../scheduling/Scheduler.js';
@@ -247,9 +247,7 @@ export class ExecutionEngine {
     const executionId = this.generateExecutionId();
 
     // Parse workflow if needed
-    const parsedWorkflow = typeof workflow === 'string'
-      ? await WorkflowLoader.toWorkflowObject(workflow)
-      : workflow;
+    const parsedWorkflow = this.resolveWorkflowInput(workflow);
 
     // Track execution
     this.executions.set(executionId, {
@@ -442,9 +440,7 @@ export class ExecutionEngine {
 
     try {
       // Parse workflow if needed
-      const parsedWorkflow = typeof payload.workflow === 'string'
-        ? await WorkflowLoader.toWorkflowObject(payload.workflow)
-        : payload.workflow;
+      const parsedWorkflow = this.resolveWorkflowInput(payload.workflow);
 
       const workflowName = parsedWorkflow.metadata?.name || parsedWorkflow.name || 'unnamed';
 
@@ -556,5 +552,22 @@ export class ExecutionEngine {
       isRunning: this.isRunning,
       maxConcurrentExecutions: this.config.maxConcurrentExecutions,
     };
+  }
+
+  /**
+   * Share the engine-level workflow parse cache with the execution engine.
+   */
+  setWorkflowParseCache(_cache?: { load(source: string, sourceHash: string): { workflow: ParsedWorkflow } | null; save(source: string, sourceHash: string, workflow: ParsedWorkflow): void }): void {
+    // Intentionally unused here: the execution engine now resolves workflow
+    // input through the parser directly instead of the loader.
+  }
+
+  /**
+   * Resolve workflow input into a parsed workflow using the parser only.
+   */
+  private resolveWorkflowInput(workflow: string | ParsedWorkflow): ParsedWorkflow {
+    return typeof workflow === 'string'
+      ? WorkflowParser.fromFile(workflow)
+      : WorkflowParser.parse(workflow);
   }
 }
