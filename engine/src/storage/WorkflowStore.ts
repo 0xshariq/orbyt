@@ -63,7 +63,7 @@ export class WorkflowStore {
    */
   save(workflow: ParsedWorkflow): void {
     try {
-      const workflowId = this._resolveId(workflow);
+      const workflowId = this.resolveWorkflowId(workflow);
       this.adapter.ensureDir(workflowId);
 
       const nextVersion = this._nextVersion(workflowId);
@@ -89,8 +89,15 @@ export class WorkflowStore {
    */
   loadLatest(workflowId: string): PersistedWorkflow | null {
     try {
+      const cachedVersion = this.latestVersionCache.get(workflowId);
+      if (cachedVersion !== undefined) {
+        const cached = this._readVersion(workflowId, cachedVersion);
+        if (cached) return cached;
+      }
+
       const versions = this.listVersions(workflowId);
       if (versions.length === 0) return null;
+      this.latestVersionCache.set(workflowId, versions[0]);
       return this._readVersion(workflowId, versions[0]);
     } catch {
       return null;
@@ -108,6 +115,13 @@ export class WorkflowStore {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Public alias for loading a workflow by ID, with optional version selection.
+   */
+  loadById(workflowId: string, version?: number): PersistedWorkflow | null {
+    return this.load(workflowId, version);
   }
 
   /**
@@ -165,7 +179,7 @@ export class WorkflowStore {
   // ─── Internal helpers ──────────────────────────────────────────────────────
 
   /** Derive a stable ID from the workflow — prefer `name`, fallback to `metadata.name`. */
-  private _resolveId(workflow: ParsedWorkflow): string {
+  resolveWorkflowId(workflow: ParsedWorkflow): string {
     const raw = workflow.name ?? workflow.metadata?.name ?? 'unnamed';
     // Sanitise for use as a directory name (keep alphanumeric, hyphen, underscore, dot)
     return raw.replace(/[^a-zA-Z0-9._-]/g, '_');
