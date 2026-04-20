@@ -2301,6 +2301,36 @@ export interface OrbytEngineConfig {
    */
   runtimeDir?: string;
 
+  /**
+   * Execution diagram artifact persistence settings.
+   * Diagrams are generated from graph/visualization modules during execution.
+   */
+  diagramArtifacts?: {
+    /**
+     * Enable automatic diagram generation and persistence.
+     * @default true
+     */
+    enabled?: boolean;
+
+    /**
+     * Restrict diagram generation to workflows loaded from .orbt sources.
+     * @default true
+     */
+    onlyOrbtSources?: boolean;
+
+    /**
+     * Maximum number of historical diagram records to keep per workflow source.
+     * @default 100
+     */
+    maxHistoryPerWorkflow?: number;
+
+    /**
+     * Maximum number of total diagram records retained globally.
+     * @default 3000
+     */
+    maxTotalArtifacts?: number;
+  };
+
   // === Security ===
 
   /**
@@ -3975,4 +4005,30 @@ export interface QuotaStatusQueryOptions {
 export interface QuotaStatusResult {
   enforced: boolean;
   decision: QuotaDecision;
+}
+
+export type WorkflowDiagramStage = 'planned' | 'completed';
+
+export interface WorkflowDiagramRecord {
+  stage: WorkflowDiagramStage;
+  executionId: string;
+  graphPath: string;
+  tracePath: string;
+  mermaidPath: string;
+  createdAt: string;
+}
+
+export interface WorkflowDiagramSourceEntry {
+  sourceOrigin: string;
+  sourceType: string;
+  workflowName: string;
+  workflowVersion?: string;
+  latest: WorkflowDiagramRecord;
+  history: WorkflowDiagramRecord[];
+}
+
+export interface WorkflowDiagramIndexDocument {
+  schemaVersion: number;
+  updatedAt: string;
+  entries: Record<string, WorkflowDiagramSourceEntry>;
 }
