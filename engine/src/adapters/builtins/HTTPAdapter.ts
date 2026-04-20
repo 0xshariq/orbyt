@@ -106,7 +106,14 @@ export class HTTPAdapter extends BaseAdapter {
         builder.failure({
           message: `HTTP request failed: ${response.status} ${response.statusText}`,
           code: response.status.toString(),
-          details: httpResponse,
+          details: {
+            status: httpResponse.status,
+            statusText: httpResponse.statusText,
+            headers: httpResponse.headers,
+            body: httpResponse.body,
+            url: httpResponse.url,
+            duration: httpResponse.duration,
+          },
         });
 
         // Check if we should throw on error status
