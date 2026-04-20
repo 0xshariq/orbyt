@@ -40,6 +40,12 @@ export function applyConfigDefaults(config: OrbytEngineConfig = {}): Required<Om
     logDir: config.logDir ?? join(ORBYT_HOME, 'logs'),
     cacheDir: config.cacheDir ?? join(ORBYT_HOME, 'cache'),
     runtimeDir: config.runtimeDir ?? join(ORBYT_HOME, 'runtime'),
+    diagramArtifacts: {
+      enabled: config.diagramArtifacts?.enabled ?? true,
+      onlyOrbtSources: config.diagramArtifacts?.onlyOrbtSources ?? true,
+      maxHistoryPerWorkflow: config.diagramArtifacts?.maxHistoryPerWorkflow ?? 100,
+      maxTotalArtifacts: config.diagramArtifacts?.maxTotalArtifacts ?? 3000,
+    },
     sandboxMode: config.sandboxMode ?? 'basic',
     workingDirectory: config.workingDirectory ?? process.cwd(),
     experimental: config.experimental ?? false,
@@ -168,6 +174,14 @@ export function validateConfig(config: OrbytEngineConfig): void {
 
   if (config.distributed?.leaseExtensionMs !== undefined && config.distributed.leaseExtensionMs < 500) {
     throw new Error('distributed.leaseExtensionMs must be at least 500ms');
+  }
+
+  if (config.diagramArtifacts?.maxHistoryPerWorkflow !== undefined && config.diagramArtifacts.maxHistoryPerWorkflow < 1) {
+    throw new Error('diagramArtifacts.maxHistoryPerWorkflow must be at least 1');
+  }
+
+  if (config.diagramArtifacts?.maxTotalArtifacts !== undefined && config.diagramArtifacts.maxTotalArtifacts < 1) {
+    throw new Error('diagramArtifacts.maxTotalArtifacts must be at least 1');
   }
 
   const validateQuotaPolicy = (name: 'free' | 'pro' | 'enterprise', policy?: OrbytEngineConfig['quotaPolicies'] extends infer T ? T extends object ? T[keyof T] : never : never): void => {
