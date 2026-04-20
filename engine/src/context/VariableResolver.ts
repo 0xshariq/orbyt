@@ -34,7 +34,7 @@
 
 import { randomUUID } from 'crypto';
 import { LoggerManager } from '../logging/LoggerManager.js';
-import { ResolutionContext } from '../types/core-types.js';
+import type { ResolutionContext } from '../types/core-types.js';
 
 /**
  * Variable resolver engine
@@ -42,6 +42,8 @@ import { ResolutionContext } from '../types/core-types.js';
 export class VariableResolver {
   /** Maximum recursion depth to prevent infinite loops */
   private readonly maxDepth = 10;
+  private static readonly SINGLE_VARIABLE_REGEX = /^\$\{([^}]+)\}$/;
+  private static readonly VARIABLE_REGEX = /\$\{([^}]+)\}/g;
   
   /**
    * Resolve all variables in the input value
@@ -103,15 +105,14 @@ export class VariableResolver {
    */
   private resolveString(str: string, ctx: ResolutionContext, depth: number): any {
     // Check if entire string is a single variable (type-aware resolution)
-    const singleVarMatch = str.match(/^\$\{([^}]+)\}$/);
+    const singleVarMatch = str.match(VariableResolver.SINGLE_VARIABLE_REGEX);
     if (singleVarMatch) {
       // Return actual value (might not be string)
       return this.evaluateExpression(singleVarMatch[1].trim(), ctx, depth);
     }
 
     // Replace all inline variables with string values
-    const regex = /\$\{([^}]+)\}/g;
-    return str.replace(regex, (_, expr) => {
+    return str.replace(VariableResolver.VARIABLE_REGEX, (_, expr) => {
       const value = this.evaluateExpression(expr.trim(), ctx, depth);
       return value !== undefined && value !== null ? String(value) : '';
     });
@@ -140,7 +141,7 @@ export class VariableResolver {
         if (value !== undefined && value !== null && value !== '') {
           return value;
         }
-      } catch (err) {
+      } catch {
         // If lookup fails, use default
       }
       // Parse default value (could be string literal or another expression)
@@ -378,13 +379,14 @@ export class VariableResolver {
    * @returns Array of variable expressions (without ${ })
    */
   static extractVariables(str: string): string[] {
-    const regex = /\$\{([^}]+)\}/g;
     const matches: string[] = [];
     let match;
     
-    while ((match = regex.exec(str)) !== null) {
+    while ((match = VariableResolver.VARIABLE_REGEX.exec(str)) !== null) {
       matches.push(match[1].trim());
     }
+
+    VariableResolver.VARIABLE_REGEX.lastIndex = 0;
     
     return matches;
   }
