@@ -2501,6 +2501,44 @@ export interface ExecutionExplanation {
 
   /** Execution time estimation - predicted duration */
   timeEstimation?: ExecutionTimeEstimation;
+
+  /** Graph model derived from dependency analysis and visualization pipeline */
+  executionGraph?: {
+    nodes: Array<{
+      id: string;
+      uses: string;
+      dependencies: string[];
+      dependents: string[];
+      phase?: number;
+      isEntryPoint: boolean;
+      isExitPoint: boolean;
+      status?: 'success' | 'failure' | 'skipped' | 'timeout';
+      durationMs?: number;
+      attempts?: number;
+      error?: string;
+    }>;
+    edges: Array<{
+      from: string;
+      to: string;
+      kind: 'depends_on';
+    }>;
+    phases: Array<{
+      phase: number;
+      stepIds: string[];
+    }>;
+    hasCycle: boolean;
+    cyclePath?: string[];
+  };
+
+  /** Human-readable execution trace rendered from visualization pipeline */
+  executionTraceText?: string;
+
+  /** Mermaid execution diagram and optional persisted location */
+  executionDiagram?: {
+    format: 'mermaid';
+    content: string;
+    savedPath?: string;
+  };
 }
 
 /**
