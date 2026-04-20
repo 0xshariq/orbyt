@@ -42,6 +42,7 @@ export * from './execution/index.js';
 
 // Explanation types (for CLI and API integrations)
 export * from './explanation/index.js';
+export * from './visualization/index.js';
 
 // Parser (for validation and custom tooling)
 export * from './parser/index.js';
