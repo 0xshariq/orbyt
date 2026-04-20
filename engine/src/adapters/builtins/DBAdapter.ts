@@ -103,17 +103,21 @@ export class DBAdapter extends BaseAdapter {
       );
 
       const duration = Date.now() - startTime;
+      const output: Record<string, any> = {
+        rows: dbResult.rows,
+        rowCount: dbResult.rowCount,
+        query: dbResult.query,
+        database: dbResult.database,
+      };
+
+      if (dbResult.fields !== undefined) {
+        output.fields = dbResult.fields;
+      }
 
       // Convert DBResult to AdapterResult
       return {
         success: true,
-        output: {
-          rows: dbResult.rows,
-          rowCount: dbResult.rowCount,
-          fields: dbResult.fields,
-          query: dbResult.query,
-          database: dbResult.database,
-        },
+        output,
         metrics: {
           durationMs: duration,
         },
