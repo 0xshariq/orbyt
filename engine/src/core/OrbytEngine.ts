@@ -86,9 +86,11 @@ import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
 import { BillingUsageFetchBucket, BillingUsageFetchCursor, BillingUsageFetchOptions, BillingUsageFetchProvider, BillingUsageFetchResult, BillingUsageIncrementalFetchOptions, BillingUsageIncrementalFetchResult, DailyUsageAggregateBucket, DailyUsageAggregationRunResult, DailyUsageAggregateQueryOptions, DailyUsageAggregateRebuildOptions, DailyUsageAggregateRebuildResult, DailyUsageAggregationState, EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, InternalExecutionContext, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, PeriodUsageRollupBucket, QuotaDecision, QuotaPolicy, QuotaStatusQueryOptions, QuotaStatusResult, QuotaUsageCounters, UsageAggregationPipelineRunResult, UsageBillingCalculationOptions, UsageBillingCalculationResult, UsageBillingEstimateComponent, UsageBillingEstimateOptions, UsageBillingEstimateResult, UsageCollectorHealthStatus, UsagePeriodRollupQueryOptions, UsagePeriodRollupRunResult, UsagePeriodSummaryQueryOptions, UsagePeriodSummaryResult, UsageRollupReconciliationMismatch, UsageRollupReconciliationQueryOptions, UsageRollupReconciliationResult, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowQuotaMetadata, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
+import { ExecutionGraphBuilder, ExecutionTraceFormatter } from '../visualization/index.js';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { ExecutionStore } from '../storage/ExecutionStore.js';
 import { WorkflowStore } from '../storage/WorkflowStore.js';
 import { ScheduleStore } from '../storage/ScheduleStore.js';
@@ -396,6 +398,7 @@ export class OrbytEngine {
       join(this.config.stateDir, 'checkpoints'),
       join(this.config.stateDir, 'workflows'),
       join(this.config.stateDir, 'schedules'),
+      join(this.config.stateDir, 'diagrams'),
       this.config.logDir,
       this.config.cacheDir,
       join(this.config.cacheDir, 'workflows'),
@@ -845,16 +848,22 @@ export class OrbytEngine {
       stepCount: parsedWorkflow.steps?.length,
       tags: parsedWorkflow.tags ?? parsedWorkflow.metadata?.tags,
     }, async () => {
+      this.persistWorkflowDiagramArtifacts(parsedWorkflow, internalContext, 'planned');
+
       // Handle dry-run mode
       if (options.dryRun || this.config.mode === 'dry-run') {
-        return await this.dryRun(parsedWorkflow, options);
+        const dryRunResult = await this.dryRun(parsedWorkflow, options);
+        this.persistWorkflowDiagramArtifacts(parsedWorkflow, internalContext, 'completed', dryRunResult);
+        return dryRunResult;
       }
 
       // Phase 3: enforce pre-execution usage quota policy before running workflow.
       const quotaDecision = await this.evaluatePreExecutionQuota(parsedWorkflow, internalContext);
       if (quotaDecision.decision === 'deny_limit_reached') {
         this.log('warn', 'Execution blocked by usage quota policy', quotaDecision.snapshot);
-        return this.createQuotaDeniedResult(parsedWorkflow, internalContext, quotaDecision);
+        const deniedResult = this.createQuotaDeniedResult(parsedWorkflow, internalContext, quotaDecision);
+        this.persistWorkflowDiagramArtifacts(parsedWorkflow, internalContext, 'completed', deniedResult);
+        return deniedResult;
       }
       if (quotaDecision.decision === 'allow_with_warning') {
         this.log('warn', 'Execution near usage quota threshold', quotaDecision.snapshot);
@@ -1051,12 +1060,169 @@ export class OrbytEngine {
       }
 
       await this.onWorkflowBillingComplete(internalContext, result);
+      this.persistWorkflowDiagramArtifacts(parsedWorkflow, internalContext, 'completed', result);
       return result;
     });
 
     // Clear any non-scoped workflow context left by prior preload parsing.
     LoggerManager.clearWorkflowContext();
     return result;
+  }
+
+  private persistWorkflowDiagramArtifacts(
+    workflow: ParsedWorkflow,
+    internalContext: InternalExecutionContext,
+    stage: 'planned' | 'completed',
+    result?: WorkflowResult,
+  ): void {
+    if (!this.shouldPersistWorkflowDiagram(workflow)) {
+      return;
+    }
+
+    try {
+      const diagramsDir = join(this.config.stateDir, 'diagrams');
+      mkdirSync(diagramsDir, { recursive: true });
+
+      const sourceOrigin = workflow.sourceMetadata?.sourceOrigin || 'unknown.orbt';
+      const sourceHash = createHash('sha256').update(sourceOrigin).digest('hex').slice(0, 12);
+      const workflowName = workflow.metadata?.name || workflow.name || 'unnamed-workflow';
+      const workflowSlug = workflowName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const executionId =
+        result?.executionId || internalContext?._identity?.executionId || `exec-${Date.now()}`;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const baseName = `${workflowSlug}-${sourceHash}-${executionId}-${stage}-${timestamp}`;
+
+      const graphModel = ExecutionGraphBuilder.fromWorkflow(workflow, result);
+      const traceDoc = ExecutionTraceFormatter.toDocument(workflow, result);
+      const mermaid = traceDoc.mermaid;
+
+      const graphPath = join(diagramsDir, `${baseName}.graph.json`);
+      const tracePath = join(diagramsDir, `${baseName}.trace.json`);
+      const mermaidPath = join(diagramsDir, `${baseName}.mermaid.mmd`);
+
+      writeFileSync(graphPath, JSON.stringify(graphModel, null, 2), 'utf-8');
+      writeFileSync(tracePath, JSON.stringify(traceDoc, null, 2), 'utf-8');
+      writeFileSync(mermaidPath, mermaid, 'utf-8');
+
+      this.updateWorkflowDiagramIndex({
+        sourceOrigin,
+        sourceType: workflow.sourceMetadata?.sourceType || 'file',
+        workflowName,
+        workflowVersion: workflow.metadata?.version || workflow.version,
+        stage,
+        executionId,
+        graphPath,
+        tracePath,
+        mermaidPath,
+      });
+    } catch (error) {
+      this.log('warn', 'Failed to persist workflow execution diagram artifacts', {
+        workflowName: workflow.metadata?.name || workflow.name,
+        sourceOrigin: workflow.sourceMetadata?.sourceOrigin,
+        stage,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private shouldPersistWorkflowDiagram(workflow: ParsedWorkflow): boolean {
+    const sourceOrigin = workflow.sourceMetadata?.sourceOrigin;
+    if (!sourceOrigin) {
+      return false;
+    }
+
+    return sourceOrigin.toLowerCase().endsWith('.orbt');
+  }
+
+  private updateWorkflowDiagramIndex(entry: {
+    sourceOrigin: string;
+    sourceType: string;
+    workflowName: string;
+    workflowVersion?: string;
+    stage: 'planned' | 'completed';
+    executionId: string;
+    graphPath: string;
+    tracePath: string;
+    mermaidPath: string;
+  }): void {
+    const diagramsDir = join(this.config.stateDir, 'diagrams');
+    const indexPath = join(diagramsDir, 'index.json');
+
+    let indexDoc: {
+      schemaVersion: number;
+      updatedAt: string;
+      entries: Record<string, {
+        sourceOrigin: string;
+        sourceType: string;
+        workflowName: string;
+        workflowVersion?: string;
+        latest: {
+          stage: 'planned' | 'completed';
+          executionId: string;
+          graphPath: string;
+          tracePath: string;
+          mermaidPath: string;
+          createdAt: string;
+        };
+        history: Array<{
+          stage: 'planned' | 'completed';
+          executionId: string;
+          graphPath: string;
+          tracePath: string;
+          mermaidPath: string;
+          createdAt: string;
+        }>;
+      }>;
+    } = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      entries: {},
+    };
+
+    if (existsSync(indexPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(indexPath, 'utf-8'));
+        if (parsed && typeof parsed === 'object') {
+          indexDoc = {
+            schemaVersion: 1,
+            updatedAt: new Date().toISOString(),
+            entries: typeof parsed.entries === 'object' && parsed.entries ? parsed.entries : {},
+          };
+        }
+      } catch {
+        // Replace corrupted index with a fresh one.
+      }
+    }
+
+    const record = {
+      stage: entry.stage,
+      executionId: entry.executionId,
+      graphPath: entry.graphPath,
+      tracePath: entry.tracePath,
+      mermaidPath: entry.mermaidPath,
+      createdAt: new Date().toISOString(),
+    };
+
+    const existing = indexDoc.entries[entry.sourceOrigin];
+    if (existing) {
+      existing.sourceType = entry.sourceType;
+      existing.workflowName = entry.workflowName;
+      existing.workflowVersion = entry.workflowVersion;
+      existing.latest = record;
+      existing.history.push(record);
+    } else {
+      indexDoc.entries[entry.sourceOrigin] = {
+        sourceOrigin: entry.sourceOrigin,
+        sourceType: entry.sourceType,
+        workflowName: entry.workflowName,
+        workflowVersion: entry.workflowVersion,
+        latest: record,
+        history: [record],
+      };
+    }
+
+    indexDoc.updatedAt = new Date().toISOString();
+    writeFileSync(indexPath, JSON.stringify(indexDoc, null, 2), 'utf-8');
   }
 
   private async evaluatePreExecutionQuota(
