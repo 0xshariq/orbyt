@@ -15,13 +15,9 @@
     "build": "rm -rf dist && tsc",
     "clean": "rm -rf dist",
     "tokio-worker:run": "cargo run --quiet --manifest-path ../orbyt-tokio-worker/Cargo.toml",
-    "test:yaml-to-orbt": "pnpm run build && node dist/testing/integration/convert-yaml-to-orbt.js",
-    "test:phase-a": "pnpm run build && node dist/testing/integration/phase-a-contract-versioning.js",
-    "test:phase-c": "pnpm run build && node dist/testing/integration/phase-c-normalizer-determinism.js",
-    "test:phase-b": "pnpm run build && node dist/testing/integration/phase-b-loader-boundary.js",
-    "test:phase-abc": "pnpm run test:phase-a && pnpm run test:phase-b && pnpm run test:phase-c",
+    "test:orbt-exec-diagram": "pnpm run build && node dist/testing/integration/orbt-workflow-execution-diagram.js",
     "test:distributed": "pnpm run build && node dist/testing/distributed/distributed-smoke.js",
-    "test:integration": "pnpm run test:phase-c && pnpm run test:phase-b && pnpm run test:distributed",
+    "test:integration": "pnpm run test:distributed",
     "test": "pnpm run test:integration"
   },
   "keywords": [
