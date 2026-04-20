@@ -83,7 +83,7 @@ export class FSAdapter implements Adapter {
       const workspacePath = context.cwd || process.cwd();
       const resolver = new FileResolver({
         baseDir: workspacePath,
-        variables: context.inputs || {},
+        variables: (context.inputs || {}) as unknown as Record<string, string>,
       });
 
       let result: unknown;
