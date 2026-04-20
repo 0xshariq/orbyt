@@ -84,10 +84,10 @@ import { CLIAdapter, ShellAdapter, HTTPAdapter, FSAdapter } from '../adapters/bu
 import { InternalContextBuilder } from '../execution/InternalExecutionContext.js';
 import { IntentAnalyzer } from '../execution/IntentAnalyzer.js';
 import { ExecutionStrategyResolver, ExecutionStrategyGuard } from '../execution/ExecutionStrategyResolver.js';
-import { BillingUsageFetchBucket, BillingUsageFetchCursor, BillingUsageFetchOptions, BillingUsageFetchProvider, BillingUsageFetchResult, BillingUsageIncrementalFetchOptions, BillingUsageIncrementalFetchResult, DailyUsageAggregateBucket, DailyUsageAggregationRunResult, DailyUsageAggregateQueryOptions, DailyUsageAggregateRebuildOptions, DailyUsageAggregateRebuildResult, DailyUsageAggregationState, EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, InternalExecutionContext, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, PeriodUsageRollupBucket, QuotaDecision, QuotaPolicy, QuotaStatusQueryOptions, QuotaStatusResult, QuotaUsageCounters, UsageAggregationPipelineRunResult, UsageBillingCalculationOptions, UsageBillingCalculationResult, UsageBillingEstimateComponent, UsageBillingEstimateOptions, UsageBillingEstimateResult, UsageCollectorHealthStatus, UsagePeriodRollupQueryOptions, UsagePeriodRollupRunResult, UsagePeriodSummaryQueryOptions, UsagePeriodSummaryResult, UsageRollupReconciliationMismatch, UsageRollupReconciliationQueryOptions, UsageRollupReconciliationResult, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowQuotaMetadata, WorkflowResult, WorkflowRunOptions } from '../types/core-types.js';
+import { BillingUsageFetchBucket, BillingUsageFetchCursor, BillingUsageFetchOptions, BillingUsageFetchProvider, BillingUsageFetchResult, BillingUsageIncrementalFetchOptions, BillingUsageIncrementalFetchResult, DailyUsageAggregateBucket, DailyUsageAggregationRunResult, DailyUsageAggregateQueryOptions, DailyUsageAggregateRebuildOptions, DailyUsageAggregateRebuildResult, DailyUsageAggregationState, EngineContext, EngineEventType, EngineUsageGroupBucket, EngineUsageQueryOptions, EngineUsageQueryResult, ExecutionExplanation, ExecutionOptions, InternalExecutionContext, LoadedWorkflowItem, LogLevel, MultiWorkflowExecutionMode, OrbytEngineConfig, OwnershipContext, ParsedWorkflow, PeriodUsageRollupBucket, QuotaDecision, QuotaPolicy, QuotaStatusQueryOptions, QuotaStatusResult, QuotaUsageCounters, UsageAggregationPipelineRunResult, UsageBillingCalculationOptions, UsageBillingCalculationResult, UsageBillingEstimateComponent, UsageBillingEstimateOptions, UsageBillingEstimateResult, UsageCollectorHealthStatus, UsagePeriodRollupQueryOptions, UsagePeriodRollupRunResult, UsagePeriodSummaryQueryOptions, UsagePeriodSummaryResult, UsageRollupReconciliationMismatch, UsageRollupReconciliationQueryOptions, UsageRollupReconciliationResult, WorkflowBatchItemResult, WorkflowBatchResult, WorkflowBatchRunOptions, WorkflowQuotaMetadata, WorkflowResult, WorkflowRunOptions, WorkflowDiagramStage, WorkflowDiagramRecord, WorkflowDiagramIndexDocument, WorkflowDiagramSourceEntry } from '../types/core-types.js';
 import { ExplanationGenerator, ExplanationLogger } from '../explanation/index.js';
 import { ExecutionGraphBuilder, ExecutionTraceFormatter } from '../visualization/index.js';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -470,6 +470,7 @@ export class OrbytEngine {
           workingDirectory: this.config.workingDirectory,
         },
         usageSpool: this.config.usageSpool,
+        diagramArtifacts: this.config.diagramArtifacts,
       };
 
       writeFileSync(configPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
@@ -1126,12 +1127,35 @@ export class OrbytEngine {
   }
 
   private shouldPersistWorkflowDiagram(workflow: ParsedWorkflow): boolean {
+    const diagramConfig = this.getDiagramArtifactsConfig();
+    if (!diagramConfig.enabled) {
+      return false;
+    }
+
     const sourceOrigin = workflow.sourceMetadata?.sourceOrigin;
     if (!sourceOrigin) {
       return false;
     }
 
+    if (!diagramConfig.onlyOrbtSources) {
+      return true;
+    }
+
     return sourceOrigin.toLowerCase().endsWith('.orbt');
+  }
+
+  private getDiagramArtifactsConfig(): {
+    enabled: boolean;
+    onlyOrbtSources: boolean;
+    maxHistoryPerWorkflow: number;
+    maxTotalArtifacts: number;
+  } {
+    return {
+      enabled: this.config.diagramArtifacts?.enabled ?? true,
+      onlyOrbtSources: this.config.diagramArtifacts?.onlyOrbtSources ?? true,
+      maxHistoryPerWorkflow: Math.max(1, this.config.diagramArtifacts?.maxHistoryPerWorkflow ?? 100),
+      maxTotalArtifacts: Math.max(1, this.config.diagramArtifacts?.maxTotalArtifacts ?? 3000),
+    };
   }
 
   private updateWorkflowDiagramIndex(entry: {
@@ -1139,7 +1163,7 @@ export class OrbytEngine {
     sourceType: string;
     workflowName: string;
     workflowVersion?: string;
-    stage: 'planned' | 'completed';
+    stage: WorkflowDiagramStage;
     executionId: string;
     graphPath: string;
     tracePath: string;
@@ -1148,53 +1172,10 @@ export class OrbytEngine {
     const diagramsDir = join(this.config.stateDir, 'diagrams');
     const indexPath = join(diagramsDir, 'index.json');
 
-    let indexDoc: {
-      schemaVersion: number;
-      updatedAt: string;
-      entries: Record<string, {
-        sourceOrigin: string;
-        sourceType: string;
-        workflowName: string;
-        workflowVersion?: string;
-        latest: {
-          stage: 'planned' | 'completed';
-          executionId: string;
-          graphPath: string;
-          tracePath: string;
-          mermaidPath: string;
-          createdAt: string;
-        };
-        history: Array<{
-          stage: 'planned' | 'completed';
-          executionId: string;
-          graphPath: string;
-          tracePath: string;
-          mermaidPath: string;
-          createdAt: string;
-        }>;
-      }>;
-    } = {
-      schemaVersion: 1,
-      updatedAt: new Date().toISOString(),
-      entries: {},
-    };
+    const diagramConfig = this.getDiagramArtifactsConfig();
+    const indexDoc = this.loadWorkflowDiagramIndex(indexPath);
 
-    if (existsSync(indexPath)) {
-      try {
-        const parsed = JSON.parse(readFileSync(indexPath, 'utf-8'));
-        if (parsed && typeof parsed === 'object') {
-          indexDoc = {
-            schemaVersion: 1,
-            updatedAt: new Date().toISOString(),
-            entries: typeof parsed.entries === 'object' && parsed.entries ? parsed.entries : {},
-          };
-        }
-      } catch {
-        // Replace corrupted index with a fresh one.
-      }
-    }
-
-    const record = {
+    const record: WorkflowDiagramRecord = {
       stage: entry.stage,
       executionId: entry.executionId,
       graphPath: entry.graphPath,
@@ -1208,7 +1189,6 @@ export class OrbytEngine {
       existing.sourceType = entry.sourceType;
       existing.workflowName = entry.workflowName;
       existing.workflowVersion = entry.workflowVersion;
-      existing.latest = record;
       existing.history.push(record);
     } else {
       indexDoc.entries[entry.sourceOrigin] = {
@@ -1221,8 +1201,132 @@ export class OrbytEngine {
       };
     }
 
+    this.pruneWorkflowDiagramHistory(indexDoc, entry.sourceOrigin, diagramConfig.maxHistoryPerWorkflow);
+    this.enforceGlobalDiagramArtifactLimit(indexDoc, diagramConfig.maxTotalArtifacts);
+    this.normalizeWorkflowDiagramIndex(indexDoc);
+
     indexDoc.updatedAt = new Date().toISOString();
     writeFileSync(indexPath, JSON.stringify(indexDoc, null, 2), 'utf-8');
+  }
+
+  private loadWorkflowDiagramIndex(indexPath: string): WorkflowDiagramIndexDocument {
+    if (!existsSync(indexPath)) {
+      return {
+        schemaVersion: 1,
+        updatedAt: new Date().toISOString(),
+        entries: {},
+      };
+    }
+
+    try {
+      const parsed = JSON.parse(readFileSync(indexPath, 'utf-8'));
+      if (parsed && typeof parsed === 'object') {
+        const rawEntries = typeof (parsed as any).entries === 'object' && (parsed as any).entries
+          ? (parsed as any).entries
+          : {};
+
+        return {
+          schemaVersion: 1,
+          updatedAt: new Date().toISOString(),
+          entries: rawEntries as Record<string, WorkflowDiagramSourceEntry>,
+        };
+      }
+    } catch {
+      // Fall through and rebuild a fresh index document.
+    }
+
+    return {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      entries: {},
+    };
+  }
+
+  private pruneWorkflowDiagramHistory(
+    indexDoc: WorkflowDiagramIndexDocument,
+    sourceOrigin: string,
+    maxHistoryPerWorkflow: number,
+  ): void {
+    const entry = indexDoc.entries[sourceOrigin];
+    if (!entry || entry.history.length <= maxHistoryPerWorkflow) {
+      return;
+    }
+
+    const removeCount = entry.history.length - maxHistoryPerWorkflow;
+    const removed = entry.history.slice(0, removeCount);
+    entry.history = entry.history.slice(removeCount);
+
+    for (const record of removed) {
+      this.deleteWorkflowDiagramRecordFiles(record);
+    }
+  }
+
+  private enforceGlobalDiagramArtifactLimit(
+    indexDoc: WorkflowDiagramIndexDocument,
+    maxTotalArtifacts: number,
+  ): void {
+    const allRecords: Array<{
+      sourceOrigin: string;
+      record: WorkflowDiagramRecord;
+    }> = [];
+
+    for (const [sourceOrigin, entry] of Object.entries(indexDoc.entries)) {
+      for (const record of entry.history) {
+        allRecords.push({ sourceOrigin, record });
+      }
+    }
+
+    if (allRecords.length <= maxTotalArtifacts) {
+      return;
+    }
+
+    allRecords.sort((left, right) => left.record.createdAt.localeCompare(right.record.createdAt));
+    const removable = allRecords.slice(0, allRecords.length - maxTotalArtifacts);
+
+    for (const item of removable) {
+      const entry = indexDoc.entries[item.sourceOrigin];
+      if (!entry) {
+        continue;
+      }
+
+      const index = entry.history.findIndex((historyItem) =>
+        historyItem.createdAt === item.record.createdAt
+        && historyItem.executionId === item.record.executionId
+        && historyItem.stage === item.record.stage,
+      );
+
+      if (index !== -1) {
+        const [removed] = entry.history.splice(index, 1);
+        this.deleteWorkflowDiagramRecordFiles(removed);
+      }
+    }
+  }
+
+  private normalizeWorkflowDiagramIndex(indexDoc: WorkflowDiagramIndexDocument): void {
+    for (const sourceOrigin of Object.keys(indexDoc.entries)) {
+      const entry = indexDoc.entries[sourceOrigin];
+
+      if (!entry || entry.history.length === 0) {
+        delete indexDoc.entries[sourceOrigin];
+        continue;
+      }
+
+      entry.history.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      entry.latest = entry.history[entry.history.length - 1];
+    }
+  }
+
+  private deleteWorkflowDiagramRecordFiles(record: WorkflowDiagramRecord): void {
+    const paths = [record.graphPath, record.tracePath, record.mermaidPath];
+    for (const filePath of paths) {
+      try {
+        if (existsSync(filePath)) {
+          unlinkSync(filePath);
+        }
+      } catch {
+        // Non-fatal cleanup.
+      }
+    }
   }
 
   private async evaluatePreExecutionQuota(
@@ -1953,6 +2057,98 @@ export class OrbytEngine {
    */
   getRuntimeArtifactStore(): RuntimeArtifactStore {
     return this.runtimeArtifactStore;
+  }
+
+  /**
+   * Read the persisted workflow diagram index.
+   * The index maps workflow source origins to their latest/history diagram artifacts.
+   */
+  getWorkflowDiagramIndex(): WorkflowDiagramIndexDocument {
+    const indexPath = join(this.config.stateDir, 'diagrams', 'index.json');
+    const indexDoc = this.loadWorkflowDiagramIndex(indexPath);
+    this.normalizeWorkflowDiagramIndex(indexDoc);
+    return indexDoc;
+  }
+
+  /**
+   * Resolve the latest diagram artifact record for a workflow source origin.
+   */
+  getLatestWorkflowDiagram(
+    sourceOrigin: string,
+    options: { includeContent?: boolean } = {},
+  ): {
+    sourceOrigin: string;
+    sourceType: string;
+    workflowName: string;
+    workflowVersion?: string;
+    latest: WorkflowDiagramRecord;
+    content?: {
+      graph?: unknown;
+      trace?: unknown;
+      mermaid?: string;
+    };
+  } | undefined {
+    const indexDoc = this.getWorkflowDiagramIndex();
+    const entry = indexDoc.entries[sourceOrigin];
+
+    if (!entry) {
+      return undefined;
+    }
+
+    const result: {
+      sourceOrigin: string;
+      sourceType: string;
+      workflowName: string;
+      workflowVersion?: string;
+      latest: WorkflowDiagramRecord;
+      content?: {
+        graph?: unknown;
+        trace?: unknown;
+        mermaid?: string;
+      };
+    } = {
+      sourceOrigin: entry.sourceOrigin,
+      sourceType: entry.sourceType,
+      workflowName: entry.workflowName,
+      workflowVersion: entry.workflowVersion,
+      latest: entry.latest,
+    };
+
+    if (options.includeContent) {
+      const content: {
+        graph?: unknown;
+        trace?: unknown;
+        mermaid?: string;
+      } = {};
+
+      try {
+        if (existsSync(entry.latest.graphPath)) {
+          content.graph = JSON.parse(readFileSync(entry.latest.graphPath, 'utf8'));
+        }
+      } catch {
+        // Non-fatal read failure.
+      }
+
+      try {
+        if (existsSync(entry.latest.tracePath)) {
+          content.trace = JSON.parse(readFileSync(entry.latest.tracePath, 'utf8'));
+        }
+      } catch {
+        // Non-fatal read failure.
+      }
+
+      try {
+        if (existsSync(entry.latest.mermaidPath)) {
+          content.mermaid = readFileSync(entry.latest.mermaidPath, 'utf8');
+        }
+      } catch {
+        // Non-fatal read failure.
+      }
+
+      result.content = content;
+    }
+
+    return result;
   }
 
   /**
