@@ -43,7 +43,7 @@ import { OrbytErrorDiagnostic } from '../types/core-types.js';
  * - Invalid field types
  * - Missing required fields
  * - Invalid enum values
- * - YAML/JSON syntax errors
+ * - Serialized .orbt workflow parse/shape errors
  */
 export class SchemaError extends OrbytError {
   constructor(diagnostic: OrbytErrorDiagnostic) {
@@ -157,9 +157,9 @@ export class SchemaError extends OrbytError {
   }
 
   /**
-   * Create YAML/JSON parsing error
+   * Create .orbt workflow parsing error
    * 
-   * @param filePath - Path to workflow file with syntax error
+   * @param filePath - Path/origin for .orbt workflow source with syntax error
    * @param line - Line number where error occurred (optional)
    * @param column - Column number where error occurred (optional)
    * @param details - Additional parsing error details (optional)
@@ -174,10 +174,10 @@ export class SchemaError extends OrbytError {
     const location = line ? ` at line ${line}${column ? `, column ${column}` : ''}` : '';
     return new SchemaError({
       code: OrbytErrorCode.SCHEMA_PARSE_ERROR,
-      message: `Failed to parse workflow file${location}`,
+      message: `Failed to parse .orbt workflow definition ${location}`,
       exitCode: ExitCodes.INVALID_SCHEMA,
       path: filePath,
-      hint: details || 'Check YAML/JSON syntax - ensure proper indentation, quotes, and structure',
+      hint: details || 'Check .orbt serialized structure and field formatting (quotes, braces, commas, and valid keys).',
       severity: ErrorSeverity.ERROR,
       context: { filePath, line, column, details },
     });
@@ -254,7 +254,7 @@ export class SchemaError extends OrbytError {
         commonMistakes: [
           'Typos in field names (e.g., "varion" instead of "version")',
           'Using deprecated field names',
-          'Copy-pasting from old workflow versions',
+          'Copy-pasting from outdated schema examples',
         ],
       },
       [OrbytErrorCode.SCHEMA_RESERVED_FIELD]: {
@@ -278,23 +278,23 @@ export class SchemaError extends OrbytError {
         fixSteps: [
           'Add the missing required field to your workflow',
           'Check field name spelling',
-          'Refer to schema documentation for required fields',
+          'Refer to canonical .orbt schema documentation for required fields',
         ],
         estimatedFixTime: '1-2 minutes',
       },
       [OrbytErrorCode.SCHEMA_PARSE_ERROR]: {
-        explanation: 'Your workflow file has a YAML or JSON syntax error that prevents it from being parsed.',
-        cause: 'The parser encountered unexpected characters, incorrect indentation, or malformed structure.',
+        explanation: 'Your .orbt workflow definition has a parse/shape error that prevents loader validation.',
+        cause: 'The loader/parser encountered malformed serialized content or invalid structural formatting.',
         fixSteps: [
-          'Open the file in a YAML-aware editor to see the exact problem',
-          'Check indentation — YAML requires consistent spaces (not tabs)',
-          'Look for missing colons after keys (e.g. `name value` → `name: value`)',
-          'Check for unclosed quotes or brackets',
+          'Open the .orbt workflow source and locate malformed serialized sections',
+          'Check for missing commas, braces, or quotes in object structure',
+          'Ensure required fields are present with valid values',
+          'Re-validate the .orbt object through WorkflowLoader before execution',
         ],
         commonMistakes: [
-          'Using tabs instead of spaces for indentation',
-          'Forgetting the colon after a key',
-          'Mixing YAML and JSON syntax in the same file',
+          'Malformed serialized object punctuation (missing comma/brace)',
+          'Invalid field names from older schema variants',
+          'Incorrectly escaped strings in serialized values',
           'Unclosed strings or brackets',
         ],
         estimatedFixTime: '2-5 minutes',
@@ -463,7 +463,7 @@ export class ValidationError extends OrbytError {
   /**
    * Create empty workflow error
    * 
-   * @param path - Path to workflow file
+  * @param path - Path to workflow definition
    * @returns ValidationError for workflow with no steps
    */
   static emptyWorkflow(path: string): ValidationError {
