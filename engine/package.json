@@ -15,6 +15,7 @@
     "build": "rm -rf dist && tsc",
     "clean": "rm -rf dist",
     "tokio-worker:run": "cargo run --quiet --manifest-path ../orbyt-tokio-worker/Cargo.toml",
+    "test:phase-d-validator": "pnpm run build && node dist/testing/integration/phase-d-validator-hardening.js",
     "test:orbt-exec-diagram": "pnpm run build && node dist/testing/integration/orbt-workflow-execution-diagram.js",
     "test:distributed": "pnpm run build && node dist/testing/distributed/distributed-smoke.js",
     "test:integration": "pnpm run test:distributed",
