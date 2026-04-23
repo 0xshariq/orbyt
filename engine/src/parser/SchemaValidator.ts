@@ -31,6 +31,8 @@ import type {
 export class SchemaValidator {
   private static readonly FREE_FORM_PATHS = ['annotations', 'context', 'secrets', 'inputs'] as const;
   private static readonly FREE_FORM_FIELDS = ['annotations', 'context', 'with', 'outputs', 'env', 'secrets', 'inputs'] as const;
+  private static readonly MIN_TIMEOUT_MS = 100;
+  private static readonly MAX_RETRY_ATTEMPTS = 10;
 
   /**
    * Validate raw workflow data against Zod schema
@@ -64,6 +66,7 @@ export class SchemaValidator {
 
       // Additional semantic validations
       this.validateWorkflowBody(validated);
+      this.validatePhaseDContracts(validated);
 
       logger.validationPassed('workflow', 'schema');
 
@@ -187,7 +190,30 @@ export class SchemaValidator {
       }
     }
 
+    this.normalizeTriggerAliases(normalized);
+
     return normalized;
+  }
+
+  private static normalizeTriggerAliases(normalized: Record<string, any>): void {
+    if (!Array.isArray(normalized.triggers)) {
+      return;
+    }
+
+    normalized.triggers = normalized.triggers.map((trigger: any) => {
+      if (!this.isPlainObject(trigger)) {
+        return trigger;
+      }
+
+      if (trigger.type === 'schedule') {
+        return {
+          ...trigger,
+          type: 'cron',
+        };
+      }
+
+      return trigger;
+    });
   }
 
   private static normalizeParsedWorkflowShape(normalized: Record<string, any>): void {
@@ -638,6 +664,349 @@ export class SchemaValidator {
         severity: 'error' as any,
       });
     }
+  }
+
+  private static validatePhaseDContracts(workflow: WorkflowDefinitionZod): void {
+    this.validateTriggerContract(workflow);
+    this.validateRetryAndTimeoutPolicies(workflow);
+    this.validateConditionExpressionSafety(workflow);
+    this.validateControlFlowGuardrails(workflow);
+    this.validateResourceConstraints(workflow);
+    this.validateSecretReferenceContracts(workflow);
+    this.validateStepOutputReferences(workflow);
+  }
+
+  private static validateTriggerContract(workflow: WorkflowDefinitionZod): void {
+    if (!Array.isArray(workflow.triggers)) {
+      return;
+    }
+
+    for (const [index, trigger] of workflow.triggers.entries()) {
+      const allowed = trigger.type === 'manual' || trigger.type === 'event' || trigger.type === 'cron';
+      if (!allowed) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Unsupported trigger type "${String(trigger.type)}"`,
+          path: `triggers[${index}].type`,
+          hint: 'Allowed trigger types in baseline are: manual, event, schedule',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+    }
+  }
+
+  private static validateRetryAndTimeoutPolicies(workflow: WorkflowDefinitionZod): void {
+    if (workflow.defaults?.retry?.max !== undefined && workflow.defaults.retry.max > this.MAX_RETRY_ATTEMPTS) {
+      throw new SchemaError({
+        code: 'ORB-S-004' as any,
+        message: `defaults.retry.max exceeds safe limit (${workflow.defaults.retry.max} > ${this.MAX_RETRY_ATTEMPTS})`,
+        path: 'defaults.retry.max',
+        hint: `Use a value less than or equal to ${this.MAX_RETRY_ATTEMPTS}`,
+        severity: ErrorSeverity.ERROR,
+      });
+    }
+
+    if (workflow.defaults?.timeout) {
+      const timeoutMs = this.parseDurationToMs(workflow.defaults.timeout, 'defaults.timeout');
+      this.assertMinimumTimeout(timeoutMs, 'defaults.timeout');
+    }
+
+    workflow.workflow.steps.forEach((step, index) => {
+      if (step.retry?.max !== undefined && step.retry.max > this.MAX_RETRY_ATTEMPTS) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Step "${step.id}" retry.max exceeds safe limit (${step.retry.max} > ${this.MAX_RETRY_ATTEMPTS})`,
+          path: `workflow.steps[${index}].retry.max`,
+          hint: `Use a value less than or equal to ${this.MAX_RETRY_ATTEMPTS}`,
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      if (step.timeout) {
+        const timeoutMs = this.parseDurationToMs(step.timeout, `workflow.steps[${index}].timeout`);
+        this.assertMinimumTimeout(timeoutMs, `workflow.steps[${index}].timeout`);
+      }
+    });
+  }
+
+  private static parseDurationToMs(value: string, path: string): number {
+    const match = value.trim().match(/^(\d+)(ms|s|m|h|d)$/);
+    if (!match) {
+      throw new SchemaError({
+        code: 'ORB-S-004' as any,
+        message: `Invalid duration value at ${path}: ${value}`,
+        path,
+        hint: 'Use a duration like 100ms, 5s, 1m, 1h, or 1d',
+        severity: ErrorSeverity.ERROR,
+      });
+    }
+
+    const amount = Number(match[1]);
+    const unit = match[2];
+    switch (unit) {
+      case 'ms': return amount;
+      case 's': return amount * 1000;
+      case 'm': return amount * 60 * 1000;
+      case 'h': return amount * 60 * 60 * 1000;
+      case 'd': return amount * 24 * 60 * 60 * 1000;
+      default:
+        return amount;
+    }
+  }
+
+  private static assertMinimumTimeout(timeoutMs: number, path: string): void {
+    if (timeoutMs < this.MIN_TIMEOUT_MS) {
+      throw new SchemaError({
+        code: 'ORB-S-004' as any,
+        message: `Timeout below minimum safety threshold (${timeoutMs}ms < ${this.MIN_TIMEOUT_MS}ms)`,
+        path,
+        hint: `Use timeout >= ${this.MIN_TIMEOUT_MS}ms`,
+        severity: ErrorSeverity.ERROR,
+      });
+    }
+  }
+
+  private static validateConditionExpressionSafety(workflow: WorkflowDefinitionZod): void {
+    workflow.workflow.steps.forEach((step, index) => {
+      if (!step.when) {
+        return;
+      }
+
+      const path = `workflow.steps[${index}].when`;
+      const condition = step.when;
+
+      if (/\bfor\b|\bwhile\b|\bdo\b|\bloop\b|\bforeach\b|\bfunction\b/i.test(condition)) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Unsupported control-flow expression in condition for step "${step.id}"`,
+          path,
+          hint: 'Baseline conditions must be declarative and cannot contain loop/function constructs',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      if (/\b[a-zA-Z_][a-zA-Z0-9_]*\s*\(/.test(condition)) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Custom functions are not supported in condition for step "${step.id}"`,
+          path,
+          hint: 'Use only variable references and supported boolean/comparison operators',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      if (/===|!==|\+\+|--|=>|\?|:|\*|\/|%|\^|~|<<|>>|>>>|\bin\b|\binstanceof\b/.test(condition)) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Unsupported operator found in condition for step "${step.id}"`,
+          path,
+          hint: 'Supported operators are: ==, !=, >, <, >=, <=, &&, ||, !',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+
+      const sanitized = condition
+        .replace(/\$\{[^}]+\}/g, 'V')
+        .replace(/"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'/g, 'S')
+        .replace(/\b(true|false|null|undefined)\b/g, 'L')
+        .replace(/\b\d+(?:\.\d+)?\b/g, 'N')
+        .replace(/[a-zA-Z_][a-zA-Z0-9_.]*/g, 'I')
+        .replace(/[()\s]/g, '');
+
+      const stripped = sanitized.replace(/(==|!=|>=|<=|&&|\|\||!|>|<)/g, '');
+      if (stripped.length > 0) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Unsupported expression grammar in condition for step "${step.id}"`,
+          path,
+          hint: 'Use only variables/literals with operators: ==, !=, >, <, >=, <=, &&, ||, !',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+    });
+  }
+
+  private static validateControlFlowGuardrails(workflow: WorkflowDefinitionZod): void {
+    workflow.workflow.steps.forEach((step, index) => {
+      const disallowedKeys = this.findDisallowedControlFlowKeys(step.with);
+      if (disallowedKeys.length > 0) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Unsupported control-flow configuration found in step "${step.id}"`,
+          path: `workflow.steps[${index}].with`,
+          hint: `Remove loop/runtime function controls: ${disallowedKeys.join(', ')}`,
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+    });
+  }
+
+  private static findDisallowedControlFlowKeys(value: unknown, path = ''): string[] {
+    if (!value || typeof value !== 'object') {
+      return [];
+    }
+
+    const disallowed = ['loop', 'while', 'forEach', 'foreach', 'repeat', 'until', 'runtimeLoop', 'function'];
+    const found: string[] = [];
+
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      const currentPath = path ? `${path}.${key}` : key;
+      if (disallowed.some((item) => item.toLowerCase() === key.toLowerCase())) {
+        found.push(currentPath);
+      }
+
+      found.push(...this.findDisallowedControlFlowKeys(nested, currentPath));
+    }
+
+    return found;
+  }
+
+  private static validateResourceConstraints(workflow: WorkflowDefinitionZod): void {
+    if (workflow.policies?.concurrency !== undefined && workflow.policies.concurrency < 1) {
+      throw new SchemaError({
+        code: 'ORB-S-004' as any,
+        message: 'policies.concurrency must be >= 1',
+        path: 'policies.concurrency',
+        hint: 'Use a numeric concurrency value greater than or equal to 1',
+        severity: ErrorSeverity.ERROR,
+      });
+    }
+
+    if (!workflow.resources) {
+      return;
+    }
+
+    if (workflow.resources.cpu !== undefined) {
+      const cpu = this.parseNumericResourceValue(workflow.resources.cpu, 'resources.cpu');
+      if (cpu <= 0) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: 'resources.cpu must be > 0',
+          path: 'resources.cpu',
+          hint: 'Use a positive numeric value (for example: 0.5, 1, 2)',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+    }
+
+    if (workflow.resources.memory !== undefined) {
+      const memory = this.parseNumericResourceValue(workflow.resources.memory, 'resources.memory');
+      if (memory <= 0) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: 'resources.memory must be > 0',
+          path: 'resources.memory',
+          hint: 'Use a positive numeric value',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+    }
+  }
+
+  private static parseNumericResourceValue(value: unknown, path: string): number {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+        return Number(trimmed);
+      }
+    }
+
+    throw new SchemaError({
+      code: 'ORB-S-004' as any,
+      message: `${path} must be numeric`,
+      path,
+      hint: 'Use a numeric value without units in baseline mode',
+      severity: ErrorSeverity.ERROR,
+    });
+  }
+
+  private static validateSecretReferenceContracts(workflow: WorkflowDefinitionZod): void {
+    const checkValue = (value: unknown, path: string): void => {
+      if (typeof value === 'string') {
+        this.assertNoDynamicSecretReference(value, path);
+      } else if (Array.isArray(value)) {
+        value.forEach((item, index) => checkValue(item, `${path}[${index}]`));
+      } else if (value && typeof value === 'object') {
+        Object.entries(value as Record<string, unknown>).forEach(([key, nested]) => {
+          checkValue(nested, `${path}.${key}`);
+        });
+      }
+    };
+
+    workflow.workflow.steps.forEach((step, index) => {
+      checkValue(step.with, `workflow.steps[${index}].with`);
+      checkValue(step.env, `workflow.steps[${index}].env`);
+      checkValue(step.outputs, `workflow.steps[${index}].outputs`);
+      if (step.when) {
+        checkValue(step.when, `workflow.steps[${index}].when`);
+      }
+    });
+  }
+
+  private static assertNoDynamicSecretReference(value: string, path: string): void {
+    if (/\$\{secret:[^}]*\$\{[^}]+\}[^}]*\}/.test(value)) {
+      throw new SchemaError({
+        code: 'ORB-S-004' as any,
+        message: 'Dynamic secret references are not allowed',
+        path,
+        hint: 'Use static references like ${secret:provider/path}',
+        severity: ErrorSeverity.ERROR,
+      });
+    }
+
+    const staticRefs = value.matchAll(/\$\{secret:([^}]+)\}/g);
+    for (const match of staticRefs) {
+      const ref = match[1].trim();
+      if (!/^[a-zA-Z0-9._:/-]+$/.test(ref)) {
+        throw new SchemaError({
+          code: 'ORB-S-004' as any,
+          message: `Invalid secret reference format: ${match[0]}`,
+          path,
+          hint: 'Secret references must be static and use safe characters only',
+          severity: ErrorSeverity.ERROR,
+        });
+      }
+    }
+  }
+
+  private static validateStepOutputReferences(workflow: WorkflowDefinitionZod): void {
+    const stepIds = new Set(workflow.workflow.steps.map((step) => step.id));
+
+    const checkValue = (value: unknown, path: string): void => {
+      if (typeof value === 'string') {
+        for (const match of value.matchAll(/\$\{steps\.([a-zA-Z][a-zA-Z0-9_-]*)\.output(?:\.[^}]*)?\}/g)) {
+          const stepId = match[1];
+          if (!stepIds.has(stepId)) {
+            throw new SchemaError({
+              code: 'ORB-V-002' as any,
+              message: `Unknown step reference: ${stepId}`,
+              path,
+              hint: `Referenced step in ${match[0]} must exist in workflow.steps`,
+              severity: ErrorSeverity.ERROR,
+            });
+          }
+        }
+      } else if (Array.isArray(value)) {
+        value.forEach((item, index) => checkValue(item, `${path}[${index}]`));
+      } else if (value && typeof value === 'object') {
+        Object.entries(value as Record<string, unknown>).forEach(([key, nested]) => {
+          checkValue(nested, `${path}.${key}`);
+        });
+      }
+    };
+
+    workflow.workflow.steps.forEach((step, index) => {
+      checkValue(step.with, `workflow.steps[${index}].with`);
+      checkValue(step.env, `workflow.steps[${index}].env`);
+      checkValue(step.outputs, `workflow.steps[${index}].outputs`);
+      if (step.when) {
+        checkValue(step.when, `workflow.steps[${index}].when`);
+      }
+    });
   }
 
   /**
