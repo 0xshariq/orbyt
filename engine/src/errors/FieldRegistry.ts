@@ -329,6 +329,19 @@ export function getValidFields(path: string): readonly string[] {
   if (path in FIELD_REGISTRY) {
     return FIELD_REGISTRY[path];
   }
+
+  // Normalize common nested validator paths to schema-specific field sets.
+  // Examples:
+  // - workflow.steps[0].retry
+  // - defaults.retry
+  // - workflow.steps[3].usage
+  if (/^workflow\.steps\[\d+\]\.retry$/.test(path) || path === 'defaults.retry') {
+    return RETRY_FIELDS;
+  }
+
+  if (/^workflow\.steps\[\d+\]\.usage$/.test(path)) {
+    return STEP_USAGE_FIELDS;
+  }
   
   // Check if it's a step path (workflow.steps[N])
   if (path.match(/^workflow\.steps\[\d+\]$/)) {
