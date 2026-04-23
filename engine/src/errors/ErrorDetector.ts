@@ -296,8 +296,8 @@ export class ErrorDetector {
      * @param location - Where the error occurred
      * @returns Classified OrbytError with debug info
      *
-     * @deprecated Since 0.5.0 — prefer {@link detectFromExceptionEnhanced} which
-     *   also extracts line/column numbers from YAML parse errors.
+    * @deprecated Since 0.5.0 — prefer {@link detectFromExceptionEnhanced} which
+    *   also extracts line/column numbers from parser errors when available.
      */
     static detectFromException(error: Error, location?: string): OrbytError {
         const message = error.message.toLowerCase();
@@ -306,7 +306,7 @@ export class ErrorDetector {
         // Try to detect error type from message
         let scenario: ErrorScenario = 'unknown';
 
-        if (message.includes('yaml') || message.includes('parse') || message.includes('syntax')) {
+        if (message.includes('parse') || message.includes('syntax') || message.includes('malformed')) {
             scenario = 'parse_error';
         } else if (message.includes('unknown field') || message.includes('unexpected field')) {
             scenario = 'unknown_field';
@@ -337,7 +337,7 @@ export class ErrorDetector {
      * Detect error from raw exception — enhanced variant with line/column extraction.
      *
      * Identical to {@link detectFromException} but additionally:
-     * - Extracts `line` / `col` from YAML parse errors via the `yaml` library's
+    * - Extracts `line` / `col` from parse errors via parser metadata when available.
      *   `linePos` property (e.g. `error.linePos[0].line`).
      * - Falls back to common message patterns: "line X, col Y", "(X:Y)".
      * - Injects position into `diagnostic.context` so formatters can show
@@ -357,7 +357,7 @@ export class ErrorDetector {
 
         let scenario: ErrorScenario = 'unknown';
 
-        if (message.includes('yaml') || message.includes('parse') || message.includes('syntax')) {
+        if (message.includes('parse') || message.includes('syntax') || message.includes('malformed')) {
             scenario = 'parse_error';
         } else if (message.includes('unknown field') || message.includes('unexpected field')) {
             scenario = 'unknown_field';
@@ -375,9 +375,9 @@ export class ErrorDetector {
             scenario = 'permission_denied';
         }
 
-        // For parse errors extract position so the formatter can show line:col
+        // For parse errors extract position so formatter can show line:col
         const position = (scenario === 'parse_error')
-            ? this.extractYAMLPosition(error)
+            ? this.extractParserPosition(error)
             : {};
 
         return this.detect({
@@ -392,22 +392,22 @@ export class ErrorDetector {
     // ==================== HELPER METHODS ====================
 
     /**
-     * Extract line and column information from a YAML parse error.
+    * Extract line and column information from a parser error.
      *
-     * The `yaml` package attaches a `linePos` array to its parse errors.
+    * Some parsers attach a `linePos` array to parse errors.
      * As a fallback, common "(line X, col Y)" and "X:Y" patterns in
      * the error message are also checked.
      *
      * Only called internally for `parse_error` scenarios.
      *
-     * @param error - Error object from the YAML / JSON parser
+    * @param error - Error object from parser/validator stages
      * @returns `{ line, col }` if found, empty object otherwise
      * @private
      */
-    private static extractYAMLPosition(
+    private static extractParserPosition(
         error: Error
     ): { line?: number; col?: number } {
-        // The `yaml` library attaches linePos to parse errors
+        // Some parser libraries attach linePos to parse errors
         const yamlErr = error as any;
         if (Array.isArray(yamlErr.linePos) && yamlErr.linePos.length > 0) {
             const pos = yamlErr.linePos[0] as { line?: number; col?: number };
@@ -558,7 +558,7 @@ export class ErrorDetector {
 
     private static handleParseError(context: ErrorContext): SchemaError {
         // Accept both `column` (caller-supplied) and `col` (extracted by
-        // extractYAMLPosition from the yaml library's linePos property).
+        // extractParserPosition from parser metadata when available).
         const col = context.data?.column ?? context.data?.col;
         return SchemaError.parseError(
             context.location || 'unknown',
