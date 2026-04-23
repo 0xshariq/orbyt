@@ -1101,6 +1101,8 @@ export class OrbytEngine {
       const tracePath = join(diagramsDir, `${baseName}.trace.json`);
       const mermaidPath = join(diagramsDir, `${baseName}.mermaid.mmd`);
 
+      // TODO(orbyt-visualization): Emit a first-class node/edge graph artifact for direct rendering,
+      // instead of only persisting JSON-model output for graph consumers.
       writeFileSync(graphPath, JSON.stringify(graphModel, null, 2), 'utf-8');
       writeFileSync(tracePath, JSON.stringify(traceDoc, null, 2), 'utf-8');
       writeFileSync(mermaidPath, mermaid, 'utf-8');
