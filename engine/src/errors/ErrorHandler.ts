@@ -549,7 +549,7 @@ export class ErrorHandler {
      *
      * Enhancement of {@link handleLoaderError} that:
      * - Uses {@link ErrorDetector.detectFromExceptionEnhanced} to extract
-     *   line/column numbers from YAML parse errors.
+    *   line/column numbers from parser errors when available.
      * - Generates debug info via {@link ErrorDebugger.analyzeWithContext} so
      *   fix steps reference the actual file path and line number.
      * - Formats detailed output with {@link formatErrorWithLocation} for a
