@@ -23,7 +23,7 @@
  * Format: ORB-[Category]-[Number]
  * 
  * Categories:
- * - S: Schema/Structure errors (YAML syntax, field validation)
+ * - S: Schema/Structure errors (canonical .orbt shape and field validation)
  * - V: Validation/Logic errors (duplicate IDs, circular deps)
  * - E: Execution errors (step failures, timeouts)
  * - R: Runtime errors (file not found, permissions)
@@ -58,7 +58,7 @@ export enum OrbytErrorCode {
   /** Invalid enum value */
   SCHEMA_INVALID_ENUM = 'ORB-S-004',
 
-  /** Malformed YAML/JSON syntax */
+  /** Malformed .orbt serialized syntax/structure */
   SCHEMA_PARSE_ERROR = 'ORB-S-005',
 
   /** Invalid field format/pattern */
@@ -224,7 +224,7 @@ export function getErrorDescription(code: OrbytErrorCode): string {
     [OrbytErrorCode.SCHEMA_INVALID_TYPE]: 'Field has incorrect type (e.g., string instead of number). Review the expected type for this field.',
     [OrbytErrorCode.SCHEMA_MISSING_FIELD]: 'Required field is missing from workflow definition. All required fields must be present.',
     [OrbytErrorCode.SCHEMA_INVALID_ENUM]: 'Field value is not one of the allowed options. Check the valid values for this field.',
-    [OrbytErrorCode.SCHEMA_PARSE_ERROR]: 'YAML/JSON syntax error prevents parsing. Check for missing colons, incorrect indentation, or unmatched brackets.',
+    [OrbytErrorCode.SCHEMA_PARSE_ERROR]: '.orbt workflow definition cannot be parsed. Check serialized structure, punctuation, and unmatched brackets/quotes.',
     [OrbytErrorCode.SCHEMA_INVALID_FORMAT]: 'Field value does not match expected format or pattern (e.g., invalid ID format, malformed timeout).',
     [OrbytErrorCode.SCHEMA_RESERVED_FIELD]: 'Workflow uses a reserved field that is controlled by the engine. Remove fields starting with "_" or other reserved names.',
 
@@ -239,7 +239,7 @@ export function getErrorDescription(code: OrbytErrorCode): string {
     [OrbytErrorCode.VALIDATION_UNKNOWN_ADAPTER]: 'Adapter or action does not exist. Verify the "uses" field references a valid adapter.',
     [OrbytErrorCode.VALIDATION_EMPTY_WORKFLOW]: 'Workflow has no steps defined. At least one step is required.',
     [OrbytErrorCode.VALIDATION_INVALID_CONDITION]: 'Condition expression has invalid syntax. Check operators and variable references.',
-    [OrbytErrorCode.VALIDATION_UNSUPPORTED_INPUT]: 'Input is not supported by WorkflowLoader. Provide a valid workflow file, workflow text, or workflow object.',
+    [OrbytErrorCode.VALIDATION_UNSUPPORTED_INPUT]: 'Workflow source is not supported by WorkflowLoader. Provide a valid .orbt workflow definition or canonical workflow object.',
 
     // Execution Errors
     [OrbytErrorCode.EXECUTION_STEP_FAILED]: 'Step execution failed during runtime. Check step configuration and adapter logs.',
@@ -250,7 +250,7 @@ export function getErrorDescription(code: OrbytErrorCode): string {
     [OrbytErrorCode.EXECUTION_CONDITION_FAILED]: 'Step condition evaluated to false. This is expected behavior when conditions are not met.',
 
     // Runtime Errors
-    [OrbytErrorCode.RUNTIME_FILE_NOT_FOUND]: 'Required file or workflow does not exist at the specified path. Check file path and spelling.',
+    [OrbytErrorCode.RUNTIME_FILE_NOT_FOUND]: 'Required .orbt workflow artifact does not exist at the specified path. Check path and spelling.',
     [OrbytErrorCode.RUNTIME_PERMISSION_DENIED]: 'Insufficient permissions to access resource. Check file permissions and user access rights.',
     [OrbytErrorCode.RUNTIME_INTERNAL_ERROR]: 'Internal engine error occurred. This may indicate a bug - please report with details.',
     [OrbytErrorCode.RUNTIME_ADAPTER_NOT_FOUND]: 'Adapter is not registered with the engine. Make sure the adapter is installed and loaded.',
@@ -401,7 +401,7 @@ export function getSuggestedAction(code: OrbytErrorCode): string {
     [OrbytErrorCode.SCHEMA_INVALID_TYPE]: 'Review field type requirements in schema',
     [OrbytErrorCode.SCHEMA_MISSING_FIELD]: 'Add the missing required field',
     [OrbytErrorCode.SCHEMA_INVALID_ENUM]: 'Use one of the allowed values',
-    [OrbytErrorCode.SCHEMA_PARSE_ERROR]: 'Fix YAML/JSON syntax errors',
+    [OrbytErrorCode.SCHEMA_PARSE_ERROR]: 'Fix .orbt serialized structure errors',
     [OrbytErrorCode.SCHEMA_INVALID_FORMAT]: 'Correct the field format (check regex patterns)',
     [OrbytErrorCode.SCHEMA_RESERVED_FIELD]: 'Remove reserved fields (those starting with "_")',
 
@@ -416,7 +416,7 @@ export function getSuggestedAction(code: OrbytErrorCode): string {
     [OrbytErrorCode.VALIDATION_UNKNOWN_ADAPTER]: 'Install adapter or fix "uses" field',
     [OrbytErrorCode.VALIDATION_EMPTY_WORKFLOW]: 'Add at least one step to workflow',
     [OrbytErrorCode.VALIDATION_INVALID_CONDITION]: 'Fix condition syntax or check variable references',
-    [OrbytErrorCode.VALIDATION_UNSUPPORTED_INPUT]: 'Provide a supported workflow input (file path, YAML/JSON/.orbt text, or workflow object)',
+    [OrbytErrorCode.VALIDATION_UNSUPPORTED_INPUT]: 'Provide a supported workflow source (.orbt definition or canonical workflow object)',
 
     // Execution Errors
     [OrbytErrorCode.EXECUTION_STEP_FAILED]: 'Check step configuration and logs',
@@ -427,7 +427,7 @@ export function getSuggestedAction(code: OrbytErrorCode): string {
     [OrbytErrorCode.EXECUTION_CONDITION_FAILED]: 'Review condition logic or accept skip',
 
     // Runtime Errors
-    [OrbytErrorCode.RUNTIME_FILE_NOT_FOUND]: 'Check file path exists and is accessible',
+    [OrbytErrorCode.RUNTIME_FILE_NOT_FOUND]: 'Check .orbt artifact path exists and is accessible',
     [OrbytErrorCode.RUNTIME_PERMISSION_DENIED]: 'Check file permissions',
     [OrbytErrorCode.RUNTIME_INTERNAL_ERROR]: 'Report bug with full error details',
     [OrbytErrorCode.RUNTIME_ADAPTER_NOT_FOUND]: 'Install and register the adapter',
