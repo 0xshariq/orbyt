@@ -265,18 +265,18 @@ export class ErrorDebugger {
       // ── Schema errors ──────────────────────────────────────────────────────
 
       [OrbytErrorCode.SCHEMA_PARSE_ERROR]: {
-        explanation: 'Your workflow file has a YAML or JSON syntax error that prevents it from being parsed.',
-        cause: 'The parser encountered unexpected characters, incorrect indentation, or malformed structure.',
+        explanation: 'Your .orbt workflow definition has a parse/shape error that prevents loader validation.',
+        cause: 'The parser encountered malformed serialized content or invalid structure.',
         fixSteps: [
-          'Open the file in a YAML-aware editor to see the exact problem',
-          'Check indentation — YAML requires consistent spaces (not tabs)',
-          'Look for missing colons after keys (e.g. `name value` → `name: value`)',
-          'Check for unclosed quotes or brackets',
+          'Open the .orbt workflow source and inspect malformed serialized sections',
+          'Check for missing commas, braces, or quotes',
+          'Ensure required fields exist with valid values',
+          'Re-validate through WorkflowLoader before execution',
         ],
         commonMistakes: [
-          'Using tabs instead of spaces for indentation',
-          'Forgetting the colon after a key',
-          'Mixing YAML and JSON syntax in the same file',
+          'Malformed serialized object punctuation',
+          'Invalid field names from older schema variants',
+          'Incorrectly escaped strings',
           'Unclosed strings or brackets',
         ],
         estimatedFixTime: '2-5 minutes',
@@ -707,10 +707,10 @@ export class ErrorDebugger {
         break;
 
       case OrbytErrorCode.SCHEMA_PARSE_ERROR:
-        steps.push(`Open ${fileRef} in a YAML/JSON-aware editor and look for syntax errors`);
+        steps.push(`Open ${fileRef} and inspect serialized .orbt structure for syntax issues`);
         if (line)
           steps.push(`Syntax error near line ${line}${col ? `, column ${col}` : ''} in ${fileRef}`);
-        steps.push('Common causes: wrong indentation, missing colons, unclosed quotes');
+        steps.push('Common causes: malformed commas/braces, invalid escaping, unclosed quotes');
         break;
 
       default:
@@ -756,7 +756,7 @@ export class ErrorDebugger {
 
       case OrbytErrorCode.SCHEMA_PARSE_ERROR:
         return ctx.filePath
-          ? `The YAML/JSON in "${ctx.filePath.split('/').pop()}" has a syntax error and could not be parsed`
+          ? `The .orbt workflow definition in "${ctx.filePath.split('/').pop()}" has a syntax error and could not be parsed`
           : null;
 
       default:
